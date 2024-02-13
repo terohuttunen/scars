@@ -1,0 +1,25 @@
+[package]
+name = "scars-hal-e310x"
+version = "0.1.0"
+authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
+edition = "2021"
+build = "build.rs"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/terohuttunen/scars/"
+
+[lib]
+bench = false
+doctest = false
+test = false
+
+[dependencies]
+riscv = { version = "0.10.1"}
+scars-hal = { path = "../../scars-hal" }
+scars-arch-riscv = { path = "../../scars-arch-riscv" }
+e310x = {version = "0.11.0", features = ["rt"]}
+static_cell = "1.2.0"
+const_env = "0.1.2"
+critical-section = { version = "1.1.1" }
+
+[dev-dependencies]
+semihosting = { version = "0.1.4", features = ["stdio"] }

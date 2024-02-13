@@ -1,0 +1,18 @@
+[package]
+name = "scars-hal-std"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
+license = "MIT/Apache-2.0"
+repository = "https://github.com/terohuttunen/scars/"
+
+[lib]
+test = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bit_field = "0.10.2"
+libc = { version = "0.2.150", path = "../../../libc" }
+scars-hal = { version = "0.1.0", path = "../../scars-hal" }
+

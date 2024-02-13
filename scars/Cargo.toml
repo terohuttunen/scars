@@ -1,0 +1,37 @@
+[package]
+name = "scars"
+version = "0.1.0"
+authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
+edition = "2021"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/terohuttunen/scars/"
+keywords = ["RTOS"]
+
+[dependencies]
+bit_field = "0.10.2"
+const_env = "0.1.2"
+critical-section = { version = "1.1.1" }
+scars-hal = { version = "0.1.0", path = "../scars-hal" }
+scars-hal-std = { version = "0.1.0", path = "../hal/scars-hal-std", optional = true }
+scars-macros = { version = "0.1.0", path = "../scars-macros" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+scars-test = { version = "0.1.0", path = "../scars-test", features = ["std"] }
+
+[target.'cfg(target_arch = "riscv32")'.dev-dependencies]
+scars-test = { version = "0.1.0", path = "../scars-test", features = ["panic"] }
+
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+riscv = { version = "0.10.1", features = ["critical-section-single-hart"] }
+volatile-register = {version  = "0.2.1"}
+scars-hal-e310x = { version = "0.1.0", path = "../hal/scars-hal-e310x", optional = true }
+semihosting = { version = "0.1.4", features = ["stdio"] }
+scars-test = { version = "0.1.0", path = "../scars-test" }
+
+[features]
+#default = ["relative-delay", "hal-e310x"]
+default = ["relative-delay"]
+tracing = []
+relative-delay = []
+hal-e310x = ["dep:scars-hal-e310x"]
+hal-std = ["dep:scars-hal-std"]

@@ -1,0 +1,26 @@
+[workspace]
+members = ["app", "hal/scars-hal-e310x", "scars", "scars-hal", "scars-arch-riscv", "scars-test", "hal/scars-hal-std", "scars-macros"]
+resolver = "2"
+
+[profile.dev]
+codegen-units = 1
+incremental = false
+lto = 'fat'
+opt-level = 0
+panic = "abort"
+debug = true
+
+[profile.release]
+codegen-units = 1
+incremental = false
+lto = 'fat'
+opt-level = 3
+panic = "abort"
+debug-info = true
+
+[profile.test]
+codegen-units = 1
+incremental = false
+lto = 'fat'
+opt-level = 3
+panic = "abort"

@@ -1,0 +1,11 @@
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+rustflags = ['-Clink-arg=-Thal/scars-hal-e310x/default.lds']
+#runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -bios none -serial stdio -gdb tcp::1234 -S -kernel"
+runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -semihosting-config enable=on,chardev=stdio0 -bios none -chardev stdio,id=stdio0 -display none -gdb tcp::1234 -kernel"
+#runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -semihosting-config enable=on,chardev=stdio0 -bios none -chardev stdio,id=stdio0 -display none -gdb tcp::1234 -S -kernel"
+
+[env]
+MTIME_FREQ_HZ = "10_000_000"
