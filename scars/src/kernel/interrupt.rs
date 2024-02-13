@@ -27,8 +27,6 @@ use core::mem::MaybeUninit;
 use core::ptr::{addr_of, addr_of_mut, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
-use super::scheduler::_private_current_task_context;
-
 pub type InterruptNumber = u16;
 
 #[macro_export]
