@@ -349,12 +349,6 @@ pub fn in_interrupt() -> bool {
         .is_null()
 }
 
-#[inline(never)]
-#[no_mangle]
-pub fn nested_isr_exit() {
-    crate::printkln!("");
-}
-
 #[inline]
 pub unsafe fn interrupt_context(
     icb_ptr: *mut InterruptControlBlock,
@@ -375,7 +369,6 @@ pub unsafe fn interrupt_context(
         tracing::isr_exit_to_scheduler();
         Scheduler::execute_pending_task_switch(key);
     } else {
-        nested_isr_exit();
         tracing::isr_exit();
     }
 
