@@ -13,6 +13,6 @@ test = false
 
 [dependencies]
 bit_field = "0.10.2"
-libc = { version = "0.2.150", path = "../../../libc" }
+libc = { version = "0.2.151", path = "../../../libc" }
 scars-hal = { version = "0.1.0", path = "../../scars-hal" }
 
