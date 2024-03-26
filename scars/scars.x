@@ -1,4 +1,5 @@
 PROVIDE(_scars_idle_task_hook = _scars_default_idle_task_hook);
+PROVIDE(_user_exception_handler = _scars_default_user_exception_handler);
 
 PROVIDE(_scars_trace_task_new = _scars_default_trace_task_new);
 PROVIDE(_scars_trace_task_send_info = _scars_default_trace_task_send_info);

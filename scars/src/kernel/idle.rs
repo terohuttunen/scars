@@ -5,10 +5,10 @@ use crate::make_task;
 const IDLE_TASK_NAME: &'static str = "[idle]";
 const IDLE_TASK_PRIO: TaskPriority = 0;
 
-#[cfg(not(feature = "hal-std"))]
+#[cfg(not(feature = "khal-sim"))]
 const IDLE_TASK_STACK_SIZE: usize = 1024;
 
-#[cfg(feature = "hal-std")]
+#[cfg(feature = "khal-sim")]
 const IDLE_TASK_STACK_SIZE: usize = 1024 * 16;
 
 mod internal {

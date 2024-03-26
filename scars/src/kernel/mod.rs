@@ -15,7 +15,7 @@ use core::cell::UnsafeCell;
 pub(crate) use exception::{handle_runtime_error, RuntimeError};
 pub use priority::{any_interrupt_priority, any_task_priority};
 pub(crate) use priority::{AnyPriority, AtomicPriority, InterruptPriority, Priority, TaskPriority};
-use scars_hal::{ContextInfo, FlowController};
+use scars_khal::{ContextInfo, FlowController};
 pub use scheduler::print_tasks;
 pub(crate) use scheduler::Scheduler;
 pub(crate) use stack::Stack;
@@ -25,16 +25,14 @@ pub mod abort;
 pub mod atomic_list;
 pub(crate) mod hal;
 pub mod list;
-pub mod printk;
 pub mod syscall;
 pub(crate) mod tracing;
 
 #[no_mangle]
-pub fn start_kernel(hal: crate::kernel::hal::hal::HAL) -> ! {
+pub fn start_kernel(hal: crate::kernel::hal::kernel_hal::HAL) -> ! {
     //#[cfg(not(feature = "arch-std"))]
     //init_isr_stack_canary();
     crate::kernel::hal::init_hal(hal);
-    crate::kernel::printk::init();
 
     Scheduler::start();
 }

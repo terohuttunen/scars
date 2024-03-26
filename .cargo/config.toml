@@ -1,11 +1,17 @@
 [build]
-target = "riscv32imac-unknown-none-elf"
+#target = "riscv32imac-unknown-none-elf"
+#target = "thumbv7em-none-eabihf"
 
 [target.riscv32imac-unknown-none-elf]
-rustflags = ['-Clink-arg=-Thal/scars-hal-e310x/default.lds']
+rustflags = ['-Clink-arg=-Tkhal/scars-khal-e310x/default.lds']
 #runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -bios none -serial stdio -gdb tcp::1234 -S -kernel"
 runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -semihosting-config enable=on,chardev=stdio0 -bios none -chardev stdio,id=stdio0 -display none -gdb tcp::1234 -kernel"
 #runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -semihosting-config enable=on,chardev=stdio0 -bios none -chardev stdio,id=stdio0 -display none -gdb tcp::1234 -S -kernel"
+
+[target.thumbv7em-none-eabihf]
+rustflags = ['-Clink-arg=-Tkhal/scars-khal-stm32f4/default.lds', '-Cllvm-args=-float-abi=hard', '-Ctarget-cpu=cortex-m4', '-Ctarget-feature=+fpregs,+vfp4,+vfp4d16']
+#rustflags = ['-Clink-arg=-Tkhal/scars-khal-stm32f4/default.lds']
+runner = "probe-rs run --chip STM32F429ZITx"
 
 [env]
 MTIME_FREQ_HZ = "10_000_000"

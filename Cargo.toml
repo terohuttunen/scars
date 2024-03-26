@@ -1,5 +1,15 @@
 [workspace]
-members = ["app", "hal/scars-hal-e310x", "scars", "scars-hal", "scars-arch-riscv", "scars-test", "hal/scars-hal-std", "scars-macros"]
+members = [
+    "app",
+    "khal/scars-khal-e310x",
+    "khal/scars-khal-stm32f4",
+    "khal/scars-khal-sim",
+    "scars",
+    "scars-khal",
+    "scars-arch-riscv",
+    "scars-arch-cortex-m",
+    "scars-test",
+    "scars-macros"]
 resolver = "2"
 
 [profile.dev]
@@ -16,7 +26,7 @@ incremental = false
 lto = 'fat'
 opt-level = 3
 panic = "abort"
-debug-info = true
+debug = true
 
 [profile.test]
 codegen-units = 1

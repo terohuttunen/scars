@@ -1,77 +1,49 @@
 #![no_std]
 use bit_field::BitField;
 use core::arch::{asm, global_asm};
-use scars_hal::{ContextInfo, ExceptionInfo, FlowController, KernelCallbacks};
+use core::sync::atomic::{AtomicPtr, Ordering};
+use scars_khal::*;
 
 global_asm!(include_str!("trap.S"));
 
 extern "C" {
-    static _global_pointer: usize;
+    static CURRENT_TASK_CONTEXT: AtomicPtr<RISCVTrapFrame>;
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct RISCVTrapFrame {
-    // Register ABI-Name Description
-    // x0       zero     Hard-wired zero
-    // x1       ra       Return address
-    // x2       sp       Stack pointer
-    // x3       gp       Global pointer
-    // x4       tp       Thread pointer
-    // x5-7     t0-2     Temporaries
-    // x8       s0/fp    Saved register/frame pointer
-    // x9       s1       Saved register
-    // x10-11   a0-1     Function arguments/return values
-    // x12-17   a2-7     Function arguments
-    // x18-27   s2-11    Saved registers
-    // x28-31   t3-6     Temporaries
-    pub gp_regs: [usize; 32], // 0..31
+    // Offset Register ABI-Name Description                         Saver
+    // --     x0       zero     Hard-wired zero                     --
+    //          x0 is not saved in the context
+    // 0      x1       ra       Return address                      Caller
+    // 1      x2       sp       Stack pointer                       Callee
+    // --     x3       gp       Global pointer                      --
+    // --     x4       tp       Thread pointer                      --
+    //         x3 and x4 are not saved in the context
+    // 2-4    x5-7     t0-2     Temporaries                         Caller
+    // 5      x8       s0/fp    Saved register/frame pointer        Callee
+    // 6      x9       s1       Saved register                      Callee
+    // 7-8    x10-11   a0-1     Function arguments/return values    Caller
+    // 9-14   x12-17   a2-7     Function arguments                  Caller
+    // 15-24  x18-27   s2-11    Saved registers                     Callee
+    // 25-28  x28-31   t3-6     Temporaries                         Caller
+    gp_regs: [usize; 29],
+    pub pc: usize,      // Offset 29
+    pub mstatus: usize, // Offset 30
+    pub interrupt_threshold: usize,
     // f0-7     ft0-7    FP temporaries
     // f8-9     fs0-1    FP saved registers
     // f10-11   fa0-1    FP arguments/return values
     // f12-17   fa2-7    FP arguments
     // f18-27   fs2-11   FP saved registers
     // f28-31   ft8-11   FP temporaries
-    pub fpu_regs: [usize; 32], // 32..63
-    pub pc: usize,             // 64
-    pub mstatus: usize,        // 65
-}
-
-impl RISCVTrapFrame {
-    pub const fn new() -> RISCVTrapFrame {
-        RISCVTrapFrame {
-            gp_regs: [0; 32],
-            fpu_regs: [0; 32],
-            pc: 0,
-            mstatus: 0,
-        }
-    }
-
-    pub const fn new_with_init(
-        ra: usize,
-        sp: usize,
-        pc: usize,
-        gp: usize,
-        arg: usize,
-        mstatus: usize,
-    ) -> RISCVTrapFrame {
-        let mut context = RISCVTrapFrame {
-            gp_regs: [0; 32],
-            fpu_regs: [0; 32],
-            pc,
-            mstatus,
-        };
-        context.gp_regs[1] = ra;
-        context.gp_regs[2] = sp;
-        context.gp_regs[3] = gp;
-        context.gp_regs[10] = arg;
-        context
-    }
+    //pub fpu_regs: [usize; 32], // 32..63
 }
 
 impl ContextInfo for RISCVTrapFrame {
     fn stack_top_ptr(&self) -> *const u8 {
-        self.gp_regs[2] as *const u8
+        self.gp_regs[1] as *const u8
     }
 
     unsafe fn init(
@@ -89,29 +61,19 @@ impl ContextInfo for RISCVTrapFrame {
         // Set machine previous privilege bits to stay in machine mode
         mstatus.set_bits(11..13, riscv::register::mstatus::MPP::Machine as usize);
 
-        *context = RISCVTrapFrame::new_with_init(
-            main_fn as usize,
-            stack_ptr as usize,
-            main_fn as usize,
-            unsafe { &_global_pointer as *const usize as usize },
-            argument.map(|a| a as usize).unwrap_or(0),
-            mstatus,
-        )
+        (*context).gp_regs = [0; 29];
+        (*context).gp_regs[0] = abort as usize;
+        (*context).gp_regs[1] = stack_ptr as usize;
+        (*context).gp_regs[7] = argument.map(|a| a as usize).unwrap_or(0);
+        (*context).pc = main_fn as usize;
+        (*context).mstatus = mstatus;
+        (*context).interrupt_threshold = 0;
     }
 }
 
 #[no_mangle]
 // 'a not 'static because we might have context in stack from nested interrupt
-extern "C" fn kernel_trap_handler<'a>(
-    mepc: usize,
-    mtval: usize,
-    mcause: usize,
-    _hartid: usize,
-    _mstatus: usize,
-    context: &'a mut RISCVTrapFrame,
-    _nested: u32,
-) -> &'a RISCVTrapFrame {
-    RISCV32::save_additional_context();
+extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) {
     let is_async: bool = (mcause >> 31) & 1 == 1;
     let exception_code: usize = mcause & ((1 << 30) - 1);
     if is_async {
@@ -130,30 +92,30 @@ extern "C" fn kernel_trap_handler<'a>(
         match exception_code {
             // Environment call from U|S|M-mode
             8 | 9 | 11 => {
+                let context = unsafe { &mut *CURRENT_TASK_CONTEXT.load(Ordering::SeqCst) };
                 context.pc = mepc + 4;
                 // SAFETY: Called from interrupt handler with interrupts disabled
                 let rval = unsafe {
                     RISCV32::kernel_syscall_handler(
-                        context.gp_regs[17],
-                        context.gp_regs[10],
-                        context.gp_regs[11],
+                        context.gp_regs[14], // a7
+                        context.gp_regs[7],  // a0
+                        context.gp_regs[8],  // a1
                     )
                 };
                 context.gp_regs[10] = rval;
             }
             code => {
-                let kind = ExceptionKind::try_from(code).unwrap_or(ExceptionKind::Unknown);
-                let exception = RISCVException::new(kind, mtval, context);
+                let kind = FaultKind::try_from(code).unwrap_or(FaultKind::Unknown);
+                let context = unsafe { &mut *CURRENT_TASK_CONTEXT.load(Ordering::SeqCst) };
+                let exception = RISCFault::new(kind, mtval, context);
                 RISCV32::kernel_exception_handler(&exception);
             }
         }
     };
-    RISCV32::restore_additional_context();
-    RISCV32::current_task_context()
 }
 
 #[derive(PartialEq, Eq, Copy, Clone)]
-pub enum ExceptionKind {
+pub enum FaultKind {
     InstructionAddressMisaligned = 0,
     InstructionAddressFault = 1,
     IllegalInstruction = 2,
@@ -173,48 +135,48 @@ pub enum ExceptionKind {
     Unknown = 255,
 }
 
-impl TryFrom<usize> for ExceptionKind {
+impl TryFrom<usize> for FaultKind {
     type Error = ();
-    fn try_from(value: usize) -> Result<ExceptionKind, ()> {
+    fn try_from(value: usize) -> Result<FaultKind, ()> {
         match value {
-            0 => Ok(ExceptionKind::InstructionAddressMisaligned),
-            1 => Ok(ExceptionKind::InstructionAddressFault),
-            2 => Ok(ExceptionKind::IllegalInstruction),
-            3 => Ok(ExceptionKind::Breakpoint),
-            4 => Ok(ExceptionKind::LoadAddressMisaligned),
-            5 => Ok(ExceptionKind::LoadAccessFault),
-            6 => Ok(ExceptionKind::StoreAddressMisaligned),
-            7 => Ok(ExceptionKind::StoreAccessFault),
+            0 => Ok(FaultKind::InstructionAddressMisaligned),
+            1 => Ok(FaultKind::InstructionAddressFault),
+            2 => Ok(FaultKind::IllegalInstruction),
+            3 => Ok(FaultKind::Breakpoint),
+            4 => Ok(FaultKind::LoadAddressMisaligned),
+            5 => Ok(FaultKind::LoadAccessFault),
+            6 => Ok(FaultKind::StoreAddressMisaligned),
+            7 => Ok(FaultKind::StoreAccessFault),
             _ => Err(()),
         }
     }
 }
 
-impl ExceptionKind {
+impl FaultKind {
     pub fn name(&self) -> &'static str {
         match self {
-            ExceptionKind::InstructionAddressMisaligned => "InstructionAddressMisaligned",
-            ExceptionKind::InstructionAddressFault => "InstructionAddressFault",
-            ExceptionKind::IllegalInstruction => "IllegalInstruction",
-            ExceptionKind::Breakpoint => "Breakpoint",
-            ExceptionKind::LoadAddressMisaligned => "LoadAddressMisaligned",
-            ExceptionKind::LoadAccessFault => "LoadAccessFault",
-            ExceptionKind::StoreAddressMisaligned => "StoreAddressMisaligned",
-            ExceptionKind::StoreAccessFault => "StoreAccessFault",
-            ExceptionKind::Unknown => "Unknown",
+            FaultKind::InstructionAddressMisaligned => "InstructionAddressMisaligned",
+            FaultKind::InstructionAddressFault => "InstructionAddressFault",
+            FaultKind::IllegalInstruction => "IllegalInstruction",
+            FaultKind::Breakpoint => "Breakpoint",
+            FaultKind::LoadAddressMisaligned => "LoadAddressMisaligned",
+            FaultKind::LoadAccessFault => "LoadAccessFault",
+            FaultKind::StoreAddressMisaligned => "StoreAddressMisaligned",
+            FaultKind::StoreAccessFault => "StoreAccessFault",
+            FaultKind::Unknown => "Unknown",
         }
     }
 }
 
-pub struct RISCVException {
-    kind: ExceptionKind,
+pub struct RISCFault {
+    kind: FaultKind,
     mtval: usize,
     frame: *const RISCVTrapFrame,
 }
 
-impl RISCVException {
-    pub fn new(kind: ExceptionKind, mtval: usize, frame: &RISCVTrapFrame) -> RISCVException {
-        RISCVException {
+impl RISCFault {
+    pub fn new(kind: FaultKind, mtval: usize, frame: &RISCVTrapFrame) -> RISCFault {
+        RISCFault {
             kind,
             mtval,
             frame: frame as *const RISCVTrapFrame,
@@ -222,7 +184,7 @@ impl RISCVException {
     }
 }
 
-impl ExceptionInfo<RISCVTrapFrame> for RISCVException {
+impl FaultInfo<RISCVTrapFrame> for RISCFault {
     fn code(&self) -> usize {
         self.kind as usize
     }
@@ -232,7 +194,7 @@ impl ExceptionInfo<RISCVTrapFrame> for RISCVException {
     }
 
     fn address(&self) -> usize {
-        if self.kind == ExceptionKind::Breakpoint {
+        if self.kind == FaultKind::Breakpoint {
             // Breakpoint sets mtval to zero, but pc is the address of interest
             unsafe { *self.frame }.pc
         } else {
@@ -251,22 +213,27 @@ extern "C" {
 
 pub struct RISCV32 {}
 
+fn abort() -> ! {
+    // Abort by disabling interrupts and then waiting for an interrupt
+    unsafe {
+        riscv::interrupt::disable();
+        loop {
+            riscv::asm::wfi();
+        }
+    }
+}
+
 impl FlowController for RISCV32 {
     type Context = RISCVTrapFrame;
-    type Exception = RISCVException;
+    type Fault = RISCFault;
 
     fn start_first_task(idle_context: *mut Self::Context) -> ! {
         unsafe { _start_first_task(idle_context as *mut _) }
     }
 
+    #[inline(always)]
     fn abort() -> ! {
-        // Abort by disabling interrupts and then waiting for an interrupt
-        unsafe {
-            riscv::interrupt::disable();
-            loop {
-                riscv::asm::wfi();
-            }
-        }
+        crate::abort()
     }
 
     fn breakpoint() {

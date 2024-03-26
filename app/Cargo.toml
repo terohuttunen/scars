@@ -14,11 +14,10 @@ doctest = false
 test = false
 
 [dependencies]
-#libc = { version = "0.2.150", optional = true }
-#scars = { path = "../scars", features = ["tracing"] }
-scars = { path = "../scars" }
+scars = { path = "../scars", optional = true }
 
 [features]
-default = ["hal-e310x"]
-hal-e310x = ["scars/hal-e310x"]
-hal-std = ["scars/hal-std"]
+default = []
+khal-e310x = ["scars/khal-e310x"]
+khal-sim = ["scars/khal-sim"]
+khal-stm32f4 = ["scars/khal-stm32f4"]

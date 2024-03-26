@@ -2,7 +2,7 @@ use crate::kernel::{
     hal::{disable_alarm_interrupt, enable_alarm_interrupt},
     interrupt::{
         in_interrupt, interrupt_context, restore_current_interrupt, switch_current_interrupt,
-        uncritical_section, InterruptControlBlock,
+        InterruptControlBlock,
     },
     scheduler::Scheduler,
 };
@@ -20,13 +20,13 @@ pub(crate) unsafe fn _private_kernel_wakeup_handler() {
     // Prevent nested wakeup interrupts. Only one wakeup interrupt
     // should be ongoing at any given time in order to not overflow the
     // ISR stack.
-    disable_alarm_interrupt();
+    //disable_alarm_interrupt();
 
-    interrupt_context(TIMER_INTERRUPT_HANDLER.get(), |cs| {
-        Scheduler::wakeup_scheduler_isr(cs);
+    interrupt_context(TIMER_INTERRUPT_HANDLER.get(), || {
+        Scheduler::wakeup_scheduler_isr();
     });
 
     // Enable wakeups only after exiting interrupt context, so that sections
     // that enable interrupts are executed without triggering another wakeup.
-    enable_alarm_interrupt();
+    //enable_alarm_interrupt();
 }

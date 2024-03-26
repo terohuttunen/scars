@@ -41,24 +41,6 @@ impl<const CEILING: AnyPriority> WaitQueue<CEILING> {
 
     // Only task can wait in queue. Runtime error if called from interrupt handler.
     pub fn wait(&self) {
-        if in_interrupt() {
-            crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
-        }
-        // Atomically insert current task to wait-list and execute task_wait syscall,
-        // to prevent notifications between inserting to list and blocking in kernel.
-        // Insertion to wait-list is done within a CeilingLock that does not prevent
-        // higher priority tasks or interrupts from executing. Higher than ceiling
-        // priority tasks and interrupts are not allowed to access the wait-list.
-        atomic_pair_lock::<CeilingLock<CEILING>, InterruptLock, _, _, _>(
-            |ckey| {
-                let mut list = self.list.borrow_mut(ckey);
-                let current_task = Scheduler::current_task();
-                list.insert_after_condition(current_task, |queue_task, task| {
-                    queue_task.active_priority() >= task.active_priority()
-                });
-            },
-            |_, _, _| {},
-            |ikey, _| syscall::task_wait(ikey),
-        )
+        syscall::task_wait(self.list.as_ptr(), CEILING);
     }
 }

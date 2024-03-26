@@ -1,5 +1,5 @@
 [package]
-name = "scars-hal-std"
+name = "scars-arch-cortex-m"
 version = "0.1.0"
 edition = "2021"
 authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
@@ -12,7 +12,6 @@ test = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bit_field = "0.10.2"
-libc = { version = "0.2.151", path = "../../../libc" }
-scars-hal = { version = "0.1.0", path = "../../scars-hal" }
-
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core", "inline-asm"] }
+cortex-m-rt = "0.7.3"
+scars-khal = { version = "0.1.0", path = "../scars-khal" }

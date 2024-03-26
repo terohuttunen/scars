@@ -12,9 +12,9 @@ use scars_test;
 
 scars_test::integration_test!();
 
-#[cfg(not(feature = "hal-std"))]
+#[cfg(not(feature = "khal-sim"))]
 const STACK_SIZE: usize = 1024;
-#[cfg(feature = "hal-std")]
+#[cfg(feature = "khal-sim")]
 const STACK_SIZE: usize = 16384;
 
 // Lower priority task

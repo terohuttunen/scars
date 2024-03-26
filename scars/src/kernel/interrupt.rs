@@ -13,7 +13,7 @@ use crate::sync::{
     KeyToken, Lock,
 };
 pub use critical_section::CriticalSection;
-use scars_hal::{FlowController, InterruptController};
+use scars_khal::*;
 
 use crate::kernel::hal::{
     claim_interrupt, complete_interrupt, disable_interrupts, enable_interrupt, enable_interrupts,
@@ -82,7 +82,7 @@ pub(crate) fn isr_stack_canary() -> &'static StackCanary {
 #[repr(C)]
 pub struct InterruptControlBlock {
     intnum: InterruptNumber,
-    base_priority: Priority,
+    pub base_priority: Priority,
 
     closure_ptr: *const (),
 
@@ -277,16 +277,19 @@ pub struct InterruptVector {
     pub icb_ptr: *const InterruptControlBlock,
 }
 
-extern "C" {
-    static __EXTERNAL_INTERRUPTS:
-        LockedCell<[InterruptVector; MAX_INTERRUPT_NUMBER + 1], InterruptLock>;
-}
+static INTERRUPT_VECTORS: LockedCell<[InterruptVector; MAX_INTERRUPT_NUMBER + 1], InterruptLock> =
+    LockedCell::new(
+        [InterruptVector {
+            handler_ptr: core::ptr::null(),
+            icb_ptr: core::ptr::null(),
+        }; MAX_INTERRUPT_NUMBER + 1],
+    );
 
 pub(crate) fn get_interrupt_vector(
     number: InterruptNumber,
     key: InterruptLockKey<'_>,
 ) -> InterruptVector {
-    unsafe { __EXTERNAL_INTERRUPTS.as_array_of_cells()[number as usize].get(key) }
+    INTERRUPT_VECTORS.as_array_of_cells()[number as usize].get(key)
 }
 
 pub(crate) fn set_interrupt_vector(
@@ -294,22 +297,17 @@ pub(crate) fn set_interrupt_vector(
     key: InterruptLockKey<'_>,
     vector: InterruptVector,
 ) {
-    unsafe { __EXTERNAL_INTERRUPTS.as_array_of_cells()[number as usize].set(key, vector) }
+    INTERRUPT_VECTORS.as_array_of_cells()[number as usize].set(key, vector)
 }
-
-#[allow(unsafe_code)]
-#[no_mangle]
-pub unsafe extern "C" fn DefaultHandler() {}
 
 #[no_mangle]
 pub(crate) unsafe fn _private_kernel_interrupt_handler() {
-    let interrupt_number = claim_interrupt();
+    let claim = claim_interrupt();
+    let interrupt_number = claim.get_interrupt_number();
 
-    if interrupt_number > MAX_INTERRUPT_NUMBER {
+    if interrupt_number > MAX_INTERRUPT_NUMBER as u16 {
         panic!("unexpected interrupt (IRQn={})", interrupt_number);
     }
-
-    let interrupt_prio = get_interrupt_priority(interrupt_number as u16);
 
     let cs = unsafe { InterruptLockKey::new() };
 
@@ -318,26 +316,11 @@ pub(crate) unsafe fn _private_kernel_interrupt_handler() {
         unsafe { core::mem::transmute(vector.handler_ptr) };
     let icb_ptr = vector.icb_ptr as *mut _;
 
-    interrupt_context(icb_ptr, |_cs| {
-        // Enable interrupts up to given priority threshold for the duration of the interrupt
-        // handler to allow nested higher priority interrupts.
-        let old_prio = get_interrupt_threshold();
-        set_interrupt_threshold(interrupt_prio);
-
-        enable_interrupts();
+    interrupt_context(icb_ptr, || {
         handler_fn(icb_ptr);
-        disable_interrupts();
-        // Interrupts are kept disabled until returning from the trap handler, in order to
-        // avoid nesting interrupts of the same priority after interrupt is completed and
-        // priority threshold restored. The critical section token 'cs' is again valid.
-
-        // Restore interrupt threshold with interrupts disabled
-        let _ = set_interrupt_threshold(old_prio);
-
-        // Complete interrupt after interrupts have been disabled again so that completion
-        // will not trigger new interrupt before the interrupt handler returns.
-        complete_interrupt(interrupt_number as u16);
     });
+
+    complete_interrupt(claim);
 }
 
 #[inline(always)]
@@ -350,22 +333,20 @@ pub fn in_interrupt() -> bool {
 #[inline]
 pub unsafe fn interrupt_context(
     icb_ptr: *mut InterruptControlBlock,
-    f: impl FnOnce(InterruptLockKey),
+    f: impl FnOnce(),
 ) {
     let prev_icb = switch_current_interrupt(icb_ptr);
 
-    let key = unsafe { InterruptLockKey::new() };
-
     tracing::isr_enter();
 
-    f(key);
+    f();
 
     // If interrupt handler has woken up higher priority task, a reschedule
     // to higher-priority task is needed instead of returning to the current
     // task. Wait until lowest priority nested interrupt returns.
     if prev_icb.is_null() {
         tracing::isr_exit_to_scheduler();
-        Scheduler::execute_pending_task_switch(key);
+        Scheduler::execute_pending_task_switch();
     } else {
         tracing::isr_exit();
     }
@@ -373,18 +354,3 @@ pub unsafe fn interrupt_context(
     restore_current_interrupt(prev_icb);
 }
 
-#[inline]
-pub fn uncritical_section<R>(_ikey: InterruptLockKey<'_>, f: impl FnOnce() -> R) -> R {
-    enable_interrupts();
-
-    let rval = f();
-
-    disable_interrupts();
-    rval
-}
-
-#[no_mangle]
-fn _save_additional_context() {}
-
-#[no_mangle]
-fn _restore_additional_context() {}

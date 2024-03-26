@@ -6,12 +6,12 @@ use crate::kernel::{
     atomic_list::AtomicQueue,
     hal::{
         disable_alarm_interrupt, disable_interrupts, enable_alarm_interrupt, enable_interrupts,
-        get_interrupt_threshold, set_alarm, set_interrupt_threshold, start_first_task, Context,
+        set_alarm, start_first_task, Context,
     },
     handle_runtime_error,
     interrupt::{
         current_interrupt, in_interrupt, init_isr_stack_canary, set_ceiling_threshold,
-        uncritical_section, InterruptControlBlock,
+        InterruptControlBlock,
     },
     priority::{any_interrupt_priority, AnyPriority, Priority},
     stack::StackCanary,
@@ -28,8 +28,8 @@ use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use scars_hal::{ContextInfo, FlowController};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering, AtomicPtr};
+use scars_khal::{ContextInfo, FlowController};
 
 pub struct ExecStateTag {}
 
@@ -112,6 +112,9 @@ static PENDING_RESCHEDULE: AtomicRescheduleKind = AtomicRescheduleKind::new(Resc
 static SCHEDULER: SyncUnsafeCell<MaybeUninit<LockedRefCell<Scheduler, PreemptLock>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
+#[no_mangle]
+static CURRENT_TASK_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
+
 pub struct Scheduler {
     // Task execution state is either ready, blocked, or pending resume
     // Tasks that are ready to run are in the ready_queue sorted in descending
@@ -147,7 +150,8 @@ impl Scheduler {
         unsafe {
             let _ = (&mut *SCHEDULER.get()).write(LockedRefCell::new(Scheduler::new(idle_task)));
         }
-        let idle_context = Scheduler::current_task_context();
+        enable_alarm_interrupt();
+        let idle_context = idle_task.context.as_ptr() as *mut _;
         start_first_task(idle_context)
     }
 
@@ -338,7 +342,6 @@ impl Scheduler {
 
     fn switch_task(
         &mut self,
-        _pkey: PreemptLockKey<'_>,
         new: &'static TaskControlBlock,
     ) -> &'static TaskControlBlock {
         // Whenever current task is switched out, check its stack canary for
@@ -346,19 +349,18 @@ impl Scheduler {
         self.check_stack_overflow();
         //printkln!("[scheduler] switching to task {}", new.name);
         new.state.set(TaskState::Running);
-        let new_prio = new.active_priority();
+
         let new_task_ref = new.as_ref();
         if new.task_id == IDLE_TASK_ID {
             tracing::system_idle();
         }
+
+        CURRENT_TASK_CONTEXT.store(new.context.as_ptr() as *mut _, Ordering::SeqCst);
         let old = core::mem::replace(&mut self.current_task, new);
+
         tracing::task_exec_end(old.as_ref());
         tracing::task_exec_begin(new_task_ref);
         old.state.set(TaskState::Ready);
-        // Running task has changed, current priority threshold is updated.
-        // If a task is allowed to run, then it has higher priority than
-        // any locks held currently.
-        set_ceiling_threshold(new_prio);
 
         old
     }
@@ -390,7 +392,7 @@ impl Scheduler {
     }
 
     // Start scheduler in ISR
-    pub(crate) fn start_isr(_ikey: InterruptLockKey<'_>) {
+    pub(crate) fn start_isr() {
         // Scheduler has already been initialized with the idle task
         // when it was created. When kernel returns from trap handler,
         // it will return to the idle task.
@@ -443,7 +445,7 @@ impl Scheduler {
         }
 
         if let Some(ready) = self.choose_task_to_run(kind) {
-            let previous_current = self.switch_task(pkey, ready);
+            let previous_current = self.switch_task(ready);
             self.insert_to_ready_queue(previous_current);
         }
     }
@@ -471,15 +473,13 @@ impl Scheduler {
     }
 
     // ISR context
-    pub(crate) fn execute_pending_task_switch(ikey: InterruptLockKey<'_>) {
+    pub(crate) fn execute_pending_task_switch() {
         match PENDING_RESCHEDULE.take() {
             RescheduleKind::None => (),
             kind => {
                 if let Err(_) = PreemptLock::try_with(|pkey| {
-                    uncritical_section(ikey, || {
-                        let mut scheduler = Scheduler::borrow_mut(pkey);
-                        scheduler.reschedule(pkey, kind);
-                    })
+                    let mut scheduler = Scheduler::borrow_mut(pkey);
+                    scheduler.reschedule(pkey, kind);
                 }) {
                     // Task or lower priority interrupt handler is holding the lock.
                     // Postpone task switch execution to lock release.
@@ -489,7 +489,7 @@ impl Scheduler {
         }
     }
 
-    pub(crate) fn start_task_isr(ikey: InterruptLockKey<'_>, task: &'static mut TaskControlBlock) {
+    pub(crate) fn start_task_isr(task: &'static mut TaskControlBlock) {
         if task.state.get() != TaskState::Stopped {
             panic!("Task already running");
         }
@@ -497,9 +497,7 @@ impl Scheduler {
         tracing::task_new(task.as_ref());
 
         if let Err(_) = PreemptLock::try_with(|pkey| {
-            uncritical_section(ikey, || {
-                Scheduler::resume_task(pkey, task);
-            })
+            Scheduler::resume_task(pkey, task);
         }) {
             task.state.set(TaskState::PendingReady);
             PENDING_RESUME.push_back(task);
@@ -508,42 +506,56 @@ impl Scheduler {
 
     // Pre-emption
     // ISR context
-    pub(crate) fn wakeup_scheduler_isr(_ikey: InterruptLockKey<'_>) {
+    pub(crate) fn wakeup_scheduler_isr() {
         Scheduler::set_pending_reschedule(RescheduleKind::YieldToHigher);
 
         // Maybe not needed because wakeup interrupt is disabled
-        set_alarm(u64::MAX);
+        //set_alarm(u64::MAX);
     }
 
     // Yield current task
     // ISR context
-    pub(crate) fn yield_current_task_isr(_ikey: InterruptLockKey<'_>) {
+    pub(crate) fn yield_current_task_isr() {
         // Yielding can switch to another task with equal priority
         Scheduler::set_pending_reschedule(RescheduleKind::YieldToEqualOrHigher);
     }
 
     // Blocking
     // ISR context
-    pub(crate) fn wait_current_task_isr(ikey: InterruptLockKey<'_>) {
+    pub(crate) fn wait_current_task_isr(
+        wait_list: *mut LinkedList<TaskControlBlock, WaitQueueTag>,
+        ceiling: AnyPriority,
+    ) {
         if let Err(_) = PreemptLock::try_with(|pkey| {
-            // To allow nested interrupts, enable interrupts while rescheduling.
-            uncritical_section(ikey, || {
-                let mut scheduler = Scheduler::borrow_mut(pkey);
-                if Scheduler::current_task().task_id == scheduler.idle_task.task_id {
-                    panic!("Idle task cannot block");
-                }
+            let mut scheduler = Scheduler::borrow_mut(pkey);
 
-                match scheduler.choose_task_to_run(RescheduleKind::None) {
-                    Some(ready) => {
-                        let blocked_task = scheduler.switch_task(pkey, ready);
-                        scheduler.block_task(pkey, blocked_task, None);
-                    }
-                    None => {
-                        // There should always be the idle task to run
-                        unreachable!()
-                    }
+            if Scheduler::current_task().task_id == scheduler.idle_task.task_id {
+                panic!("Idle task cannot block");
+            }
+
+            match scheduler.choose_task_to_run(RescheduleKind::None) {
+                Some(ready) => {
+                    let icb = unsafe { current_interrupt().unwrap().as_ref() };
+                    let blocked_task = scheduler.switch_task(ready);
+
+                    // Protect access to wait_list with priority lock.
+                    let old_prio = icb.raise_section_lock_priority(Priority::any(ceiling));
+
+                    // SAFETY: list is accessed within raised priority section.
+                    let wait_list = unsafe { &mut *wait_list };
+                    wait_list.insert_after_condition(blocked_task, |queue_task, task| {
+                        queue_task.active_priority() >= task.active_priority()
+                    });
+
+                    icb.set_section_lock_priority(old_prio);
+
+                    scheduler.block_task(pkey, blocked_task, None);
                 }
-            })
+                None => {
+                    // There should always be the idle task to run
+                    unreachable!()
+                }
+            }
         }) {
             // Error: Task is blocking in a wait list while it holds the preempt lock.
             unreachable!()
@@ -552,26 +564,23 @@ impl Scheduler {
 
     // Delay
     // ISR context
-    pub(crate) fn delay_until_isr(ikey: InterruptLockKey<'_>, wakeup_time: u64) {
+    pub(crate) fn delay_until_isr(wakeup_time: u64) {
         if let Err(_) = PreemptLock::try_with(|pkey| {
-            // To allow nested interrupts, enable interrupts while rescheduling.
-            uncritical_section(ikey, || {
-                let mut scheduler = Scheduler::borrow_mut(pkey);
-                if Scheduler::current_task().task_id == scheduler.idle_task.task_id {
-                    panic!("Idle task cannot block");
-                }
+            let mut scheduler = Scheduler::borrow_mut(pkey);
+            if Scheduler::current_task().task_id == scheduler.idle_task.task_id {
+                panic!("Idle task cannot block");
+            }
 
-                match scheduler.choose_task_to_run(RescheduleKind::None) {
-                    Some(ready) => {
-                        let previous_current = scheduler.switch_task(pkey, ready);
-                        scheduler.block_task(pkey, previous_current, Some(wakeup_time));
-                    }
-                    None => {
-                        // There should always be the idle task to run
-                        unreachable!()
-                    }
+            match scheduler.choose_task_to_run(RescheduleKind::None) {
+                Some(ready) => {
+                    let previous_current = scheduler.switch_task(ready);
+                    scheduler.block_task(pkey, previous_current, Some(wakeup_time));
                 }
-            })
+                None => {
+                    // There should always be the idle task to run
+                    unreachable!()
+                }
+            }
         }) {
             // Error: Task is trying to sleep while it holds the preempt lock.
             unreachable!()
@@ -579,8 +588,9 @@ impl Scheduler {
     }
 
     pub(crate) fn tasks(&self) -> impl Iterator<Item = &TaskControlBlock> {
+        Some(self.idle_task).into_iter().chain(
         Some(self.current_task)
-            .into_iter()
+            .into_iter())
             .chain(self.ready_queue.cursor_front())
             .chain(self.blocked_list.cursor_front())
     }

@@ -1,10 +1,20 @@
 #![no_std]
 pub mod callbacks;
 pub use callbacks::KernelCallbacks;
+use core::sync::atomic::AtomicPtr;
+
+extern "C" {
+    pub static CURRENT_TASK_CONTEXT: AtomicPtr<*const ()>;
+}
+
+pub trait GetInterruptNumber {
+    fn get_interrupt_number(&self) -> u16;
+}
 
 pub trait InterruptController {
     const MAX_INTERRUPT_PRIORITY: usize;
     const MAX_INTERRUPT_NUMBER: usize;
+    type InterruptClaim: GetInterruptNumber;
 
     fn get_interrupt_priority(&self, interrupt_number: u16) -> u8;
 
@@ -14,9 +24,9 @@ pub trait InterruptController {
 
     fn disable_interrupts(&self);
 
-    fn claim_interrupt(&self) -> usize;
+    fn claim_interrupt(&self) -> Self::InterruptClaim;
 
-    fn complete_interrupt(&self, interrupt_number: u16);
+    fn complete_interrupt(&self, claim: Self::InterruptClaim);
 
     fn enable_interrupt(&self, interrupt_number: u16);
 
@@ -49,7 +59,7 @@ pub trait AlarmClockController {
     fn disable_wakeup(&self);
 }
 
-pub trait ExceptionInfo<Context> {
+pub trait FaultInfo<Context> {
     fn code(&self) -> usize;
 
     fn name(&self) -> &'static str;
@@ -74,7 +84,7 @@ pub trait ContextInfo {
 
 pub trait FlowController {
     type Context: ContextInfo;
-    type Exception: ExceptionInfo<Self::Context>;
+    type Fault: FaultInfo<Self::Context>;
 
     fn start_first_task(idle_context: *mut Self::Context) -> !;
 

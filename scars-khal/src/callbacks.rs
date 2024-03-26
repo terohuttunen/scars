@@ -11,10 +11,6 @@ mod private {
         pub fn _private_hardware_exception_handler(exception: *const u8) -> !;
 
         pub fn _private_current_task_context() -> *const ();
-
-        pub fn _save_additional_context();
-
-        pub fn _restore_additional_context();
     }
 }
 
@@ -47,16 +43,6 @@ pub trait KernelCallbacks<Context, Exception> {
     fn current_task_context() -> &'static Context {
         unsafe { &*(private::_private_current_task_context() as *const Context) }
     }
-
-    #[inline(always)]
-    fn save_additional_context() {
-        unsafe { private::_save_additional_context() }
-    }
-
-    #[inline(always)]
-    fn restore_additional_context() {
-        unsafe { private::_restore_additional_context() }
-    }
 }
 
-impl<T> KernelCallbacks<T::Context, T::Exception> for T where T: FlowController {}
+impl<T> KernelCallbacks<T::Context, T::Fault> for T where T: FlowController {}

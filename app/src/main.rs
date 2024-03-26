@@ -10,14 +10,14 @@ use scars::{kernel::print_tasks, make_channel, make_interrupt_handler, make_shar
 use scars::{AnyPriority, Priority, Task, TaskRef};
 
 // Simulator needs bigger stacks
-#[cfg(feature = "hal-std")]
+#[cfg(feature = "khal-sim")]
 const APP_TASK_STACK_SIZE: usize = 2048 * 8;
-#[cfg(feature = "hal-std")]
+#[cfg(feature = "khal-sim")]
 const IO_TASK_STACK_SIZE: usize = 2048 * 8;
 
-#[cfg(not(feature = "hal-std"))]
+#[cfg(not(feature = "khal-sim"))]
 const APP_TASK_STACK_SIZE: usize = 2048;
-#[cfg(not(feature = "hal-std"))]
+#[cfg(not(feature = "khal-sim"))]
 const IO_TASK_STACK_SIZE: usize = 2048;
 
 const UART1_INTERRUPT_PRIO: u8 = 1;
@@ -49,12 +49,12 @@ fn trace_system_idle() {
 */
 
 #[cfg_attr(
-    feature = "hal-std",
+    feature = "khal-sim",
     scars::entry(name = "main", priority = 1, stack_size = 16384)
 )]
 #[cfg_attr(
-    not(feature = "hal-std"),
-    scars::entry(name = "main", priority = 1, stack_size = 1024)
+    not(feature = "khal-sim"),
+    scars::entry(name = "main", priority = 1, stack_size = 4096)
 )]
 pub fn main() {
     scars::printkln!("In main, starting tasks...");
@@ -63,7 +63,7 @@ pub fn main() {
 
     let producer_task = make_task!("producer", APP_TASK_PRIO, APP_TASK_STACK_SIZE);
     let consumer_task = make_task!("consumer", IO_TASK_PRIO, IO_TASK_STACK_SIZE);
-    let uart1_handler = make_interrupt_handler!(pac::Interrupt::UART1, UART1_INTERRUPT_PRIO);
+    //let uart1_handler = make_interrupt_handler!(pac::Interrupt::USART1, UART1_INTERRUPT_PRIO);
     let (sender, receiver) = make_channel!(u64, CHANNEL_CAPACITY, CHANNEL_PRIO);
 
     let sender2 = sender.clone();
@@ -89,11 +89,13 @@ pub fn main() {
         print_tasks();
     });
 
+    /*
     uart1_handler.attach(move || {
         count += 1;
         let _ = sender2.try_send(count);
     });
     uart1_handler.enable_interrupt();
+    */
 
     scars::printkln!("Tasks started");
     loop {

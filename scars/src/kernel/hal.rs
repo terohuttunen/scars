@@ -1,32 +1,36 @@
 use crate::kernel::priority::InterruptPriority;
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
-use scars_hal::*;
+use scars_khal::*;
 
-#[cfg(feature = "hal-e310x")]
-pub(crate) use scars_hal_e310x as hal;
-#[cfg(feature = "hal-std")]
-pub(crate) use scars_hal_std as hal;
+#[cfg(feature = "khal-e310x")]
+pub(crate) use scars_khal_e310x as kernel_hal;
+#[cfg(feature = "khal-sim")]
+pub(crate) use scars_khal_sim as kernel_hal;
+#[cfg(feature = "khal-stm32f4")]
+pub(crate) use scars_khal_stm32f4 as kernel_hal;
 
-pub use hal::pac;
+pub use kernel_hal::pac;
 
-pub type Context = <hal::HAL as FlowController>::Context;
-pub type Exception = <hal::HAL as FlowController>::Exception;
+pub type Context = <kernel_hal::HAL as FlowController>::Context;
+pub type Fault = <kernel_hal::HAL as FlowController>::Fault;
 
-pub const MAX_INTERRUPT_NUMBER: usize = <hal::HAL as InterruptController>::MAX_INTERRUPT_NUMBER;
-pub const MAX_INTERRUPT_PRIORITY: usize = <hal::HAL as InterruptController>::MAX_INTERRUPT_PRIORITY;
-pub(crate) const TICK_FREQ_HZ: u64 = <hal::HAL as AlarmClockController>::TICK_FREQ_HZ;
+pub const MAX_INTERRUPT_NUMBER: usize =
+    <kernel_hal::HAL as InterruptController>::MAX_INTERRUPT_NUMBER;
+pub const MAX_INTERRUPT_PRIORITY: usize =
+    <kernel_hal::HAL as InterruptController>::MAX_INTERRUPT_PRIORITY;
+pub(crate) const TICK_FREQ_HZ: u64 = <kernel_hal::HAL as AlarmClockController>::TICK_FREQ_HZ;
 
 pub struct Hal {
-    hal: SyncUnsafeCell<MaybeUninit<hal::HAL>>,
+    hal: SyncUnsafeCell<MaybeUninit<kernel_hal::HAL>>,
 }
 
 impl Hal {
-    fn get(&self) -> *mut MaybeUninit<hal::HAL> {
+    fn get(&self) -> *mut MaybeUninit<kernel_hal::HAL> {
         self.hal.get()
     }
 
-    fn instance() -> &'static hal::HAL {
+    fn instance() -> &'static kernel_hal::HAL {
         unsafe { (&*HAL.get()).assume_init_ref() }
     }
 }
@@ -35,7 +39,7 @@ static HAL: Hal = Hal {
     hal: SyncUnsafeCell::new(MaybeUninit::uninit()),
 };
 
-pub(crate) fn init_hal(hal: hal::HAL) {
+pub(crate) fn init_hal(hal: kernel_hal::HAL) {
     unsafe {
         (&mut *HAL.get()).write(hal);
     }
@@ -91,14 +95,14 @@ pub fn disable_interrupts() {
 
 #[allow(dead_code)]
 #[inline(always)]
-pub(crate) fn claim_interrupt() -> usize {
+pub(crate) fn claim_interrupt() -> <kernel_hal::HAL as InterruptController>::InterruptClaim {
     Hal::instance().claim_interrupt()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
-pub(crate) fn complete_interrupt(interrupt_number: u16) {
-    Hal::instance().complete_interrupt(interrupt_number)
+pub(crate) fn complete_interrupt(claim: <kernel_hal::HAL as InterruptController>::InterruptClaim) {
+    Hal::instance().complete_interrupt(claim)
 }
 
 #[allow(dead_code)]
@@ -146,29 +150,29 @@ pub(crate) fn restore(restore_state: bool) {
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn start_first_task(idle_context: *mut Context) -> ! {
-    <hal::HAL as FlowController>::start_first_task(idle_context)
+    <kernel_hal::HAL as FlowController>::start_first_task(idle_context)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn abort() -> ! {
-    <hal::HAL as FlowController>::abort()
+    <kernel_hal::HAL as FlowController>::abort()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn breakpoint() {
-    <hal::HAL as FlowController>::breakpoint()
+    <kernel_hal::HAL as FlowController>::breakpoint()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn idle() {
-    <hal::HAL as FlowController>::idle()
+    <kernel_hal::HAL as FlowController>::idle()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn syscall(id: usize, arg0: usize, arg1: usize) -> usize {
-    <hal::HAL as FlowController>::syscall(id, arg0, arg1)
+    <kernel_hal::HAL as FlowController>::syscall(id, arg0, arg1)
 }

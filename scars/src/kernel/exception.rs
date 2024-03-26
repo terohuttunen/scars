@@ -1,22 +1,20 @@
 use crate::abort;
-use crate::kernel::hal::{Context, Exception as HardwareException};
+use crate::kernel::hal::{Context, Fault};
 use crate::printkln;
 use core::panic::{Location, PanicInfo};
-use scars_hal::{ExceptionInfo, FlowController};
+use scars_khal::{FaultInfo, FlowController};
 
 #[macro_export]
 macro_rules! runtime_error {
-    ($kind:expr) => {
-        $crate::sync::InterruptLock::with(|ikey| {
-            use $crate::kernel::exception::RuntimeError;
-            $crate::kernel::syscall::runtime_error(ikey, $kind, ::core::panic::Location::caller());
-        })
-    };
+    ($kind:expr) => {{
+        use $crate::kernel::exception::RuntimeError;
+        $crate::kernel::syscall::runtime_error($kind, ::core::panic::Location::caller());
+    }};
 }
 
 pub enum Exception<'a> {
     Panic(&'a PanicInfo<'a>),
-    HardwareException(&'a HardwareException),
+    Fault(&'a Fault),
     RuntimeError(&'a RuntimeError),
 }
 
@@ -82,7 +80,7 @@ impl RuntimeError {
 }
 
 pub fn handle_runtime_error(error: RuntimeError, location: &Location<'static>) -> ! {
-    #[cfg(not(feature = "hal-std"))]
+    #[cfg(not(feature = "khal-sim"))]
     unsafe {
         _user_exception_handler(Exception::RuntimeError(&error))
     };
@@ -91,32 +89,37 @@ pub fn handle_runtime_error(error: RuntimeError, location: &Location<'static>) -
 }
 
 #[no_mangle]
-pub unsafe fn _private_hardware_exception_handler(hardware_exception: *const u8) -> ! {
-    let exception = unsafe { &*(hardware_exception as *const HardwareException) };
+pub unsafe fn _private_hardware_exception_handler(fault: *const u8) -> ! {
+    let fault = unsafe { &*(fault as *const Fault) };
 
-    #[cfg(not(feature = "hal-std"))]
+    #[cfg(not(feature = "khal-sim"))]
     unsafe {
-        _user_exception_handler(Exception::HardwareException(exception))
+        _user_exception_handler(Exception::Fault(fault))
     };
 
     printkln!(
-        "Unrecoverable exception: {} at 0x{:x?}",
-        exception.name(),
-        exception.address(),
+        "Unrecoverable fault: {} at 0x{:x?}",
+        fault.name(),
+        fault.address(),
     );
-    printkln!("{:?}", exception.context());
+    printkln!("{:?}", fault.context());
     abort()
 }
+
+#[no_mangle]
+fn _scars_default_user_exception_handler(_exception: Exception) {}
 
 extern "Rust" {
     fn _user_exception_handler(exception: Exception);
 }
 
-#[cfg(not(feature = "hal-std"))]
+#[cfg(not(feature = "khal-sim"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    printkln!("Panic handler");
-    printkln!("{}", info);
-    unsafe { _user_exception_handler(Exception::Panic(info)) };
-    abort()
+    crate::kernel::hal::kernel_hal::printkln!("{}", info);
+    loop {}
+    //printkln!("Panic handler");
+    //printkln!("{}", info);
+    //unsafe { _user_exception_handler(Exception::Panic(info)) };
+    //abort()
 }

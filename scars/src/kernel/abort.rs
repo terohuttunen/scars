@@ -1,10 +1,10 @@
 use crate::kernel::hal;
-use scars_hal::FlowController;
+use scars_khal::FlowController;
 
 #[no_mangle]
 pub fn abort() -> ! {
-    #[cfg(all(test, not(feature = "hal-std")))]
+    #[cfg(all(test, not(feature = "khal-sim")))]
     semihosting::process::exit(1);
-    #[cfg(any(not(test), feature = "hal-std"))]
+    #[cfg(any(not(test), feature = "khal-sim"))]
     hal::abort()
 }

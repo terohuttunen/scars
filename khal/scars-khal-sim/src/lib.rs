@@ -8,10 +8,7 @@ use core::cell::{Cell, UnsafeCell};
 use core::mem::MaybeUninit;
 use core::ptr::{addr_of_mut, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use scars_hal::{
-    AlarmClockController, ContextInfo, ExceptionInfo, FlowController, HardwareAbstractionLayer,
-    InterruptController, KernelCallbacks,
-};
+use scars_khal::*;
 
 pub mod pac {
     pub enum Interrupt {
@@ -19,7 +16,8 @@ pub mod pac {
     }
 }
 
-mod printk;
+#[macro_use]
+pub mod printk;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -35,38 +33,38 @@ static mut __EXTERNAL_INTERRUPTS: [InterruptVector; MAX_INTERRUPT + 1] = [Interr
 }; MAX_INTERRUPT + 1];
 
 #[derive(PartialEq, Eq, Copy, Clone)]
-pub enum ExceptionKind {
+pub enum FaultKind {
     Unknown = 255,
 }
 
-impl TryFrom<usize> for ExceptionKind {
+impl TryFrom<usize> for FaultKind {
     type Error = ();
-    fn try_from(value: usize) -> Result<ExceptionKind, ()> {
+    fn try_from(value: usize) -> Result<FaultKind, ()> {
         match value {
             _ => Err(()),
         }
     }
 }
 
-impl ExceptionKind {
+impl FaultKind {
     pub fn name(&self) -> &'static str {
         match self {
-            ExceptionKind::Unknown => "Unknown",
+            FaultKind::Unknown => "Unknown",
         }
     }
 }
 
-pub struct StdException {
-    kind: ExceptionKind,
+pub struct Fault {
+    kind: FaultKind,
 }
 
-impl StdException {
-    pub fn new(kind: ExceptionKind) -> StdException {
-        StdException { kind }
+impl Fault {
+    pub fn new(kind: FaultKind) -> Fault {
+        Fault { kind }
     }
 }
 
-impl ExceptionInfo<VirtualContext> for StdException {
+impl FaultInfo<VirtualContext> for Fault {
     fn code(&self) -> usize {
         self.kind as usize
     }
@@ -207,7 +205,7 @@ pub enum VirtualTrap {
 
 impl FlowController for Simulator {
     type Context = VirtualContext;
-    type Exception = StdException;
+    type Fault = Fault;
 
     fn start_first_task(context: *mut Self::Context) -> ! {
         let mut wait_set = MaybeUninit::uninit();
@@ -353,9 +351,9 @@ extern "C" fn trap_signal_handler(
 pub const TIMER_FREQ_HZ: u64 = 10_000_000;
 
 pub const MAX_INTERRUPT_PRIORITY: u8 =
-    <Simulator as scars_hal::InterruptController>::MAX_INTERRUPT_PRIORITY as u8;
+    <Simulator as InterruptController>::MAX_INTERRUPT_PRIORITY as u8;
 pub const MAX_INTERRUPT: usize =
-    <Simulator as scars_hal::InterruptController>::MAX_INTERRUPT_NUMBER;
+    <Simulator as InterruptController>::MAX_INTERRUPT_NUMBER;
 
 const INITIAL_PRIORITY: AtomicU8 = AtomicU8::new(0);
 const INITIAL_ENABLE: AtomicBool = AtomicBool::new(false);
@@ -427,9 +425,20 @@ impl VirtualInterruptController {
     }
 }
 
+pub struct InterruptClaim {
+    interrupt_number: u16,
+}
+
+impl GetInterruptNumber for InterruptClaim {
+    fn get_interrupt_number(&self) -> u16 {
+        self.interrupt_number
+    }
+}
+
 impl InterruptController for Simulator {
     const MAX_INTERRUPT_PRIORITY: usize = 7;
     const MAX_INTERRUPT_NUMBER: usize = 0;
+    type InterruptClaim = InterruptClaim;
 
     fn get_interrupt_priority(&self, interrupt_number: u16) -> u8 {
         self.interrupt_controller.priority[interrupt_number as usize].load(Ordering::SeqCst)
@@ -475,11 +484,11 @@ impl InterruptController for Simulator {
         // become executable, if they are enabled.
     }
 
-    fn claim_interrupt(&self) -> usize {
+    fn claim_interrupt(&self) -> InterruptClaim {
         unimplemented!()
     }
 
-    fn complete_interrupt(&self, interrupt_number: u16) {
+    fn complete_interrupt(&self, claim: InterruptClaim) {
         unimplemented!()
     }
 

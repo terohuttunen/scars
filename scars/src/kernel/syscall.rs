@@ -2,9 +2,13 @@ use crate::kernel::{
     hal::{clock_ticks, disable_interrupts, enable_interrupts, syscall},
     interrupt::{
         in_interrupt, interrupt_context, restore_current_interrupt, switch_current_interrupt,
-        uncritical_section, CriticalSection, InterruptControlBlock,
+        CriticalSection, InterruptControlBlock,
     },
+    list::LinkedList,
+    priority::AnyPriority,
     scheduler::Scheduler,
+    task::TaskControlBlock,
+    wait_queue::WaitQueueTag,
     RuntimeError, WaitQueue,
 };
 use crate::sync::{interrupt_lock::InterruptLockKey, InterruptLock};
@@ -12,7 +16,7 @@ use crate::time::Instant;
 use core::cell::SyncUnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
-use scars_hal::FlowController;
+use scars_khal::FlowController;
 
 #[derive(Debug)]
 #[repr(usize)]
@@ -31,25 +35,32 @@ impl SyscallId {
     }
 }
 
-pub fn task_yield(_ikey: InterruptLockKey<'_>) {
+pub fn task_yield() {
     let _ = syscall(SyscallId::Yield as usize, 0, 0);
 }
 
-pub(crate) fn task_wait(_ikey: InterruptLockKey<'_>) {
+pub(crate) fn task_wait(
+    wait_list: *mut LinkedList<TaskControlBlock, WaitQueueTag>,
+    ceiling: AnyPriority,
+) {
     if in_interrupt() {
         // Error: cannot wait in an interrupt handler
         crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
     }
 
-    let _ = syscall(SyscallId::Wait as usize, 0, 0);
+    let _ = syscall(
+        SyscallId::Wait as usize,
+        wait_list as usize,
+        ceiling as usize,
+    );
 }
 
 #[cfg(any(feature = "relative-delay", test))]
-pub fn delay(ikey: InterruptLockKey<'_>, duration: crate::time::Duration) {
-    delay_until(ikey, Instant::now() + duration)
+pub fn delay(duration: crate::time::Duration) {
+    delay_until(Instant::now() + duration)
 }
 
-pub fn delay_until(_ikey: InterruptLockKey<'_>, time: Instant) {
+pub fn delay_until(time: Instant) {
     // TODO: this does not work properly on 64bit
     let _ = syscall(
         SyscallId::DelayUntil as usize,
@@ -59,7 +70,6 @@ pub fn delay_until(_ikey: InterruptLockKey<'_>, time: Instant) {
 }
 
 pub fn runtime_error(
-    _ikey: InterruptLockKey<'_>,
     error: RuntimeError,
     location: &'static ::core::panic::Location<'static>,
 ) -> ! {
@@ -71,10 +81,7 @@ pub fn runtime_error(
     unreachable!();
 }
 
-pub(crate) fn start_task(
-    _ikey: InterruptLockKey<'_>,
-    task: &mut crate::kernel::task::TaskControlBlock,
-) {
+pub(crate) fn start_task(task: &mut crate::kernel::task::TaskControlBlock) {
     let _ = syscall(SyscallId::StartTask as usize, task as *mut _ as usize, 0);
 }
 
@@ -84,22 +91,22 @@ unsafe fn _private_kernel_syscall_handler(id: usize, arg0: usize, arg1: usize) -
         SyncUnsafeCell::new(InterruptControlBlock::new(0, 0));
 
     let rval = 0;
-    interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), |cs| {
+    interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {
         if id > 5 {
             panic!("Invalid syscall id");
         }
         let syscall_id = SyscallId::from_usize(id);
         match syscall_id {
-            SyscallId::StartScheduler => Scheduler::start_isr(cs),
+            SyscallId::StartScheduler => Scheduler::start_isr(),
             SyscallId::Yield => {
-                Scheduler::yield_current_task_isr(cs);
+                Scheduler::yield_current_task_isr();
             }
             SyscallId::Wait => {
-                Scheduler::wait_current_task_isr(cs);
+                Scheduler::wait_current_task_isr(arg0 as *mut _, arg1 as AnyPriority);
             }
             SyscallId::DelayUntil => {
                 let time = (u64::from(arg0 as u32) << 32) + u64::from(arg1 as u32);
-                Scheduler::delay_until_isr(cs, time);
+                Scheduler::delay_until_isr(time);
             }
             SyscallId::RuntimeError => {
                 let location = unsafe { &*(arg1 as *const ::core::panic::Location<'static>) };
@@ -110,7 +117,7 @@ unsafe fn _private_kernel_syscall_handler(id: usize, arg0: usize, arg1: usize) -
             }
             SyscallId::StartTask => {
                 let task = unsafe { &mut *(arg0 as *mut crate::kernel::task::TaskControlBlock) };
-                Scheduler::start_task_isr(cs, task);
+                Scheduler::start_task_isr(task);
             }
         }
     });

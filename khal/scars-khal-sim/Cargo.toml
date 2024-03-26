@@ -1,5 +1,5 @@
 [package]
-name = "scars-arch-riscv"
+name = "scars-khal-sim"
 version = "0.1.0"
 edition = "2021"
 authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
@@ -13,5 +13,6 @@ test = false
 
 [dependencies]
 bit_field = "0.10.2"
-scars-khal = { version = "0.1.0", path = "../scars-khal" }
-riscv = { version = "0.10.1", features = ["critical-section-single-hart"] }
+libc = { version = "0.2.151", path = "../../../libc" }
+scars-khal = { version = "0.1.0", path = "../../scars-khal" }
+

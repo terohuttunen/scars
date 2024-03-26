@@ -138,7 +138,7 @@ pub struct Channel<T, const CAPACITY: usize, const CEILING: AnyPriority> {
 
 impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, CEILING> {
     pub const fn new() -> Channel<T, CAPACITY, CEILING> {
-        Channel {
+                Channel {
             fifo: Mutex::new(FIFO::new()),
             receivers: Condvar::new(),
             senders: Condvar::new(),

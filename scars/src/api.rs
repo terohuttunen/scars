@@ -1,36 +1,40 @@
 //! Application Programming Interface
 pub use crate::kernel::hal::{breakpoint, idle};
 pub use crate::kernel::interrupt::in_interrupt;
+pub(crate) use crate::kernel::list::LinkedList;
+pub use crate::kernel::priority::AnyPriority;
 use crate::kernel::scheduler::Scheduler;
 use crate::kernel::task::TaskControlBlock;
+pub use crate::kernel::wait_queue::WaitQueueTag;
 pub use crate::kernel::{syscall, task::TaskRef};
 pub use crate::time::{Duration, Instant};
 
-use crate::sync::InterruptLock;
-
 #[allow(dead_code)]
 pub fn task_start(task: &mut TaskControlBlock) {
-    InterruptLock::with(|ikey| syscall::start_task(ikey, task))
+    syscall::start_task(task)
 }
 
 #[allow(dead_code)]
 pub fn task_yield() {
-    InterruptLock::with(|ikey| syscall::task_yield(ikey))
+    syscall::task_yield()
 }
 
 #[allow(dead_code)]
-pub(crate) fn task_wait() {
-    InterruptLock::with(|ikey| syscall::task_wait(ikey))
+pub(crate) fn task_wait(
+    wait_list: *mut LinkedList<TaskControlBlock, WaitQueueTag>,
+    ceiling: AnyPriority,
+) {
+    syscall::task_wait(wait_list, ceiling)
 }
 
 #[allow(dead_code)]
 pub fn delay(duration: crate::time::Duration) {
-    InterruptLock::with(|ikey| syscall::delay(ikey, duration))
+    syscall::delay(duration)
 }
 
 #[allow(dead_code)]
 pub fn delay_until(time: Instant) {
-    InterruptLock::with(|ikey| syscall::delay_until(ikey, time))
+    syscall::delay_until(time)
 }
 
 #[allow(dead_code)]

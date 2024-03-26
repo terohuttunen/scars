@@ -1,5 +1,5 @@
 [package]
-name = "scars-hal-e310x"
+name = "scars-khal-e310x"
 version = "0.1.0"
 authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
 edition = "2021"
@@ -14,12 +14,16 @@ test = false
 
 [dependencies]
 riscv = { version = "0.10.1"}
-scars-hal = { path = "../../scars-hal" }
+scars-khal = { path = "../../scars-khal" }
 scars-arch-riscv = { path = "../../scars-arch-riscv" }
-e310x = {version = "0.11.0", features = ["rt"]}
+e310x = {version = "0.11.0"}
 static_cell = "1.2.0"
 const_env = "0.1.2"
 critical-section = { version = "1.1.1" }
+semihosting = { version = "0.1.4", features = ["stdio"], optional = true }
 
 [dev-dependencies]
 semihosting = { version = "0.1.4", features = ["stdio"] }
+
+[features]
+semihosting = ["dep:semihosting"]

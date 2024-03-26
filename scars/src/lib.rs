@@ -25,6 +25,7 @@ pub use scars_macros::*;
 pub use kernel::abort::abort;
 pub use kernel::hal::clock_ticks;
 pub use kernel::hal::pac;
+pub use kernel::hal::kernel_hal::{printk, printkln};
 pub use kernel::priority::{AnyPriority, Priority};
 pub use kernel::stack::Stack;
 pub use kernel::task::{Task, TaskRef};

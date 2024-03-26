@@ -18,7 +18,7 @@ use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use scars_hal::{ContextInfo, FlowController};
+use scars_khal::{ContextInfo, FlowController};
 
 #[macro_export]
 macro_rules! make_task {

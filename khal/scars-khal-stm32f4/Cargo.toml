@@ -1,0 +1,35 @@
+[package]
+name = "scars-khal-stm32f4"
+version = "0.1.0"
+authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
+edition = "2021"
+build = "build.rs"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/terohuttunen/scars/"
+
+[lib]
+bench = false
+doctest = false
+test = false
+
+[dependencies]
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core", "inline-asm"] }
+cortex-m-rt = "0.7.3"
+scars-khal = { path = "../../scars-khal" }
+scars-arch-cortex-m = { path = "../../scars-arch-cortex-m" }
+static_cell = "1.2.0"
+const_env = "0.1.2"
+critical-section = { version = "1.1.1" }
+rtt-target = "0.5.0"
+
+
+[dependencies.stm32f4]
+version = "0.15.1"
+features = ["stm32f429"]
+
+[dependencies.stm32f4xx-hal]
+version = "0.20.0"
+features = ["stm32f429"]
+
+[dev-dependencies]
+semihosting = { version = "0.1.4", features = ["stdio"] }

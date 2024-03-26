@@ -136,18 +136,18 @@ lead to a runtime error.
   - others TBD
 
 ## Simulator
-The `hal-std` crate implements a pthreads based simulator on host. Interrupt
+The `scars-khal-sim` crate implements a pthreads based simulator on host. Interrupt
 simulation has not yet been implemented.
 
 ## Running tests
-### hal-e310x
+### khal-e310x
 Configuration in .cargo/config.toml is for QEMU.  
 
 ```
-$ cargo test --release --package=scars --features="hal-e310x" --target=riscv32imac-unknown-none-elf
+$ cargo test --release --package=scars --features="khal-e310x" --target=riscv32imac-unknown-none-elf
 ```
 
-### hal-std
+### khal-sim
 ```
-$ cargo test --release --package=scars --features="hal-std" --target=x86_64-unknown-linux-gnu
+$ cargo test --release --package=scars --features="khal-sim" --target=x86_64-unknown-linux-gnu
 ```

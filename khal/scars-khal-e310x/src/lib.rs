@@ -4,9 +4,9 @@ use const_env::from_env;
 use core::arch::global_asm;
 use riscv::register::mstatus;
 use scars_arch_riscv::RISCV32;
-use scars_hal::{
-    AlarmClockController, FlowController, HardwareAbstractionLayer, InterruptController,
-};
+use scars_khal::*;
+#[cfg(feature = "semihosting")]
+pub use semihosting::{println as printkln, print as printk};
 
 global_asm!(include_str!("start.S"));
 
@@ -36,9 +36,21 @@ impl HardwareAbstractionLayer for E310x {
 const MTIME_FREQ_HZ: u64 = 10_000_000;
 pub const TIMER_FREQ_HZ: u64 = MTIME_FREQ_HZ;
 
+pub struct InterruptClaim {
+    interrupt_number: u16,
+    restore_threshold: u8,
+}
+
+impl GetInterruptNumber for InterruptClaim {
+    fn get_interrupt_number(&self) -> u16 {
+        self.interrupt_number
+    }
+}
+
 impl InterruptController for E310x {
     const MAX_INTERRUPT_PRIORITY: usize = 7;
     const MAX_INTERRUPT_NUMBER: usize = 52;
+    type InterruptClaim = InterruptClaim;
 
     #[inline(always)]
     fn get_interrupt_priority(&self, interrupt_number: u16) -> u8 {
@@ -76,14 +88,21 @@ impl InterruptController for E310x {
             .write(|w| unsafe { w.bits(threshold as u32) });
     }
 
-    fn claim_interrupt(&self) -> usize {
-        self.plic.claim.read().bits() as usize
+    fn claim_interrupt(&self) -> Self::InterruptClaim {
+        let interrupt_number = self.plic.claim.read().bits() as u16;
+        let restore_threshold = self.get_interrupt_threshold();
+        let interrupt_prio = self.get_interrupt_priority(interrupt_number as u16);
+        self.set_interrupt_threshold(interrupt_prio);
+        self.enable_interrupts();
+        InterruptClaim { interrupt_number, restore_threshold }
     }
 
-    fn complete_interrupt(&self, interrupt_number: u16) {
+    fn complete_interrupt(&self, claim: Self::InterruptClaim) {
+        self.disable_interrupts();
+        self.set_interrupt_threshold(claim.restore_threshold);
         self.plic
             .claim
-            .write(|w| unsafe { w.bits(interrupt_number as u32) })
+            .write(|w| unsafe { w.bits(claim.interrupt_number as u32) })
     }
 
     fn enable_interrupt(&self, interrupt_number: u16) {
@@ -126,6 +145,22 @@ impl InterruptController for E310x {
             unsafe { riscv::register::mstatus::set_mie() }
         }
     }
+}
+
+#[no_mangle]
+fn _save_interrupt_threshold(context: &mut <E310x as FlowController>::Context)
+{
+    let plic = unsafe {&*e310x::PLIC::ptr() };
+    let threshold = plic.threshold.read().bits();
+    context.interrupt_threshold = threshold as usize;
+}
+
+#[no_mangle]
+fn _restore_interrupt_threshold(context: &mut <E310x as FlowController>::Context)
+{
+    let plic = unsafe {&mut *(e310x::PLIC::ptr() as *mut e310x::plic::RegisterBlock) };
+    plic.threshold
+        .write(|w| unsafe { w.bits(context.interrupt_threshold as u32) });
 }
 
 impl AlarmClockController for E310x {
@@ -184,7 +219,7 @@ impl AlarmClockController for E310x {
 
 impl FlowController for E310x {
     type Context = <RISCV32 as FlowController>::Context;
-    type Exception = <RISCV32 as FlowController>::Exception;
+    type Fault = <RISCV32 as FlowController>::Fault;
 
     fn start_first_task(idle_context: *mut Self::Context) -> ! {
         RISCV32::start_first_task(idle_context)
