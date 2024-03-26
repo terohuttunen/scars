@@ -23,7 +23,7 @@ pub mod condvar;
 pub mod interrupt_lock;
 pub mod mutex;
 pub mod preempt_lock;
-//pub mod rendezvous;
+pub mod rendezvous;
 pub mod shared;
 
 pub use channel::Channel;

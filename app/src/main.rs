@@ -6,7 +6,10 @@
 use scars::pac;
 use scars::sync::Shared;
 use scars::time::{Duration, Instant};
-use scars::{kernel::print_tasks, make_channel, make_interrupt_handler, make_shared, make_task};
+use scars::{
+    kernel::print_tasks, make_channel, make_interrupt_handler, make_rendezvous, make_shared,
+    make_task,
+};
 use scars::{AnyPriority, Priority, Task, TaskRef};
 
 // Simulator needs bigger stacks
@@ -68,9 +71,18 @@ pub fn main() {
 
     let sender2 = sender.clone();
 
+    let (entry, accept) = make_rendezvous!(CHANNEL_PRIO);
+
     let mut count = 0;
 
     producer_task.start(move || {
+        let mut addition = 10;
+        accept.accept(|value: u32| {
+            addition += 1;
+            scars::printkln!("Producer got value {:?} from consumer", value);
+            value + addition
+        });
+
         let mut time: Instant = Instant::now();
         loop {
             scars::printkln!("[producer]: sending time {}", count);
@@ -82,11 +94,16 @@ pub fn main() {
         }
     });
 
-    consumer_task.start(move || loop {
-        scars::printkln!("[consumer]: queueing for more data");
-        let count = receiver.recv();
-        scars::printkln!("[consumer]: received count {}", count);
-        print_tasks();
+    consumer_task.start(move || {
+        let result: u32 = entry.entry(1234u32);
+
+        scars::printkln!("Consumer got result {:?} from producer", result);
+        loop {
+            scars::printkln!("[consumer]: queueing for more data");
+            let count = receiver.recv();
+            scars::printkln!("[consumer]: received count {}", count);
+            print_tasks();
+        }
     });
 
     /*
