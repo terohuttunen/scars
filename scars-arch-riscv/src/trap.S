@@ -2,14 +2,14 @@
 .altmacro
 
 .section .text
-.global _start_first_task, _trap_vector
+.global _start_first_thread, _trap_vector
 .align 4
-_start_first_task:
-	# First task context is the first and only parameter in a0
+_start_first_thread:
+	# First thread context is the first and only parameter in a0
 	mv		a5, a0
 
-	# Store first task context pointer to CURRENT_TASK_CONTEXT
-	la 		a1, CURRENT_TASK_CONTEXT
+	# Store first thread context pointer to CURRENT_THREAD_CONTEXT
+	la 		a1, CURRENT_THREAD_CONTEXT
 	sw		a0, 0(a1)
 
 	mv 		t6, a0
@@ -29,8 +29,8 @@ _start_first_task:
 
 	j		restore_callee
 _trap_vector:
-	# The current task context is stored in the mscratch register.
-	# When trap interrupts a task, the mscratch is pointing to the
+	# The current thread context is stored in the mscratch register.
+	# When trap interrupts a thread, the mscratch is pointing to the
 	# context-variable in its TCB. In nested interrupts mscratch
 	# is NULL.
 
@@ -39,11 +39,11 @@ _trap_vector:
 	# mscratch.
 	csrrw	t6, mscratch, t6
 
-	# If t6 i.e. mscratch is NULL, there is no current task, or we
+	# If t6 i.e. mscratch is NULL, there is no current thread, or we
 	# are in nested interrupt handler. If context address is
 	# non-null, then jump directly to saving the current context
 	# to the address.
-	bnez	t6, save_context_to_task
+	bnez	t6, save_context_to_thread
 
 	# If context address was null, then we are in nested trap, and
 	# current context is saved into ISR stack.
@@ -80,8 +80,8 @@ save_context_to_stack:
 
 	j 		enter_handler
 
-save_context_to_task:
-	# Save caller context to task. No need to save x0, as it is
+save_context_to_thread:
+	# Save caller context to thread. No need to save x0, as it is
 	# hardwired to zero. Callee context is saved in context switch.
 	# Also save x2 (aka. sp), because it is replaced by ISR stack pointer.
 	sw		x1, (0*4)(t6)
@@ -112,24 +112,24 @@ save_context_to_task:
 	csrr	t6, mscratch
 	sw      x31, (28*4)(t5)
 
-	# store mepc CSR to task context
+	# store mepc CSR to thread context
 	csrr	a0, mepc
 	sw		a0, (29 * 4)(t5)
 
-	# store mstatus CSR to task context
+	# store mstatus CSR to thread context
 	csrr 	a5, mstatus
 	sw 		a5, (30 * 4)(t5)
 
 	# Set stack pointer to ISR stack
 	la	    sp, _isr_stack_end
 
-	# Push current task context to ISR stack. This is later used
+	# Push current thread context to ISR stack. This is later used
 	# to determine if context switch is required.
 	addi    sp, sp, -4
 	sw		t5, 0(sp)
 
 	# Push marker 0 to ISR stack to denote that when returning, context
-	# should be restored from task.
+	# should be restored from thread.
 	addi    sp, sp, -4
 	sw      x0, 0(sp)
 
@@ -153,11 +153,11 @@ enter_handler:
 
 _enter_user:
 	# Get marker from ISR stack:
-	#  0 = restore from task context
+	#  0 = restore from thread context
 	#  1 = restore from ISR stack
 	lw      t5, 0(sp)
 	addi    sp, sp, 4
-	beqz    t5, return_to_task
+	beqz    t5, return_to_thread
 
 return_to_interrupt:
 	# When marker is non-zero, context is restored from ISR stack
@@ -182,16 +182,16 @@ return_to_interrupt:
 	addi	sp, sp, (16*4)
 
 	ret
-return_to_task:
-	# Pop current task context before calling trap handler from the stack to t5
+return_to_thread:
+	# Pop current thread context before calling trap handler from the stack to t5
 	lw 		t5, 0(sp)
 	addi 	sp, sp, 4
 
-	# Read current task context after trap handler to t6 (aka. x31)
-	la      t0, CURRENT_TASK_CONTEXT
+	# Read current thread context after trap handler to t6 (aka. x31)
+	la      t0, CURRENT_THREAD_CONTEXT
 	lw      t6, 0(t0)
 
-	# Returning to task from the outermost interrupt, set mscratch
+	# Returning to thread from the outermost interrupt, set mscratch
 	# to current context.
 	csrw	mscratch, t6
 
@@ -213,8 +213,8 @@ return_to_task:
 	# for context switch. Need only to restore caller saved registers.
 	beq		t5, t6, restore_caller
 
-	# Context switch required, store callee registers to task context before
-	# restoring callee registers from the next task. Caller preserved registers
+	# Context switch required, store callee registers to thread context before
+	# restoring callee registers from the next thread. Caller preserved registers
 	# were already stored in the trap entry. Do not save sp, which was also
 	# saved in trap entry.
 	sw      x8, (5*4)(t5)

@@ -9,9 +9,9 @@ runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -semihosting-con
 #runner = "qemu-system-riscv32 -machine sifive_e -cpu sifive-e31 -semihosting-config enable=on,chardev=stdio0 -bios none -chardev stdio,id=stdio0 -display none -gdb tcp::1234 -S -kernel"
 
 [target.thumbv7em-none-eabihf]
-rustflags = ['-Clink-arg=-Tkhal/scars-khal-stm32f4/default.lds', '-Cllvm-args=-float-abi=hard', '-Ctarget-cpu=cortex-m4', '-Ctarget-feature=+fpregs,+vfp4,+vfp4d16']
+rustflags = ['-Clink-arg=-Tkhal/scars-khal-stm32f4/default.lds', '-Cllvm-args=-float-abi=hard', '-Ctarget-cpu=cortex-m4']
 #rustflags = ['-Clink-arg=-Tkhal/scars-khal-stm32f4/default.lds']
-runner = "probe-rs run --chip STM32F429ZITx"
+runner = "probe-rs run --chip STM32F429ZITx --connect-under-reset"
 
 [env]
 MTIME_FREQ_HZ = "10_000_000"

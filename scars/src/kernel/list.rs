@@ -1,4 +1,6 @@
-use core::cell::Cell;
+use crate::cell::LockedRefCell;
+use crate::sync::{Lock, NoLock};
+use core::cell::{Cell, Ref, RefMut};
 use core::marker::PhantomData;
 use core::marker::PhantomPinned;
 use core::ops::Deref;
@@ -6,10 +8,9 @@ use core::ptr::NonNull;
 
 pub trait LinkedListTag: 'static {}
 
-pub(crate) struct LinkedList<T, N: LinkedListTag> {
-    len: usize,
-    head: Option<NonNull<Link<T, N>>>,
-    tail: Option<NonNull<Link<T, N>>>,
+pub(crate) struct LinkedList<T: Linked<N>, N: LinkedListTag> {
+    pub(crate) head: Option<NonNull<Link<T, N>>>,
+    pub(crate) tail: Option<NonNull<Link<T, N>>>,
     _phantom: PhantomData<(Cell<Link<T, N>>, N)>,
     // Links have backreferences to containing lists.
     // Therefore, lists must be pinned.
@@ -20,16 +21,11 @@ pub(crate) struct LinkedList<T, N: LinkedListTag> {
 impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
     pub const fn new() -> LinkedList<T, N> {
         LinkedList {
-            len: 0,
             head: None,
             tail: None,
             _phantom: PhantomData,
             _pinned: PhantomPinned,
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
     }
 
     pub fn head<'item>(&self) -> Option<&'item T> {
@@ -69,8 +65,6 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
         }
 
         link.list.set(NonNull::new(self));
-
-        self.len += 1;
     }
 
     pub fn push_back<'item>(&mut self, item: &'item T) {
@@ -100,8 +94,6 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
         }
 
         link.list.set(NonNull::new(self));
-
-        self.len += 1;
     }
 
     pub fn pop_front<'item>(&mut self) -> Option<&'item T> {
@@ -120,7 +112,6 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
             head_link.next.set(None);
             head_link.prev.set(None);
             head_link.list.set(None);
-            self.len -= 1;
             return Some(head);
         }
 
@@ -129,7 +120,6 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
 
     pub fn cursor_front(&self) -> Cursor<'_, T, N> {
         Cursor {
-            index: 0,
             current: self.head,
             list: self,
         }
@@ -137,7 +127,6 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
 
     pub fn cursor_front_mut(&mut self) -> CursorMut<'_, T, N> {
         CursorMut {
-            index: 0,
             current: self.head,
             list: self,
         }
@@ -187,18 +176,18 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
         link.next.set(None);
         link.prev.set(None);
         link.list.set(None);
-        self.len -= 1;
     }
 }
 
-pub(crate) struct Link<T, N: LinkedListTag> {
-    list: Cell<Option<NonNull<LinkedList<T, N>>>>,
-    next: Cell<Option<NonNull<Link<T, N>>>>,
-    prev: Cell<Option<NonNull<Link<T, N>>>>,
+pub(crate) struct Link<T: Linked<N>, N: LinkedListTag> {
+    pub(crate) list: Cell<Option<NonNull<LinkedList<T, N>>>>,
+    pub(crate) next: Cell<Option<NonNull<Link<T, N>>>>,
+    pub(crate) prev: Cell<Option<NonNull<Link<T, N>>>>,
     _pin: PhantomPinned,
     _phantom: PhantomData<(fn(Link<T, N>) -> Link<T, N>, N)>,
 }
 
+#[allow(dead_code)]
 impl<T: Linked<N>, N: LinkedListTag> Link<T, N> {
     pub const fn new() -> Link<T, N> {
         Link {
@@ -225,8 +214,24 @@ impl<T: Linked<N>, N: LinkedListTag> Link<T, N> {
         self.prev.get().map(|link_ptr| unsafe { link_ptr.as_ref() })
     }
 
-    fn in_list(&self) -> bool {
+    pub fn in_list(&self) -> bool {
         self.list.get().is_some()
+    }
+
+    unsafe fn get_list(&self) -> Option<&LinkedList<T, N>> {
+        self.list.get().map(|list_ptr| unsafe { list_ptr.as_ref() })
+    }
+
+    unsafe fn get_list_mut(&self) -> Option<&mut LinkedList<T, N>> {
+        self.list
+            .get()
+            .map(|mut list_ptr| unsafe { list_ptr.as_mut() })
+    }
+
+    pub fn unlink(&self) {
+        if let Some(list) = unsafe { self.get_list_mut() } {
+            list.remove(self.get_item());
+        }
     }
 
     fn as_ptr(&self) -> NonNull<Link<T, N>> {
@@ -234,6 +239,13 @@ impl<T: Linked<N>, N: LinkedListTag> Link<T, N> {
     }
 }
 
+impl<T: Linked<N>, N: LinkedListTag> Drop for Link<T, N> {
+    fn drop(&mut self) {
+        self.unlink();
+    }
+}
+
+#[allow(dead_code)]
 pub(crate) trait Linked<N: LinkedListTag>
 where
     Self: Sized,
@@ -273,8 +285,8 @@ macro_rules! impl_linked {
 
 pub(crate) use impl_linked;
 
+#[allow(dead_code)]
 pub(crate) struct Cursor<'list, T: Linked<N>, N: LinkedListTag> {
-    index: usize,
     current: Option<NonNull<Link<T, N>>>,
     list: &'list LinkedList<T, N>,
 }
@@ -284,11 +296,9 @@ impl<'list, T: Linked<N>, N: LinkedListTag> Cursor<'list, T, N> {
     pub fn move_next(&mut self) {
         match self.current.take() {
             Some(ptr) => {
-                self.index += 1;
                 self.current = unsafe { ptr.as_ref() }.next.get();
             }
             None => {
-                self.index = 0;
                 self.current = None;
             }
         }
@@ -297,11 +307,9 @@ impl<'list, T: Linked<N>, N: LinkedListTag> Cursor<'list, T, N> {
     pub fn move_prev(&mut self) {
         match self.current.take() {
             Some(ptr) => {
-                self.index -= 1;
                 self.current = unsafe { ptr.as_ref() }.prev.get();
             }
             None => {
-                self.index = self.list.len - 1;
                 self.current = None;
             }
         }
@@ -310,10 +318,6 @@ impl<'list, T: Linked<N>, N: LinkedListTag> Cursor<'list, T, N> {
     pub fn get_item<'item>(&self) -> Option<&'item T> {
         self.current
             .map(|current| unsafe { current.as_ref().get_item() })
-    }
-
-    pub fn index(&self) -> Option<usize> {
-        self.current.map(|_| self.index)
     }
 }
 
@@ -335,7 +339,6 @@ impl<'list, T: Linked<N>, N: LinkedListTag> DoubleEndedIterator for Cursor<'list
 }
 
 pub(crate) struct CursorMut<'list, T: Linked<N>, N: LinkedListTag> {
-    index: usize,
     current: Option<NonNull<Link<T, N>>>,
     list: &'list mut LinkedList<T, N>,
 }
@@ -357,13 +360,11 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
                         item.get_link().next.set(Some(current_ptr));
                         current_link.prev.set(Some(node_link_ptr));
                         current_link.list.set(NonNull::new(self.list as *mut _));
-                        self.list.len += 1;
                     }
                     None => {
                         self.list.push_front(item);
                     }
                 }
-                self.index += 1;
             }
             None => {
                 // If at "ghost" node, insert at tail
@@ -387,7 +388,6 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
                         node.get_link().next.set(Some(next_ptr));
                         current_link.next.set(Some(node_link_ptr));
                         current_link.list.set(NonNull::new(self.list as *mut _));
-                        self.list.len += 1;
                     }
                     None => {
                         self.list.push_back(node);
@@ -401,11 +401,9 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
     pub fn move_next(&mut self) {
         match self.current.take() {
             Some(ptr) => {
-                self.index += 1;
                 self.current = unsafe { ptr.as_ref() }.next.get();
             }
             None => {
-                self.index = 0;
                 self.current = self.list.head;
             }
         }
@@ -414,11 +412,9 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
     pub fn move_prev(&mut self) {
         match self.current.take() {
             Some(ptr) => {
-                self.index -= 1;
                 self.current = unsafe { ptr.as_ref() }.prev.get();
             }
             None => {
-                self.index = self.list.len - 1;
                 self.current = self.list.tail;
             }
         }
@@ -428,11 +424,6 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
     pub fn get_item<'item>(&mut self) -> Option<&'item T> {
         self.current
             .map(|current| unsafe { current.as_ref() }.get_item())
-    }
-
-    #[allow(dead_code)]
-    pub fn index(&self) -> Option<usize> {
-        self.current.map(|_| self.index)
     }
 }
 
@@ -463,18 +454,13 @@ mod test {
             alink: Link::new(),
             blink: Link::new(),
         };
-        assert_eq!(list.len(), 0);
 
         list.push_front(&mut a);
-        assert_eq!(list.len(), 1);
         let maybe_a = list.pop_front();
-        assert_eq!(list.len(), 0);
         assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
 
         list.push_front(&mut a);
-        assert_eq!(list.len(), 1);
         let maybe_a = list.pop_front();
-        assert_eq!(list.len(), 0);
         assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
     }
 
@@ -489,18 +475,13 @@ mod test {
             alink: Link::new(),
             blink: Link::new(),
         };
-        assert_eq!(list.len(), 0);
 
         list.push_front(&mut a);
-        assert_eq!(list.len(), 1);
         list.push_front(&mut b);
-        assert_eq!(list.len(), 2);
         let maybe_b = list.pop_front();
         assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
-        assert_eq!(list.len(), 1);
         let maybe_a = list.pop_front();
         assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
-        assert_eq!(list.len(), 0);
     }
 
     #[test_case]
@@ -514,18 +495,13 @@ mod test {
             alink: Link::new(),
             blink: Link::new(),
         };
-        assert_eq!(list.len(), 0);
 
         list.push_back(&mut a);
-        assert_eq!(list.len(), 1);
         list.push_back(&mut b);
-        assert_eq!(list.len(), 2);
         let maybe_a = list.pop_front();
         assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
-        assert_eq!(list.len(), 1);
         let maybe_b = list.pop_front();
         assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
-        assert_eq!(list.len(), 0);
     }
 
     #[test_case]
@@ -550,10 +526,8 @@ mod test {
         list.remove(&c);
         let maybe_a = list.pop_front();
         assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
-        assert_eq!(list.len(), 1);
         let maybe_b = list.pop_front();
         assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
-        assert_eq!(list.len(), 0);
     }
 
     #[test_case]
@@ -578,10 +552,8 @@ mod test {
         list.remove(&a);
         let maybe_b = list.pop_front();
         assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
-        assert_eq!(list.len(), 1);
         let maybe_c = list.pop_front();
         assert!(maybe_c.unwrap() as *const Foo == &c as *const Foo);
-        assert_eq!(list.len(), 0);
     }
 
     #[test_case]
@@ -606,10 +578,8 @@ mod test {
         list.remove(&b);
         let maybe_a = list.pop_front();
         assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
-        assert_eq!(list.len(), 1);
         let maybe_c = list.pop_front();
         assert!(maybe_c.unwrap() as *const Foo == &c as *const Foo);
-        assert_eq!(list.len(), 0);
     }
 
     #[test_case]
@@ -624,6 +594,5 @@ mod test {
 
         list.remove(&a);
         assert!(list.pop_front().is_none());
-        assert_eq!(list.len(), 0);
     }
 }

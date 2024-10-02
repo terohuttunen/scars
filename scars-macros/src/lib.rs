@@ -27,16 +27,16 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
             return TokenStream::from(e.write_errors());
         }
     };
-    let task_name = &args.name;
-    let task_priority = &args.priority;
-    let task_stack_size = &args.stack_size;
+    let thread_name = &args.name;
+    let thread_priority = &args.priority;
+    let thread_stack_size = &args.stack_size;
     let main_fn_ident = &item.sig.ident;
     quote! {
         #item
-        #[export_name = "_start_main_task"]
-        pub fn _start_main_task() {
-            let main_task = ::scars::make_task!(#task_name, #task_priority, #task_stack_size);
-            main_task.start(|| {
+        #[export_name = "_start_main_thread"]
+        pub fn _start_main_thread() {
+            let main_thread = ::scars::make_thread!(#thread_name, #thread_priority, #thread_stack_size);
+            main_thread.start(|| {
                 #main_fn_ident();
             });
         }
@@ -45,7 +45,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn idle_task_hook(_args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn idle_thread_hook(_args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
 
     let attrs = &item.attrs;
@@ -56,7 +56,7 @@ pub fn idle_task_hook(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_idle_task_hook"]
+        #[export_name = "_scars_idle_thread_hook"]
         #(#attrs)* #vis #sig
         {
             let type_test: fn() = #ident;
@@ -67,7 +67,7 @@ pub fn idle_task_hook(_args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn trace_task_new(_args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn trace_thread_new(_args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
 
     let attrs = &item.attrs;
@@ -78,10 +78,10 @@ pub fn trace_task_new(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_task_new"]
+        #[export_name = "_scars_trace_thread_new"]
         #(#attrs)* #vis #sig
         {
-            let type_test: fn(::scars::TaskRef) = #ident;
+            let type_test: fn(::scars::ThreadRef) = #ident;
             #block
         }
     }
@@ -89,7 +89,7 @@ pub fn trace_task_new(_args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn trace_task_exec_begin(_args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn trace_thread_exec_begin(_args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
 
     let attrs = &item.attrs;
@@ -100,10 +100,10 @@ pub fn trace_task_exec_begin(_args: TokenStream, item: TokenStream) -> TokenStre
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_task_exec_begin"]
+        #[export_name = "_scars_trace_thread_exec_begin"]
         #(#attrs)* #vis #sig
         {
-            let type_test: fn(::scars::TaskRef) = #ident;
+            let type_test: fn(::scars::ThreadRef) = #ident;
             #block
         }
     }
@@ -111,7 +111,7 @@ pub fn trace_task_exec_begin(_args: TokenStream, item: TokenStream) -> TokenStre
 }
 
 #[proc_macro_attribute]
-pub fn trace_task_exec_end(_args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn trace_thread_exec_end(_args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
 
     let attrs = &item.attrs;
@@ -122,10 +122,10 @@ pub fn trace_task_exec_end(_args: TokenStream, item: TokenStream) -> TokenStream
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_task_exec_end"]
+        #[export_name = "_scars_trace_thread_exec_end"]
         #(#attrs)* #vis #sig
         {
-            let type_test: fn(::scars::TaskRef) = #ident;
+            let type_test: fn(::scars::ThreadRef) = #ident;
             #block
         }
     }
@@ -133,7 +133,7 @@ pub fn trace_task_exec_end(_args: TokenStream, item: TokenStream) -> TokenStream
 }
 
 #[proc_macro_attribute]
-pub fn trace_task_ready_begin(_args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn trace_thread_ready_begin(_args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
 
     let attrs = &item.attrs;
@@ -144,10 +144,10 @@ pub fn trace_task_ready_begin(_args: TokenStream, item: TokenStream) -> TokenStr
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_task_ready_begin"]
+        #[export_name = "_scars_trace_thread_ready_begin"]
         #(#attrs)* #vis #sig
         {
-            let type_test: fn(::scars::TaskRef) = #ident;
+            let type_test: fn(::scars::ThreadRef) = #ident;
             #block
         }
     }
@@ -155,7 +155,7 @@ pub fn trace_task_ready_begin(_args: TokenStream, item: TokenStream) -> TokenStr
 }
 
 #[proc_macro_attribute]
-pub fn trace_task_ready_end(_args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn trace_thread_ready_end(_args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
 
     let attrs = &item.attrs;
@@ -166,10 +166,10 @@ pub fn trace_task_ready_end(_args: TokenStream, item: TokenStream) -> TokenStrea
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_task_ready_end"]
+        #[export_name = "_scars_trace_thread_ready_end"]
         #(#attrs)* #vis #sig
         {
-            let type_test: fn(::scars::TaskRef) = #ident;
+            let type_test: fn(::scars::ThreadRef) = #ident;
             #block
         }
     }

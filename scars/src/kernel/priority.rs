@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicI16, AtomicU16, AtomicU32, Ordering};
 
-pub type TaskPriority = u8;
+pub type ThreadPriority = u8;
 pub type InterruptPriority = u8;
 
 const INTERRUPT_BIT: i16 = 1 << (i16::BITS - 2);
@@ -9,7 +9,7 @@ pub const INVALID_PRIORITY: Priority = Priority::any(INVALID_ANY_PRIORITY);
 
 pub type AnyPriority = i16;
 
-pub const fn any_task_priority(prio: TaskPriority) -> AnyPriority {
+pub const fn any_thread_priority(prio: ThreadPriority) -> AnyPriority {
     prio as AnyPriority
 }
 
@@ -22,8 +22,8 @@ pub const fn any_interrupt_priority(prio: InterruptPriority) -> AnyPriority {
 pub struct Priority(AnyPriority);
 
 impl Priority {
-    pub const MIN_TASK_PRIORITY: Priority = Priority::task_priority(TaskPriority::MIN);
-    pub const MAX_TASK_PRIORITY: Priority = Priority::task_priority(TaskPriority::MAX);
+    pub const MIN_THREAD_PRIORITY: Priority = Priority::thread_priority(ThreadPriority::MIN);
+    pub const MAX_THREAD_PRIORITY: Priority = Priority::thread_priority(ThreadPriority::MAX);
     pub const MIN_INTERRUPT_PRIORITY: Priority =
         Priority::interrupt_priority(InterruptPriority::MIN);
     pub const MAX_INTERRUPT_PRIORITY: Priority =
@@ -33,11 +33,11 @@ impl Priority {
         Priority(prio)
     }
 
-    pub const fn task_priority(prio: TaskPriority) -> Priority {
+    pub const fn thread_priority(prio: ThreadPriority) -> Priority {
         Priority(prio as i16)
     }
 
-    pub const fn any_task_priority(prio: TaskPriority) -> AnyPriority {
+    pub const fn any_thread_priority(prio: ThreadPriority) -> AnyPriority {
         prio as AnyPriority
     }
 
@@ -53,7 +53,7 @@ impl Priority {
         (self.0 & INTERRUPT_BIT) != 0
     }
 
-    pub const fn is_task(&self) -> bool {
+    pub const fn is_thread(&self) -> bool {
         (self.0 & INTERRUPT_BIT) == 0
     }
 
@@ -70,7 +70,7 @@ impl Priority {
     }
 
     pub const fn succ(self) -> Priority {
-        if self.is_valid() && self.get_value() <= Self::MAX_TASK_PRIORITY.get_value() {
+        if self.is_valid() && self.get_value() <= Self::MAX_THREAD_PRIORITY.get_value() {
             Priority(self.0 + 1)
         } else {
             Priority(self.0)
@@ -88,7 +88,7 @@ impl Priority {
 
 impl core::fmt::Display for Priority {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if self.is_task() {
+        if self.is_thread() {
             write!(f, "T{}", self.0)
         } else {
             write!(f, "I{}", self.get_value())
@@ -107,7 +107,7 @@ impl AtomicPriority {
         AtomicPriority(AtomicI16::new(prio))
     }
 
-    pub const fn task_priority(prio: TaskPriority) -> AtomicPriority {
+    pub const fn thread_priority(prio: ThreadPriority) -> AtomicPriority {
         AtomicPriority(AtomicI16::new(prio as i16))
     }
 
@@ -119,7 +119,7 @@ impl AtomicPriority {
         (self.0.load(Ordering::Relaxed) & INTERRUPT_BIT) != 0
     }
 
-    pub fn is_task(&self) -> bool {
+    pub fn is_thread(&self) -> bool {
         (self.0.load(Ordering::Relaxed) & INTERRUPT_BIT) == 0
     }
 

@@ -17,30 +17,30 @@ const STACK_SIZE: usize = 1024;
 #[cfg(feature = "khal-sim")]
 const STACK_SIZE: usize = 16384;
 
-// Lower priority task
+// Lower priority thread
 const LOW_PRIORITY: u8 = 3;
 
-// Medium priority task
+// Medium priority thread
 const MEDIUM_PRIORITY: u8 = 4;
 
 const CAPACITY: usize = 10;
-const CEILING: AnyPriority = any_task_priority(MEDIUM_PRIORITY);
+const CEILING: AnyPriority = any_thread_priority(MEDIUM_PRIORITY);
 
-/// Ceiling lock prevents preemption by a task at ceiling priority,
-/// and when the lock is released, the task will run.
+/// Ceiling lock prevents preemption by a thread at ceiling priority,
+/// and when the lock is released, the thread will run.
 #[test_case]
 pub fn ceiling_lock_owned_yield() {
-    let (sender0, receiver) = make_channel!(u32, CAPACITY, any_task_priority(MEDIUM_PRIORITY));
-    let low = make_task!("low", LOW_PRIORITY, STACK_SIZE);
+    let (sender0, receiver) = make_channel!(u32, CAPACITY, any_thread_priority(MEDIUM_PRIORITY));
+    let low = make_thread!("low", LOW_PRIORITY, STACK_SIZE);
 
     low.start(move || {
-        let medium = make_task!("medium", MEDIUM_PRIORITY, STACK_SIZE);
+        let medium = make_thread!("medium", MEDIUM_PRIORITY, STACK_SIZE);
         let medium_sender = sender0.clone();
         let lock: CeilingLock<CEILING> = CeilingLock::new();
 
-        // Low priority task raises its priority with a ceiling lock
+        // Low priority thread raises its priority with a ceiling lock
         lock.lock();
-        // Medium priority task cannot start because of the ceiling lock
+        // Medium priority thread cannot start because of the ceiling lock
         medium.start(move || {
             medium_sender.send(1);
             loop {
@@ -49,7 +49,7 @@ pub fn ceiling_lock_owned_yield() {
         });
         sender0.send(2);
         lock.unlock();
-        // Medium priority task can run now, and then low priority continues
+        // Medium priority thread can run now, and then low priority continues
         sender0.send(0);
         loop {
             scars::delay(Duration::from_secs(1));

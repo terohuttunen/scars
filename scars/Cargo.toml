@@ -15,6 +15,7 @@ description = "RTOS for hard real-time applications"
 bit_field = "0.10.2"
 const_env = "0.1.2"
 critical-section = { version = "1.1.1" }
+static_cell = "2.1.0"
 scars-khal = { version = "0.1.0", path = "../scars-khal" }
 scars-macros = { version = "0.1.0", path = "../scars-macros" }
 scars-khal-e310x = { version = "0.1.0", path = "../khal/scars-khal-e310x", features = ["semihosting"], optional = true }
@@ -22,13 +23,11 @@ scars-khal-stm32f4 = { version = "0.1.0", path = "../khal/scars-khal-stm32f4", o
 scars-khal-sim = { version = "0.1.0", path = "../khal/scars-khal-sim", optional = true }
 scars-test = { version = "0.1.0", path = "../scars-test" }
 
+
 [dev-dependencies]
 scars-test = { version = "0.1.0", path = "../scars-test", features = ["panic"] }
 
 [target.'cfg(target_arch = "riscv32")'.dev-dependencies]
-#scars-test = { version = "0.1.0", path = "../scars-test", features = ["panic"] }
-#riscv = { version = "0.10.1", features = ["critical-section-single-hart"] }
-#volatile-register = {version  = "0.2.1"}
 semihosting = { version = "0.1.4", features = ["stdio"] }
 
 [target.'cfg(target_arch = "arm")'.dependencies]
@@ -41,5 +40,5 @@ default = ["relative-delay"]
 tracing = []
 relative-delay = []
 khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "scars-test/exit"]
-khal-sim = ["dep:scars-khal-sim", "scars-test/std"]
+khal-sim = ["dep:scars-khal-sim", "scars-test/std", "scars-test/exit"]
 khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt", "scars-test/exit"]

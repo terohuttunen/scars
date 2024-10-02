@@ -1,23 +1,23 @@
-use crate::kernel::task::{TaskInfo, TaskRef};
+use crate::thread::{ThreadInfo, ThreadRef};
 
 mod internal {
-    use crate::kernel::task::{TaskInfo, TaskRef};
+    use crate::thread::{ThreadInfo, ThreadRef};
     #[allow(dead_code)]
     extern "Rust" {
-        #[link_name = "_scars_trace_task_new"]
-        pub(super) fn task_new(task: TaskRef);
+        #[link_name = "_scars_trace_thread_new"]
+        pub(super) fn thread_new(thread: ThreadRef);
 
-        #[link_name = "_scars_trace_task_exec_begin"]
-        pub(super) fn task_exec_begin(task: TaskRef);
+        #[link_name = "_scars_trace_thread_exec_begin"]
+        pub(super) fn thread_exec_begin(thread: ThreadRef);
 
-        #[link_name = "_scars_trace_task_exec_end"]
-        pub(super) fn task_exec_end(task: TaskRef);
+        #[link_name = "_scars_trace_thread_exec_end"]
+        pub(super) fn thread_exec_end(thread: ThreadRef);
 
-        #[link_name = "_scars_trace_task_ready_begin"]
-        pub(super) fn task_ready_begin(task: TaskRef);
+        #[link_name = "_scars_trace_thread_ready_begin"]
+        pub(super) fn thread_ready_begin(thread: ThreadRef);
 
-        #[link_name = "_scars_trace_task_ready_end"]
-        pub(super) fn task_ready_end(task: TaskRef);
+        #[link_name = "_scars_trace_thread_ready_end"]
+        pub(super) fn thread_ready_end(thread: ThreadRef);
 
         #[link_name = "_scars_trace_system_idle"]
         pub(super) fn system_idle();
@@ -35,46 +35,46 @@ mod internal {
 
 #[allow(unused)]
 #[inline(always)]
-pub(crate) fn task_new(task: TaskRef) {
+pub(crate) fn thread_new(thread: ThreadRef) {
     #[cfg(feature = "tracing")]
     unsafe {
-        internal::task_new(task)
+        internal::thread_new(thread)
     }
 }
 
 #[allow(unused)]
 #[inline(always)]
-pub(crate) fn task_exec_begin(task: TaskRef) {
+pub(crate) fn thread_exec_begin(thread: ThreadRef) {
     #[cfg(feature = "tracing")]
     unsafe {
-        internal::task_exec_begin(task)
+        internal::thread_exec_begin(thread)
     }
 }
 
 #[allow(unused)]
 #[inline(always)]
-pub(crate) fn task_exec_end(task: TaskRef) {
+pub(crate) fn thread_exec_end(thread: ThreadRef) {
     #[cfg(feature = "tracing")]
     unsafe {
-        internal::task_exec_end(task)
+        internal::thread_exec_end(thread)
     }
 }
 
 #[allow(unused)]
 #[inline(always)]
-pub(crate) fn task_ready_begin(task: TaskRef) {
+pub(crate) fn thread_ready_begin(thread: ThreadRef) {
     #[cfg(feature = "tracing")]
     unsafe {
-        internal::task_ready_begin(task)
+        internal::thread_ready_begin(thread)
     }
 }
 
 #[allow(unused)]
 #[inline(always)]
-pub(crate) fn task_ready_end(task: TaskRef) {
+pub(crate) fn thread_ready_end(thread: ThreadRef) {
     #[cfg(feature = "tracing")]
     unsafe {
-        internal::task_ready_end(task)
+        internal::thread_ready_end(thread)
     }
 }
 
@@ -110,20 +110,20 @@ pub(crate) fn isr_exit_to_scheduler() {
     }
 }
 
-#[export_name = "_scars_default_trace_task_new"]
-fn default_task_new(_task: TaskRef) {}
+#[export_name = "_scars_default_trace_thread_new"]
+fn default_thread_new(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_task_exec_begin"]
-fn default_task_exec_begin(_task: TaskRef) {}
+#[export_name = "_scars_default_trace_thread_exec_begin"]
+fn default_thread_exec_begin(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_task_exec_end"]
-fn default_task_exec_end(_task: TaskRef) {}
+#[export_name = "_scars_default_trace_thread_exec_end"]
+fn default_thread_exec_end(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_task_ready_begin"]
-fn default_task_ready_begin(_task: TaskRef) {}
+#[export_name = "_scars_default_trace_thread_ready_begin"]
+fn default_thread_ready_begin(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_task_ready_end"]
-fn default_task_ready_end(_task: TaskRef) {}
+#[export_name = "_scars_default_trace_thread_ready_end"]
+fn default_thread_ready_end(_thread: ThreadRef) {}
 
 #[export_name = "_scars_default_trace_system_idle"]
 fn default_system_idle() {}

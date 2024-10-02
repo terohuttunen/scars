@@ -6,7 +6,7 @@ use riscv::register::mstatus;
 use scars_arch_riscv::RISCV32;
 use scars_khal::*;
 #[cfg(feature = "semihosting")]
-pub use semihosting::{println as printkln, print as printk};
+pub use semihosting::{print as printk, println as printkln};
 
 global_asm!(include_str!("start.S"));
 
@@ -18,18 +18,19 @@ pub struct E310x {
     plic: e310x::PLIC,
 }
 
-impl E310x {
-    fn new() -> E310x {
-        let e310x::Peripherals { PLIC, CLINT, .. } = unsafe { e310x::Peripherals::steal() };
-        E310x {
-            clint: CLINT,
-            plic: PLIC,
-        }
-    }
-}
-
 impl HardwareAbstractionLayer for E310x {
     const NAME: &'static str = "e310x (RISCV32)";
+
+    unsafe fn init(hal: *mut Self) {
+        let e310x::Peripherals { PLIC, CLINT, .. } = e310x::Peripherals::steal();
+        *hal = E310x {
+            clint: CLINT,
+            plic: PLIC,
+        };
+
+        // Enable external interrupts in PLIC
+        riscv::register::mie::set_mext();
+    }
 }
 
 #[from_env]
@@ -94,7 +95,10 @@ impl InterruptController for E310x {
         let interrupt_prio = self.get_interrupt_priority(interrupt_number as u16);
         self.set_interrupt_threshold(interrupt_prio);
         self.enable_interrupts();
-        InterruptClaim { interrupt_number, restore_threshold }
+        InterruptClaim {
+            interrupt_number,
+            restore_threshold,
+        }
     }
 
     fn complete_interrupt(&self, claim: Self::InterruptClaim) {
@@ -148,17 +152,15 @@ impl InterruptController for E310x {
 }
 
 #[no_mangle]
-fn _save_interrupt_threshold(context: &mut <E310x as FlowController>::Context)
-{
-    let plic = unsafe {&*e310x::PLIC::ptr() };
+fn _save_interrupt_threshold(context: &mut <E310x as FlowController>::Context) {
+    let plic = unsafe { &*e310x::PLIC::ptr() };
     let threshold = plic.threshold.read().bits();
     context.interrupt_threshold = threshold as usize;
 }
 
 #[no_mangle]
-fn _restore_interrupt_threshold(context: &mut <E310x as FlowController>::Context)
-{
-    let plic = unsafe {&mut *(e310x::PLIC::ptr() as *mut e310x::plic::RegisterBlock) };
+fn _restore_interrupt_threshold(context: &mut <E310x as FlowController>::Context) {
+    let plic = unsafe { &mut *(e310x::PLIC::ptr() as *mut e310x::plic::RegisterBlock) };
     plic.threshold
         .write(|w| unsafe { w.bits(context.interrupt_threshold as u32) });
 }
@@ -221,8 +223,8 @@ impl FlowController for E310x {
     type Context = <RISCV32 as FlowController>::Context;
     type Fault = <RISCV32 as FlowController>::Fault;
 
-    fn start_first_task(idle_context: *mut Self::Context) -> ! {
-        RISCV32::start_first_task(idle_context)
+    fn start_first_thread(idle_context: *mut Self::Context) -> ! {
+        RISCV32::start_first_thread(idle_context)
     }
 
     fn abort() -> ! {
@@ -237,24 +239,17 @@ impl FlowController for E310x {
         RISCV32::idle();
     }
 
-    fn syscall(id: usize, arg0: usize, arg1: usize) -> usize {
-        RISCV32::syscall(id, arg0, arg1)
+    fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
+        RISCV32::syscall(id, arg0, arg1, arg2)
     }
 }
 
 unsafe impl Sync for E310x {}
 
-extern "Rust" {
-    fn start_kernel(board: HAL) -> !;
-}
-
 #[no_mangle]
 pub fn init() {
     unsafe {
-        // Enable external interrupts in PLIC
-        riscv::register::mie::set_mext();
-        let hal = E310x::new();
-        start_kernel(hal);
+        start_kernel();
     }
 }
 

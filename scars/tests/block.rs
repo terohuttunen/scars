@@ -13,40 +13,40 @@ use scars_test;
 scars_test::integration_test!();
 
 #[cfg(not(feature = "khal-sim"))]
-const STACK_SIZE: usize = 1024*2;
+const STACK_SIZE: usize = 1024 * 2;
 #[cfg(feature = "khal-sim")]
 const STACK_SIZE: usize = 16384;
 
-// Lower priority task
-const TASK0_PRIORITY: u8 = 3;
+// Lower priority thread
+const THREAD0_PRIORITY: u8 = 3;
 
-// Higher priority task
-const TASK1_PRIORITY: u8 = 5;
+// Higher priority thread
+const THREAD1_PRIORITY: u8 = 5;
 
-// Medium priority task
-const TASK2_PRIORITY: u8 = 4;
+// Medium priority thread
+const THREAD2_PRIORITY: u8 = 4;
 
 const CAPACITY: usize = 14;
-const CEILING: AnyPriority = any_task_priority(TASK1_PRIORITY);
+const CEILING: AnyPriority = any_thread_priority(THREAD1_PRIORITY);
 
-/// Block two tasks with different priorities and verify that the
-/// higher priority task is started first when the tasks are notified.
+/// Block two threads with different priorities and verify that the
+/// higher priority thread is started first when the threads are notified.
 #[test_case]
-pub fn block_unblock_task() {
+pub fn block_unblock_thread() {
     let (sender, receiver) = make_channel!(u32, CAPACITY, CEILING);
     static LOCK: Mutex<bool, CEILING> = Mutex::new(false);
     static CVAR: Condvar<CEILING> = Condvar::new();
 
-    let task0 = make_task!("task0", TASK0_PRIORITY, STACK_SIZE);
+    let thread0 = make_thread!("thread0", THREAD0_PRIORITY, STACK_SIZE);
     let sender0 = sender.clone();
-    task0.start(move || {
-        let task1 = make_task!("task1", TASK1_PRIORITY, STACK_SIZE);
+    thread0.start(move || {
+        let thread1 = make_thread!("thread1", THREAD1_PRIORITY, STACK_SIZE);
         let sender1 = sender0.clone();
-        task1.start(move || {
-            // Medium priority task created last
-            let task2 = make_task!("task2", TASK2_PRIORITY, STACK_SIZE);
+        thread1.start(move || {
+            // Medium priority thread created last
+            let thread2 = make_thread!("thread2", THREAD2_PRIORITY, STACK_SIZE);
             let sender2 = sender1.clone();
-            task2.start(move || {
+            thread2.start(move || {
                 let guarded_started = LOCK.lock();
                 CVAR.wait_while(guarded_started, |started| !*started);
                 sender2.send(2);
@@ -68,11 +68,11 @@ pub fn block_unblock_task() {
         scars_test::test_fail()
     });
 
-    // Release the barrier flag holding the tasks and notify tasks
+    // Release the barrier flag holding the treads and notify threads
     *LOCK.lock() = true;
     CVAR.notify_all();
 
-    // Higher priority task 1 is woken up first.
+    // Higher priority thread 1 is woken up first.
     assert_eq!(receiver.recv(), 1);
     assert_eq!(receiver.recv(), 2);
     assert_eq!(receiver.recv(), 0);

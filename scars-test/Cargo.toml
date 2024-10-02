@@ -13,11 +13,11 @@ test = false
 
 [dependencies]
 rtt-target = { version = "0.5.0", optional = true }
-semihosting = { version = "0.1.4" }
 cortex-m = { version = "0.7.7", optional = true }
 
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 #minicov = "0.3.1"
+semihosting = { version = "0.1.4", features = ["fs", "stdio"] }
 
 
 [target.'cfg(target_arch = "arm")'.dependencies]

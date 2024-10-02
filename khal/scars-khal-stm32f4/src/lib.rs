@@ -1,10 +1,12 @@
 #![no_std]
 #![feature(panic_info_message)]
 #![feature(ptr_sub_ptr)]
+pub mod peripherals;
 use core::arch::global_asm;
 use core::cell::RefCell;
 use cortex_m_rt::entry;
 use critical_section::Mutex;
+pub use peripherals::Peripherals;
 pub use rtt_target::debug_rprint as debug_printk;
 pub use rtt_target::debug_rprintln as debug_printkln;
 pub use rtt_target::rprint as printk;
@@ -12,6 +14,7 @@ pub use rtt_target::rprintln as printkln;
 use rtt_target::rtt_init_print;
 use scars_arch_cortex_m::*;
 use scars_khal::*;
+pub use stm32f4xx_hal::pac::Interrupt;
 pub use stm32f4xx_hal::{
     pac,
     prelude::*,
@@ -29,50 +32,10 @@ pub struct STM32F4 {
     tim2: pac::TIM2,
     tim5: pac::TIM5,
     scb: cortex_m::peripheral::SCB,
-    exti: pac::EXTI,
     clocks: Clocks,
 }
 
 impl STM32F4 {
-    fn new() -> STM32F4 {
-        let pac::Peripherals {
-            EXTI,
-            TIM2,
-            TIM5,
-            RCC,
-            ..
-        } = unsafe { pac::Peripherals::steal() };
-        let cortex_m::Peripherals {
-            FPU,
-            NVIC,
-            SYST,
-            SCB,
-            ..
-        } = unsafe { cortex_m::Peripherals::steal() };
-
-        pac::TIM2::enable(&RCC);
-        pac::TIM5::enable(&RCC);
-
-        unsafe {
-            pac::NVIC::unmask(pac::Interrupt::TIM2);
-        }
-
-        let rcc = RCC.constrain();
-
-        let clocks = rcc.cfgr.use_hse(8.MHz()).sysclk(180.MHz()).freeze();
-
-        STM32F4 {
-            nvic: Mutex::new(RefCell::new(NVIC)),
-            fpu: FPU,
-            syst: SYST,
-            tim2: TIM2,
-            tim5: TIM5,
-            scb: SCB,
-            exti: EXTI,
-            clocks,
-        }
-    }
-
     /// Setup monotonous clock and alarm
     fn setup_clock(&mut self) {
         // Monotonous 64bit clock is setup by chaining two 32bit timers TIM2 and TIM5
@@ -110,6 +73,42 @@ impl STM32F4 {
 
 impl HardwareAbstractionLayer for STM32F4 {
     const NAME: &'static str = "STM32F4";
+
+    unsafe fn init(hal: *mut Self) {
+        let pac::Peripherals {
+            TIM2, TIM5, RCC, ..
+        } = pac::Peripherals::steal();
+
+        let cortex_m::Peripherals {
+            FPU,
+            NVIC,
+            SYST,
+            SCB,
+            ..
+        } = cortex_m::Peripherals::steal();
+
+        pac::TIM2::enable(&RCC);
+        pac::TIM5::enable(&RCC);
+
+        pac::NVIC::unmask(pac::Interrupt::TIM2);
+
+        let rcc = RCC.constrain();
+
+        let clocks = rcc.cfgr.use_hse(8.MHz()).sysclk(180.MHz()).freeze();
+
+        *hal = STM32F4 {
+            nvic: Mutex::new(RefCell::new(NVIC)),
+            fpu: FPU,
+            syst: SYST,
+            tim2: TIM2,
+            tim5: TIM5,
+            scb: SCB,
+            clocks,
+        };
+
+        (*hal).setup_clock();
+        (*hal).set_interrupt_priority(pac::Interrupt::TIM2 as u16, 0);
+    }
 }
 
 pub const TIMER_FREQ_HZ: u64 = 10_000_000;
@@ -282,7 +281,7 @@ global_asm!(
      .thumb_func",
     ".cfi_startproc
     TIM2:",
-    "ldr    r0,=CURRENT_TASK_CONTEXT",
+    "ldr    r0,=CURRENT_THREAD_CONTEXT",
     "ldr    r0, [r0]",
     // Clear TIM2 interrupt bits in SR register
     "movw   r1, 0x0010",
@@ -305,27 +304,19 @@ global_asm!(
     "push   {{r0, lr}}",
     "bl     _private_kernel_wakeup_handler",
     "pop    {{r0, lr}}",
-    "ldr    r1,=CURRENT_TASK_CONTEXT",
+    "ldr    r1,=CURRENT_THREAD_CONTEXT",
     "ldr    r1, [r1]",
     "b      _switch_context",
     ".cfi_endproc
      .size TIM2, . - TIM2",
 );
 
-extern "Rust" {
-    fn start_kernel(board: HAL) -> !;
-}
-
 #[entry]
 fn init() -> ! {
     unsafe {
-        let mut hal = STM32F4::new();
-        hal.setup_clock();
-        hal.set_interrupt_priority(pac::Interrupt::TIM2 as u16, 0);
-
         rtt_init_print!();
 
-        start_kernel(hal);
+        start_kernel();
     }
 }
 

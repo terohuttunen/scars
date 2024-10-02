@@ -1,30 +1,18 @@
 //! Application Programming Interface
 pub use crate::kernel::hal::{breakpoint, idle};
 pub use crate::kernel::interrupt::in_interrupt;
-pub(crate) use crate::kernel::list::LinkedList;
-pub use crate::kernel::priority::AnyPriority;
-use crate::kernel::scheduler::Scheduler;
-use crate::kernel::task::TaskControlBlock;
-pub use crate::kernel::wait_queue::WaitQueueTag;
-pub use crate::kernel::{syscall, task::TaskRef};
+pub use crate::kernel::syscall;
+use crate::thread::RawThread;
 pub use crate::time::{Duration, Instant};
 
 #[allow(dead_code)]
-pub fn task_start(task: &mut TaskControlBlock) {
-    syscall::start_task(task)
+pub fn thread_start(thread: &mut RawThread) {
+    syscall::start_thread(thread)
 }
 
 #[allow(dead_code)]
-pub fn task_yield() {
-    syscall::task_yield()
-}
-
-#[allow(dead_code)]
-pub(crate) fn task_wait(
-    wait_list: *mut LinkedList<TaskControlBlock, WaitQueueTag>,
-    ceiling: AnyPriority,
-) {
-    syscall::task_wait(wait_list, ceiling)
+pub fn thread_yield() {
+    syscall::thread_yield()
 }
 
 #[allow(dead_code)]
@@ -38,6 +26,6 @@ pub fn delay_until(time: Instant) {
 }
 
 #[allow(dead_code)]
-pub fn current_task() -> TaskRef {
-    TaskRef::new(Scheduler::current_task())
+pub fn thread_suspend(thread: Option<&RawThread>) {
+    syscall::thread_suspend(thread)
 }

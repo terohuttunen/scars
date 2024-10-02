@@ -1,0 +1,15 @@
+[package]
+name = "tasking"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+scars = { path = "../../../scars", optional = true }
+
+[dependencies.stm32f4xx-hal]
+version = "0.20.0"
+features = ["stm32f429"]
+
+[features]
+default = []
+khal-stm32f4 = ["scars/khal-stm32f4"]

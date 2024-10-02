@@ -41,15 +41,18 @@ impl PreemptLock {
     }
 }
 
+unsafe impl Send for PreemptLock {}
+unsafe impl Sync for PreemptLock {}
+
 static PREEMPT_LOCK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 mod sealed {
-    use crate::kernel::interrupt::InterruptControlBlock;
-    use crate::kernel::task::TaskControlBlock;
+    use crate::kernel::interrupt::RawInterruptHandler;
+    use crate::thread::RawThread;
 
     pub enum PreemptLockRestoreState {
-        Interrupt(*const InterruptControlBlock),
-        Task(*const TaskControlBlock),
+        Interrupt(*const RawInterruptHandler),
+        Thread(*const RawThread),
     }
 
     impl PreemptLockRestoreState {
@@ -62,7 +65,7 @@ mod sealed {
                 PreemptLockRestoreState::Interrupt(current_interrupt) => {
                     current_interrupt.is_null()
                 }
-                PreemptLockRestoreState::Task(current_task) => current_task.is_null(),
+                PreemptLockRestoreState::Thread(current_thread) => current_thread.is_null(),
             }
         }
     }
@@ -79,10 +82,10 @@ impl Lock for PreemptLock {
             ExecutionContext::Interrupt(_current_interrupt) => {
                 crate::runtime_error!(RuntimeError::InterruptHandlerViolation)
             }
-            ExecutionContext::Task(current_task) => {
+            ExecutionContext::Thread(current_thread) => {
                 let previous_state =
-                    PREEMPT_LOCK.swap(current_task as *const _ as *mut (), Ordering::Acquire);
-                PreemptLockRestoreState::Task(previous_state as *const _)
+                    PREEMPT_LOCK.swap(current_thread as *const _ as *mut (), Ordering::Acquire);
+                PreemptLockRestoreState::Thread(previous_state as *const _)
             }
         }
     }
@@ -90,7 +93,7 @@ impl Lock for PreemptLock {
     unsafe fn try_section_start() -> Result<Self::RestoreState, TryLockError> {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
-                // To acquire in interrupt, the lock may not be held by a task or a
+                // To acquire in interrupt, the lock may not be held by a thread or a
                 // lower priority interrupt.
                 match PREEMPT_LOCK.compare_exchange(
                     core::ptr::null_mut(),
@@ -112,16 +115,16 @@ impl Lock for PreemptLock {
                                 previous_state as *const _,
                             ))
                         } else {
-                            // Lock not acquired. Task or lower priority interrupt is holding the lock.
+                            // Lock not acquired. Thread or lower priority interrupt is holding the lock.
                             Err(TryLockError::WouldBlock)
                         }
                     }
                 }
             }
-            ExecutionContext::Task(current_task) => {
+            ExecutionContext::Thread(current_thread) => {
                 let previous_state =
-                    PREEMPT_LOCK.swap(current_task as *const _ as *mut (), Ordering::Acquire);
-                Ok(PreemptLockRestoreState::Task(previous_state as *const _))
+                    PREEMPT_LOCK.swap(current_thread as *const _ as *mut (), Ordering::Acquire);
+                Ok(PreemptLockRestoreState::Thread(previous_state as *const _))
             }
         }
     }
@@ -131,11 +134,9 @@ impl Lock for PreemptLock {
             let key = unsafe { PreemptLockKey::new() };
 
             // This is the lock that was first acquired, and now released last.
-            // Move any pending ready tasks to ready queue while we still have
+            // Move any pending ready threads to ready queue while we still have
             // the ownership of the lock.
-            while let Some(pending) = Scheduler::get_task_pending_resume() {
-                Scheduler::resume_task(key, pending);
-            }
+            Scheduler::complete_pending(key);
 
             // Release the lock
             PREEMPT_LOCK.store(core::ptr::null_mut(), Ordering::Release);
@@ -146,9 +147,9 @@ impl Lock for PreemptLock {
             // as soon as it is again possible, which is after the preemption lock
             // is released.
             //
-            // Execution of any pending reschedule is done differently in tasks
+            // Execution of any pending reschedule is done differently in threads
             // and interrupts:
-            //  - Tasks: Pending reschedules are executed when preemption lock
+            //  - Threads: Pending reschedules are executed when preemption lock
             //    is released. (below)
             //
             //  - Interrupts: Pending reschedule is executed only once when exiting
@@ -156,7 +157,7 @@ impl Lock for PreemptLock {
             //    locks were acquired during the interrupt.
             if !restore_state.is_interrupt() {
                 if Scheduler::is_reschedule_pending() {
-                    crate::task_yield();
+                    crate::thread_yield();
                 }
             }
         }

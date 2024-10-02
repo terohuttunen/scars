@@ -1,63 +1,69 @@
-use crate::kernel::priority::TaskPriority;
-use crate::kernel::task::{TaskControlBlock, TaskState};
-use crate::make_task;
+use crate::kernel::priority::ThreadPriority;
+use crate::make_thread;
+use crate::sync::PreemptLock;
+use crate::thread::{RawThread, ThreadExecutionState};
 
-const IDLE_TASK_NAME: &'static str = "[idle]";
-const IDLE_TASK_PRIO: TaskPriority = 0;
+const IDLE_THREAD_NAME: &'static str = "[idle]";
+const IDLE_THREAD_PRIO: ThreadPriority = 0;
 
 #[cfg(not(feature = "khal-sim"))]
-const IDLE_TASK_STACK_SIZE: usize = 1024;
+const IDLE_THREAD_STACK_SIZE: usize = 1024;
 
 #[cfg(feature = "khal-sim")]
-const IDLE_TASK_STACK_SIZE: usize = 1024 * 16;
+const IDLE_THREAD_STACK_SIZE: usize = 1024 * 16;
 
 mod internal {
     #[allow(dead_code)]
     extern "Rust" {
-        #[link_name = "_scars_idle_task_hook"]
-        pub(super) fn idle_task_hook();
+        #[link_name = "_scars_idle_thread_hook"]
+        pub(super) fn idle_thread_hook();
     }
 }
 
 extern "Rust" {
     #[cfg(not(test))]
-    fn _start_main_task();
+    fn _start_main_thread();
 }
 
 #[allow(unused)]
 #[inline(always)]
-fn idle_task_hook() {
-    unsafe { internal::idle_task_hook() }
+fn idle_thread_hook() {
+    unsafe { internal::idle_thread_hook() }
 }
 
-#[export_name = "_scars_default_idle_task_hook"]
-fn default_idle_task_hook() {
+#[export_name = "_scars_default_idle_thread_hook"]
+fn default_idle_thread_hook() {
     crate::idle();
 }
 
-pub(crate) fn init_idle_task() -> &'static TaskControlBlock {
-    let idle_task = make_task!(IDLE_TASK_NAME, IDLE_TASK_PRIO, IDLE_TASK_STACK_SIZE);
-    idle_task.init(|| {
+pub(crate) fn init_idle_thread() -> &'static RawThread {
+    crate::printkln!("Init idle thread");
+    let mut idle_thread = make_thread!(IDLE_THREAD_NAME, IDLE_THREAD_PRIO, IDLE_THREAD_STACK_SIZE);
+    idle_thread.modify(|t| {
+        PreemptLock::with(|pkey| {
+            t.state.set(pkey, ThreadExecutionState::Running);
+        })
+        //t.state.set(ThreadExecutionState::Running);
+    });
+    let idle_thread = idle_thread.init(|| {
         #[cfg(not(test))]
         unsafe {
-            _start_main_task();
+            _start_main_thread();
         }
 
         #[cfg(test)]
         {
-            let test_task = make_task!("test", 1, IDLE_TASK_STACK_SIZE);
-            test_task.start(|| {
+            let test_thread = make_thread!("test", 1, IDLE_THREAD_STACK_SIZE, 1, executor = true);
+            test_thread.start(|| {
                 crate::test_main();
                 crate::scars_test::test_succeed();
             });
         }
 
         loop {
-            idle_task_hook();
+            idle_thread_hook();
         }
     });
 
-    let idle_tcb = idle_task.get_tcb();
-    idle_tcb.state.set(TaskState::Running);
-    idle_tcb
+    unsafe { idle_thread.as_ref() }
 }

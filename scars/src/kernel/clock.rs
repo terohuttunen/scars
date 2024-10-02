@@ -2,7 +2,7 @@ use crate::kernel::{
     hal::{disable_alarm_interrupt, enable_alarm_interrupt},
     interrupt::{
         in_interrupt, interrupt_context, restore_current_interrupt, switch_current_interrupt,
-        InterruptControlBlock,
+        RawInterruptHandler,
     },
     scheduler::Scheduler,
 };
@@ -14,8 +14,8 @@ use critical_section::CriticalSection;
 
 #[no_mangle]
 pub(crate) unsafe fn _private_kernel_wakeup_handler() {
-    static TIMER_INTERRUPT_HANDLER: SyncUnsafeCell<InterruptControlBlock> =
-        SyncUnsafeCell::new(InterruptControlBlock::new(0, 0));
+    static TIMER_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
+        SyncUnsafeCell::new(RawInterruptHandler::new(0, 0));
 
     // Prevent nested wakeup interrupts. Only one wakeup interrupt
     // should be ongoing at any given time in order to not overflow the

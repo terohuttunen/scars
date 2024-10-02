@@ -1,4 +1,4 @@
-use crate::kernel::{interrupt::in_interrupt, priority::AnyPriority, WaitQueue};
+use crate::kernel::{interrupt::in_interrupt, priority::AnyPriority, waiter::WaitQueue};
 use crate::sync::{mutex, MutexGuard, RawCeilingLock};
 
 pub struct WaitTimeoutResult(bool);
@@ -10,13 +10,13 @@ impl WaitTimeoutResult {
 }
 
 pub struct Condvar<const CEILING: AnyPriority> {
-    wait_queue: WaitQueue<CEILING>,
+    waiter_queue: WaitQueue<CEILING>,
 }
 
 impl<const CEILING: AnyPriority> Condvar<CEILING> {
     pub const fn new() -> Condvar<CEILING> {
         Condvar {
-            wait_queue: WaitQueue::new(),
+            waiter_queue: WaitQueue::new(),
         }
     }
 
@@ -24,7 +24,7 @@ impl<const CEILING: AnyPriority> Condvar<CEILING> {
     fn wait_lock(&self, lock: &RawCeilingLock) {
         lock.unlock();
 
-        self.wait_queue.wait();
+        self.waiter_queue.wait();
 
         lock.lock();
     }
@@ -60,12 +60,39 @@ impl<const CEILING: AnyPriority> Condvar<CEILING> {
         guard
     }
 
+    pub async fn async_wait<'a, T>(
+        &'static self,
+        guard: MutexGuard<'static, T>,
+    ) -> MutexGuard<'static, T> {
+        let lock = mutex::guard_lock(&guard);
+        lock.unlock();
+
+        self.waiter_queue.async_wait().await;
+
+        lock.lock();
+        guard
+    }
+
+    pub async fn async_wait_while<T, F>(
+        &'static self,
+        mut guard: MutexGuard<'static, T>,
+        condition: F,
+    ) -> MutexGuard<'static, T>
+    where
+        F: FnOnce(&mut T) -> bool + 'static + core::marker::Copy,
+    {
+        while condition(&mut *guard) {
+            guard = self.async_wait(guard).await;
+        }
+        guard
+    }
+
     pub fn notify_one(&self) {
-        self.wait_queue.notify_one()
+        self.waiter_queue.notify_one()
     }
 
     pub fn notify_all(&self) {
-        self.wait_queue.notify_all()
+        self.waiter_queue.notify_all()
     }
 }
 

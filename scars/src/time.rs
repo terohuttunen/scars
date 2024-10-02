@@ -106,6 +106,7 @@ pub struct Instant {
 }
 
 impl Instant {
+    pub const ZERO: Instant = Instant { tick: 0 };
     pub fn now() -> Instant {
         Instant {
             tick: clock_ticks(),

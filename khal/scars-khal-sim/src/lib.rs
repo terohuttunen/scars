@@ -156,12 +156,12 @@ impl ContextInfo for VirtualContext {
             || libc::pthread_attr_setstack(attr.as_mut_ptr(), stackaddr, stack_size) != 0
         {
             panic!(
-                "Failed to set task '{}' stack to {} bytes",
+                "Failed to set thread '{}' stack to {} bytes",
                 name, stack_size
             );
         }
 
-        // Initialize task context variables with `thread_id` field last so that the
+        // Initialize thread context variables with `thread_id` field last so that the
         // thread can safely access its context.
         (*context).name = name;
         (*context).resumed = UnsafeCell::new(false);
@@ -171,17 +171,17 @@ impl ContextInfo for VirtualContext {
         (*context).argument = argument.map(|a| NonNull::new_unchecked(a as *mut _));
         (*context).stack_top_ptr.set(stack_ptr);
 
-        // Creating the thread initializes the last field of task context, the `thread_id`.
+        // Creating the thread initializes the last field of thread context, the `thread_id`.
         libc::pthread_create(
             core::ptr::addr_of_mut!((*context).thread_id),
             attr.as_ptr(),
-            task_main_wrapper,
+            thread_main_wrapper,
             context as *mut _,
         );
 
         libc::pthread_attr_destroy(attr.as_mut_ptr());
 
-        // Set thread name to RTOS task name
+        // Set thread name to RTOS thread name
         let c_name = std::ffi::CString::new(name).expect("");
         libc::pthread_setname_np((*context).thread_id, c_name.as_ptr() as *const _);
     }
@@ -196,7 +196,7 @@ impl core::fmt::Debug for VirtualContext {
 pub enum VirtualTrap {
     Syscall {
         id: usize,
-        args: [usize; 2],
+        args: [usize; 3],
         rval: usize,
     },
     Alarm,
@@ -207,7 +207,7 @@ impl FlowController for Simulator {
     type Context = VirtualContext;
     type Fault = Fault;
 
-    fn start_first_task(context: *mut Self::Context) -> ! {
+    fn start_first_thread(context: *mut Self::Context) -> ! {
         let mut wait_set = MaybeUninit::uninit();
         let mut sig = MaybeUninit::uninit();
         // Only the currently active RTOS thread should receive the virtual
@@ -252,13 +252,13 @@ impl FlowController for Simulator {
         }
     }
 
-    fn syscall(id: usize, arg0: usize, arg1: usize) -> usize {
+    fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
         let mut trap = VirtualTrap::Syscall {
             id,
-            args: [arg0, arg1],
+            args: [arg0, arg1, arg2],
             rval: 0,
         };
-        let context = current_task_context();
+        let context = current_thread_context();
         if unsafe {
             libc::pthread_sigqueue(
                 context.thread_id,
@@ -279,15 +279,15 @@ impl FlowController for Simulator {
     }
 }
 
-fn current_task_context() -> &'static VirtualContext {
-    Simulator::current_task_context()
+fn current_thread_context() -> &'static VirtualContext {
+    Simulator::current_thread_context()
 }
 
-// Wrapper for task main that suspends the task until it is
-// resumed in the trap handler. Otherwise the task would start
-// executing the task main before the scheduler has been able
-// to initialize and switch into the task.
-extern "C" fn task_main_wrapper(arg: *mut libc::c_void) -> *mut libc::c_void {
+// Wrapper for thread main that suspends the thead until it is
+// resumed in the trap handler. Otherwise the thread would start
+// executing the thread main before the scheduler has been able
+// to initialize and switch into the thread.
+extern "C" fn thread_main_wrapper(arg: *mut libc::c_void) -> *mut libc::c_void {
     let context = unsafe { &mut *(arg as *mut VirtualContext) };
     // Wait for resume from trap signal handler
     context.suspend();
@@ -313,8 +313,8 @@ extern "C" fn trap_signal_handler(
     info: *const libc::siginfo_t,
     ucontext: *const libc::ucontext_t,
 ) {
-    // task that got interrupted by the signal
-    let interrupted_context = current_task_context();
+    // thread that got interrupted by the signal
+    let interrupted_context = current_thread_context();
 
     // Disable interrupts for the duration of the trap handling
     let restore_state = INTERRUPTS_ENABLED.swap(false, Ordering::SeqCst);
@@ -332,10 +332,10 @@ extern "C" fn trap_signal_handler(
         _ => panic!("Unhandled exception"),
     }
 
-    // If the current task has been changed by the trap handling,
-    // resume the new current task, and suspend the task that was
+    // If the current thread has been changed by the trap handling,
+    // resume the new current thread, and suspend the thread that was
     // interrupted.
-    let context_to_resume = current_task_context();
+    let context_to_resume = current_thread_context();
     if context_to_resume.thread_id != interrupted_context.thread_id {
         context_to_resume.resume();
         interrupted_context
@@ -352,8 +352,7 @@ pub const TIMER_FREQ_HZ: u64 = 10_000_000;
 
 pub const MAX_INTERRUPT_PRIORITY: u8 =
     <Simulator as InterruptController>::MAX_INTERRUPT_PRIORITY as u8;
-pub const MAX_INTERRUPT: usize =
-    <Simulator as InterruptController>::MAX_INTERRUPT_NUMBER;
+pub const MAX_INTERRUPT: usize = <Simulator as InterruptController>::MAX_INTERRUPT_NUMBER;
 
 const INITIAL_PRIORITY: AtomicU8 = AtomicU8::new(0);
 const INITIAL_ENABLE: AtomicBool = AtomicBool::new(false);
@@ -418,7 +417,8 @@ impl VirtualInterruptController {
                 ref args,
                 rval,
             } => {
-                *rval = unsafe { Simulator::kernel_syscall_handler(*id, args[0], args[1]) };
+                *rval =
+                    unsafe { Simulator::kernel_syscall_handler(*id, args[0], args[1], args[2]) };
             }
             _ => panic!("Unhandled exception"),
         }
@@ -645,20 +645,16 @@ impl AlarmClockController for Simulator {
     }
 }
 
-extern "Rust" {
-    fn start_kernel(hal: HAL) -> !;
-}
-
 #[no_mangle]
 fn main() {
     unsafe {
-        start_kernel(Simulator::new());
+        start_kernel();
     }
 }
 
 #[no_mangle]
 #[linkage = "weak"]
-fn _scars_idle_task_hook() {
+fn _scars_idle_thread_hook() {
     Simulator::idle();
 }
 
@@ -671,15 +667,13 @@ pub struct Simulator {
 
 unsafe impl Sync for Simulator {}
 
-impl Simulator {
-    fn new() -> Simulator {
-        Simulator {
+impl HardwareAbstractionLayer for Simulator {
+    const NAME: &'static str = "Simulator";
+
+    unsafe fn init(hal: *mut Self) {
+        *hal = Simulator {
             timer: VirtualTimer::new(),
             interrupt_controller: VirtualInterruptController::new(),
         }
     }
-}
-
-impl HardwareAbstractionLayer for Simulator {
-    const NAME: &'static str = "Simulator";
 }

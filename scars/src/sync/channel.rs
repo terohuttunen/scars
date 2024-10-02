@@ -1,4 +1,5 @@
 use crate::kernel::AnyPriority;
+use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::sync::condvar::Condvar;
 use crate::sync::mutex::Mutex;
 use core::mem::MaybeUninit;
@@ -131,6 +132,7 @@ pub enum TrySendError<T> {
 }
 
 pub struct Channel<T, const CAPACITY: usize, const CEILING: AnyPriority> {
+    receiver_acquired: AtomicBool,
     fifo: Mutex<FIFO<T, CAPACITY>, CEILING>,
     receivers: Condvar<CEILING>,
     senders: Condvar<CEILING>,
@@ -138,7 +140,8 @@ pub struct Channel<T, const CAPACITY: usize, const CEILING: AnyPriority> {
 
 impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, CEILING> {
     pub const fn new() -> Channel<T, CAPACITY, CEILING> {
-                Channel {
+        Channel {
+            receiver_acquired: AtomicBool::new(false),
             fifo: Mutex::new(FIFO::new()),
             receivers: Condvar::new(),
             senders: Condvar::new(),
@@ -153,9 +156,6 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, 
         }
 
         let item = fifo_guard.pop().unwrap();
-
-        // Drop FIFO guard before activating senders
-        drop(fifo_guard);
 
         self.senders.notify_one();
 
@@ -173,8 +173,23 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, 
         // FIFO is locked and cannot be empty, pop one item
         let item = fifo_guard.pop().unwrap();
 
-        // Drop FIFO guard before activating senders
-        drop(fifo_guard);
+        // Notify blocked senders that there is room in the FIFO
+        self.senders.notify_one();
+
+        item
+    }
+
+    pub async fn async_recv(&'static self) -> T {
+        let fifo_guard = self.fifo.lock();
+
+        // Wait file FIFO is empty
+        let mut fifo_guard = self
+            .receivers
+            .async_wait_while(fifo_guard, |fifo| fifo.is_empty())
+            .await;
+
+        // FIFO is locked and cannot be empty, pop one item
+        let item = fifo_guard.pop().unwrap();
 
         // Notify blocked senders that there is room in the FIFO
         self.senders.notify_one();
@@ -190,9 +205,6 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, 
 
         fifo_guard.push(item);
 
-        // Drop FIFO guard before activating receivers
-        drop(fifo_guard);
-
         self.receivers.notify_one();
     }
 
@@ -204,9 +216,6 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, 
         }
 
         fifo_guard.push(item);
-
-        // Drop FIFO guard before activating receivers
-        drop(fifo_guard);
 
         self.receivers.notify_one();
 
@@ -225,10 +234,26 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, 
         self.fifo.lock().used()
     }
 
-    pub const fn split(
+    pub fn receiver(&'static self) -> Receiver<T, CAPACITY, CEILING> {
+        match self.receiver_acquired.compare_exchange(
+            false,
+            true,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => Receiver { channel: self },
+            Err(_) => panic!("Receiver already acquired"),
+        }
+    }
+
+    pub fn sender(&'static self) -> Sender<T, CAPACITY, CEILING> {
+        Sender { channel: self }
+    }
+
+    pub fn split(
         &'static mut self,
     ) -> (Sender<T, CAPACITY, CEILING>, Receiver<T, CAPACITY, CEILING>) {
-        (Sender { channel: self }, Receiver { channel: self })
+        (self.sender(), self.receiver())
     }
 }
 
@@ -282,6 +307,10 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Receiver<T, CAPACITY,
         self.channel.try_recv()
     }
 
+    pub async fn async_recv(&self) -> T {
+        self.channel.async_recv().await
+    }
+
     pub const fn capacity(&self) -> usize {
         CAPACITY
     }
@@ -292,6 +321,14 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Receiver<T, CAPACITY,
 
     pub fn used(&self) -> usize {
         self.channel.used()
+    }
+}
+
+impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Drop for Receiver<T, CAPACITY, CEILING> {
+    fn drop(&mut self) {
+        self.channel
+            .receiver_acquired
+            .store(false, Ordering::SeqCst);
     }
 }
 

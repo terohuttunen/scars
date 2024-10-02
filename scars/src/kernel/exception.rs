@@ -45,7 +45,7 @@ pub enum RuntimeError {
     BlockingForbidden = 7,
 
     /// Attempt to use ceiling locking in idle task
-    IdleTaskCeilingLock = 8,
+    IdleThreadCeilingLock = 8,
 
     Unknown,
 }
@@ -59,7 +59,7 @@ impl RuntimeError {
             4 => RuntimeError::TaskTerminated,
             5 => RuntimeError::RecursiveLock,
             6 => RuntimeError::InterruptHandlerViolation,
-            7 => RuntimeError::IdleTaskCeilingLock,
+            7 => RuntimeError::IdleThreadCeilingLock,
             _ => RuntimeError::Unknown,
         }
     }
@@ -73,7 +73,7 @@ impl RuntimeError {
             RuntimeError::RecursiveLock => "RecursiveMutex",
             RuntimeError::InterruptHandlerViolation => "InterruptHandlerViolation",
             RuntimeError::BlockingForbidden => "BlockingForbidden",
-            RuntimeError::IdleTaskCeilingLock => "IdleTaskCeilingLock",
+            RuntimeError::IdleThreadCeilingLock => "IdleTaskCeilingLock",
             RuntimeError::Unknown => "Unknown",
         }
     }

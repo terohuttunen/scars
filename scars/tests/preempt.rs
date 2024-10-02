@@ -16,67 +16,67 @@ const STACK_SIZE: usize = 1024;
 #[cfg(feature = "khal-sim")]
 const STACK_SIZE: usize = 16384;
 
-// Higher priority task
-const TASK0_PRIORITY: u8 = 3;
+// Higher priority thread
+const THREAD0_PRIORITY: u8 = 3;
 
-// Lower than higher priority task
-const TASK1_PRIORITY: u8 = 200;
+// Lower than higher priority thread
+const THREAD1_PRIORITY: u8 = 200;
 
 const CAPACITY: usize = 10;
-const CEILING: AnyPriority = any_task_priority(TASK1_PRIORITY);
+const CEILING: AnyPriority = any_thread_priority(THREAD1_PRIORITY);
 
-/// Test that the scheduler preempts lower priority task when
-/// a higher priority task becomes runnable from sleep.
+/// Test that the scheduler preempts lower priority thread when
+/// a higher priority thread becomes runnable from sleep.
 #[test_case]
-pub fn high_priority_task_preempts_low_priority() {
+pub fn high_priority_thread_preempts_low_priority() {
     #[derive(Debug, PartialEq, Eq, Clone)]
     pub enum Event {
         IdleStart,
         IdlePreempt,
         IdleEnd,
-        Task0Start,
-        Task0Preempt,
-        Task0End,
-        Task1Start,
-        Task1End,
+        Thread0Start,
+        Thread0Preempt,
+        Thread0End,
+        Thread1Start,
+        Thread1End,
     }
 
     let (sender, receiver) = make_channel!(Event, CAPACITY, CEILING);
     sender.send(Event::IdleStart);
 
-    let task0 = make_task!("task0", TASK0_PRIORITY, STACK_SIZE);
+    let thread0 = make_thread!("thread0", THREAD0_PRIORITY, STACK_SIZE);
 
     let start_time = Instant::now();
     let wakeup_time = start_time + Duration::from_millis(50);
     let end_time = start_time + Duration::from_millis(100);
     let sender0 = sender.clone();
-    task0.start(move || {
-        sender0.send(Event::Task0Start);
+    thread0.start(move || {
+        sender0.send(Event::Thread0Start);
         let end_time = wakeup_time + Duration::from_millis(100);
 
-        let task1 = make_task!("task1", TASK1_PRIORITY, STACK_SIZE);
+        let thread1 = make_thread!("thread1", THREAD1_PRIORITY, STACK_SIZE);
         let sender1 = sender0.clone();
-        task1.start(move || {
+        thread1.start(move || {
             let wakeup_time = wakeup_time + Duration::from_millis(25);
 
-            sender1.send(Event::Task1Start);
+            sender1.send(Event::Thread1Start);
             let end_time = wakeup_time + Duration::from_millis(50);
-            // Go to sleep until it is time to wake up to preempt the lower priority task0
+            // Go to sleep until it is time to wake up to preempt the lower priority thread0
             scars::delay_until(wakeup_time);
-            sender1.send(Event::Task0Preempt);
+            sender1.send(Event::Thread0Preempt);
             // Do some work until end_time
             while Instant::now() < end_time {}
 
-            sender1.send(Event::Task1End);
+            sender1.send(Event::Thread1End);
             scars::delay_until(wakeup_time + Duration::from_secs(1));
 
             scars_test::test_fail()
         });
 
-        // Go to sleep until it is time to wake up to preempt the idle task
-        scars::printkln!("Task0 going to sleep until {:?}", wakeup_time);
+        // Go to sleep until it is time to wake up to preempt the idle thread
+        scars::printkln!("Thead0 going to sleep until {:?}", wakeup_time);
         scars::delay_until(wakeup_time);
-        // Idle task preempted
+        // Idle thread preempted
         let preempt_latency = wakeup_time.elapsed();
         assert!(preempt_latency < Duration::from_millis(10));
         sender0.send(Event::IdlePreempt);
@@ -84,7 +84,7 @@ pub fn high_priority_task_preempts_low_priority() {
         // Do some work until end_time
         while Instant::now() < end_time {}
 
-        sender0.send(Event::Task0End);
+        sender0.send(Event::Thread0End);
 
         scars::delay_until(wakeup_time + Duration::from_secs(1));
 
@@ -96,12 +96,12 @@ pub fn high_priority_task_preempts_low_priority() {
     sender.send(Event::IdleEnd);
 
     assert_eq!(receiver.recv(), Event::IdleStart);
-    assert_eq!(receiver.recv(), Event::Task0Start);
-    assert_eq!(receiver.recv(), Event::Task1Start);
+    assert_eq!(receiver.recv(), Event::Thread0Start);
+    assert_eq!(receiver.recv(), Event::Thread1Start);
     assert_eq!(receiver.recv(), Event::IdlePreempt);
-    assert_eq!(receiver.recv(), Event::Task0Preempt);
-    assert_eq!(receiver.recv(), Event::Task1End);
-    assert_eq!(receiver.recv(), Event::Task0End);
+    assert_eq!(receiver.recv(), Event::Thread0Preempt);
+    assert_eq!(receiver.recv(), Event::Thread1End);
+    assert_eq!(receiver.recv(), Event::Thread0End);
     assert_eq!(receiver.recv(), Event::IdleEnd);
     scars_test::test_succeed();
 }

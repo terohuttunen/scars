@@ -7,7 +7,7 @@ use scars_khal::*;
 global_asm!(include_str!("trap.S"));
 
 extern "C" {
-    static CURRENT_TASK_CONTEXT: AtomicPtr<RISCVTrapFrame>;
+    static CURRENT_THREAD_CONTEXT: AtomicPtr<RISCVTrapFrame>;
 }
 
 #[repr(C)]
@@ -56,7 +56,7 @@ impl ContextInfo for RISCVTrapFrame {
     ) {
         let mut mstatus: usize = 0;
         // Set machine previous interrupt enable to enable user mode interrupts
-        // when entering the user mode task.
+        // when entering the user mode thread.
         mstatus.set_bit(7, true);
         // Set machine previous privilege bits to stay in machine mode
         mstatus.set_bits(11..13, riscv::register::mstatus::MPP::Machine as usize);
@@ -92,7 +92,7 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
         match exception_code {
             // Environment call from U|S|M-mode
             8 | 9 | 11 => {
-                let context = unsafe { &mut *CURRENT_TASK_CONTEXT.load(Ordering::SeqCst) };
+                let context = unsafe { &mut *CURRENT_THREAD_CONTEXT.load(Ordering::SeqCst) };
                 context.pc = mepc + 4;
                 // SAFETY: Called from interrupt handler with interrupts disabled
                 let rval = unsafe {
@@ -106,7 +106,7 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
             }
             code => {
                 let kind = FaultKind::try_from(code).unwrap_or(FaultKind::Unknown);
-                let context = unsafe { &mut *CURRENT_TASK_CONTEXT.load(Ordering::SeqCst) };
+                let context = unsafe { &mut *CURRENT_THREAD_CONTEXT.load(Ordering::SeqCst) };
                 let exception = RISCFault::new(kind, mtval, context);
                 RISCV32::kernel_exception_handler(&exception);
             }
@@ -208,7 +208,7 @@ impl FaultInfo<RISCVTrapFrame> for RISCFault {
 }
 
 extern "C" {
-    fn _start_first_task(idle_context: *mut ()) -> !;
+    fn _start_first_thread(idle_context: *mut ()) -> !;
 }
 
 pub struct RISCV32 {}
@@ -227,8 +227,8 @@ impl FlowController for RISCV32 {
     type Context = RISCVTrapFrame;
     type Fault = RISCFault;
 
-    fn start_first_task(idle_context: *mut Self::Context) -> ! {
-        unsafe { _start_first_task(idle_context as *mut _) }
+    fn start_first_thread(idle_context: *mut Self::Context) -> ! {
+        unsafe { _start_first_thread(idle_context as *mut _) }
     }
 
     #[inline(always)]
@@ -245,7 +245,7 @@ impl FlowController for RISCV32 {
         unsafe { riscv::asm::wfi() };
     }
 
-    fn syscall(id: usize, arg0: usize, arg1: usize) -> usize {
+    fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
         let rval: usize;
         unsafe {
             asm!(
@@ -253,6 +253,7 @@ impl FlowController for RISCV32 {
                 in("a7") id,
                 inout("a0") arg0 => rval,
                 in("a1") arg1,
+                in("a2") arg2,
                 options(nostack)
             );
         }

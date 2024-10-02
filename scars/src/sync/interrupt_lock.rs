@@ -37,6 +37,9 @@ impl Lock for InterruptLock {
     }
 }
 
+unsafe impl Send for InterruptLock {}
+unsafe impl Sync for InterruptLock {}
+
 #[derive(Clone, Copy, Debug)]
 pub struct InterruptLockKey<'lock> {
     _private: PhantomData<&'lock ()>,

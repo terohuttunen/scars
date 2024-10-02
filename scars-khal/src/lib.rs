@@ -7,6 +7,10 @@ extern "C" {
     pub static CURRENT_TASK_CONTEXT: AtomicPtr<*const ()>;
 }
 
+extern "Rust" {
+    pub fn start_kernel() -> !;
+}
+
 pub trait GetInterruptNumber {
     fn get_interrupt_number(&self) -> u16;
 }
@@ -86,7 +90,7 @@ pub trait FlowController {
     type Context: ContextInfo;
     type Fault: FaultInfo<Self::Context>;
 
-    fn start_first_task(idle_context: *mut Self::Context) -> !;
+    fn start_first_thread(idle_context: *mut Self::Context) -> !;
 
     fn abort() -> !;
 
@@ -94,11 +98,15 @@ pub trait FlowController {
 
     fn idle();
 
-    fn syscall(id: usize, arg0: usize, arg1: usize) -> usize;
+    fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize;
 }
 
 pub trait HardwareAbstractionLayer:
     AlarmClockController + InterruptController + FlowController + Sync
 {
     const NAME: &'static str;
+
+    unsafe fn init(hal: *mut Self)
+    where
+        Self: Sized;
 }

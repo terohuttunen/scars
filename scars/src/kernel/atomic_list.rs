@@ -12,9 +12,6 @@ pub(crate) struct AtomicQueue<T, N: LinkedListTag> {
     head: AtomicPtr<AtomicQueueLink<T, N>>,
     tail: AtomicPtr<AtomicQueueLink<T, N>>,
     _phantom: PhantomData<(Cell<AtomicQueueLink<T, N>>, N)>,
-    // Links have backreferences to containing lists.
-    // Therefore, lists must be pinned.
-    _pinned: PhantomPinned,
 }
 
 #[allow(dead_code)]
@@ -25,13 +22,27 @@ impl<T: AtomicLinked<N>, N: LinkedListTag> AtomicQueue<T, N> {
             head: AtomicPtr::new(core::ptr::null_mut()),
             tail: AtomicPtr::new(core::ptr::null_mut()),
             _phantom: PhantomData,
-            _pinned: PhantomPinned,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len.load(Ordering::SeqCst) == 0
     }
 
     pub fn push_back<'item>(&self, item: &'item T) {
         let inserted_link = item.get_link();
         let inserted_link_ptr = inserted_link.as_ptr();
+
+        // Mark the link as being in a queue
+        inserted_link
+            .queue
+            .compare_exchange(
+                core::ptr::null_mut(),
+                self as *const _ as *mut _,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .expect("Item is already in a queue");
 
         // Just a check that next of the inserted item is null
         let old_next = inserted_link.next.load(Ordering::SeqCst);
@@ -124,9 +135,13 @@ impl<T: AtomicLinked<N>, N: LinkedListTag> AtomicQueue<T, N> {
                     .next
                     .store(core::ptr::null_mut(), Ordering::SeqCst);
 
+                // Mark the link as not being in a queue
+                head_link
+                    .queue
+                    .store(core::ptr::null_mut(), Ordering::SeqCst);
+
                 return Some(head_link.get_item());
             }
-            crate::printkln!("c");
         }
     }
 }
@@ -135,14 +150,17 @@ unsafe impl<T, N: LinkedListTag> Send for AtomicQueue<T, N> {}
 unsafe impl<T, N: LinkedListTag> Sync for AtomicQueue<T, N> {}
 
 pub(crate) struct AtomicQueueLink<T, N: LinkedListTag> {
+    queue: AtomicPtr<AtomicQueue<T, N>>,
     next: AtomicPtr<AtomicQueueLink<T, N>>,
     _pin: PhantomPinned,
     _phantom: PhantomData<(fn(AtomicQueueLink<T, N>) -> AtomicQueueLink<T, N>, N)>,
 }
 
+#[allow(dead_code)]
 impl<T: AtomicLinked<N>, N: LinkedListTag> AtomicQueueLink<T, N> {
     pub const fn new() -> AtomicQueueLink<T, N> {
         AtomicQueueLink {
+            queue: AtomicPtr::new(core::ptr::null_mut()),
             next: AtomicPtr::new(core::ptr::null_mut()),
             _pin: PhantomPinned,
             _phantom: PhantomData,
@@ -167,8 +185,13 @@ impl<T: AtomicLinked<N>, N: LinkedListTag> AtomicQueueLink<T, N> {
             )
         }
     }
+
+    pub fn is_linked(&self) -> bool {
+        !self.queue.load(Ordering::Relaxed).is_null()
+    }
 }
 
+#[allow(dead_code)]
 pub(crate) trait AtomicLinked<N: LinkedListTag>
 where
     Self: Sized,

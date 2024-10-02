@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "app",
     "khal/scars-khal-e310x",
     "khal/scars-khal-stm32f4",
     "khal/scars-khal-sim",
@@ -9,7 +8,9 @@ members = [
     "scars-arch-riscv",
     "scars-arch-cortex-m",
     "scars-test",
-    "scars-macros"]
+    "scars-macros",
+    "examples/stm32f4/interrupt",
+    "examples/stm32f4/tasking"]
 resolver = "2"
 
 [profile.dev]

@@ -1,6 +1,7 @@
-use crate::sync::Lock;
+use crate::sync::{KeyToken, Lock, Once};
 use core::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut, UnsafeCell};
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 
 #[repr(transparent)]
 pub struct LockedCell<T: ?Sized, L: Lock> {
@@ -8,8 +9,14 @@ pub struct LockedCell<T: ?Sized, L: Lock> {
     value: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized, L: Lock> Send for LockedCell<T, L> where T: Send {}
-unsafe impl<T: ?Sized, L: Lock> Sync for LockedCell<T, L> {}
+unsafe impl<T: ?Sized, L: Lock> Send for LockedCell<T, L>
+where
+    T: Send,
+    L: Send,
+{
+}
+
+unsafe impl<T: ?Sized, L: Lock> Sync for LockedCell<T, L> where L: Sync {}
 
 impl<T, L: Lock> LockedCell<T, L> {
     #[inline]
@@ -62,7 +69,7 @@ impl<T: ?Sized, L: Lock> LockedCell<T, L> {
     }
 
     #[inline]
-    pub fn get_mut(&mut self, _key: L::Key<'_>) -> &mut T {
+    pub fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
     }
 
@@ -178,9 +185,14 @@ impl<T: Default, L: Lock> LockedRefCell<T, L> {
     }
 }
 
-unsafe impl<T: ?Sized, L: Lock> Send for LockedRefCell<T, L> where T: Send {}
+unsafe impl<T: ?Sized, L: Lock> Send for LockedRefCell<T, L>
+where
+    T: Send,
+    L: Send,
+{
+}
 
-unsafe impl<T: ?Sized, L: Lock> Sync for LockedRefCell<T, L> {}
+unsafe impl<T: ?Sized, L: Lock> Sync for LockedRefCell<T, L> where L: Sync {}
 
 impl<T: Default, L: Lock> Default for LockedRefCell<T, L> {
     #[inline]
@@ -192,5 +204,82 @@ impl<T: Default, L: Lock> Default for LockedRefCell<T, L> {
 impl<T, L: Lock> From<T> for LockedRefCell<T, L> {
     fn from(t: T) -> LockedRefCell<T, L> {
         LockedRefCell::new(t)
+    }
+}
+
+pub struct LockedOnceCell<T, L: Lock> {
+    once: Once,
+    value: LockedCell<MaybeUninit<T>, L>,
+    _phantom: PhantomData<(L, T)>,
+}
+
+impl<T, L: Lock> LockedOnceCell<T, L> {
+    pub const fn new() -> LockedOnceCell<T, L> {
+        LockedOnceCell {
+            once: Once::new(),
+            value: LockedCell::new(MaybeUninit::uninit()),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        if self.once.is_completed() {
+            let _key = unsafe { <L as Lock>::Key::new() };
+            let value = unsafe { (&*self.value.as_ptr()).assume_init_ref() };
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        if self.once.is_completed() {
+            let _key = unsafe { <L as Lock>::Key::new() };
+            let value = unsafe { (&mut *self.value.as_ptr()).assume_init_mut() };
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn set(&self, key: L::Key<'_>, value: T) -> Result<(), T> {
+        let mut value = Some(value);
+        self.once.call_once(|| {
+            let value = MaybeUninit::new(value.take().unwrap());
+            self.value.set(key, value);
+        });
+        match value {
+            None => Ok(()),
+            Some(value) => Err(value),
+        }
+    }
+
+    pub fn get_or_init(&self, key: L::Key<'_>, init: impl FnOnce() -> T) -> &T {
+        if !self.once.is_completed() {
+            let value = init();
+            let _ = self.set(key, value);
+        }
+        let value = unsafe { (&*self.value.as_ptr()).assume_init_ref() };
+        value
+    }
+
+    pub fn into_inner(self) -> Option<T> {
+        if self.once.is_completed() {
+            let key = unsafe { <L as Lock>::Key::new() };
+            let value = unsafe { self.value.replace(key, MaybeUninit::uninit()).assume_init() };
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn take(&mut self) -> Option<T> {
+        if self.once.is_completed() {
+            let key = unsafe { L::Key::new() };
+            let value = unsafe { self.value.replace(key, MaybeUninit::uninit()).assume_init() };
+            Some(value)
+        } else {
+            None
+        }
     }
 }

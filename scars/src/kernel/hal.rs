@@ -4,21 +4,24 @@ use core::mem::MaybeUninit;
 use scars_khal::*;
 
 #[cfg(feature = "khal-e310x")]
-pub(crate) use scars_khal_e310x as kernel_hal;
+pub use scars_khal_e310x as kernel_hal;
 #[cfg(feature = "khal-sim")]
-pub(crate) use scars_khal_sim as kernel_hal;
+pub use scars_khal_sim as kernel_hal;
 #[cfg(feature = "khal-stm32f4")]
-pub(crate) use scars_khal_stm32f4 as kernel_hal;
+pub use scars_khal_stm32f4 as kernel_hal;
 
 pub use kernel_hal::pac;
 
 pub type Context = <kernel_hal::HAL as FlowController>::Context;
 pub type Fault = <kernel_hal::HAL as FlowController>::Fault;
 
+#[allow(dead_code)]
 pub const MAX_INTERRUPT_NUMBER: usize =
     <kernel_hal::HAL as InterruptController>::MAX_INTERRUPT_NUMBER;
+#[allow(dead_code)]
 pub const MAX_INTERRUPT_PRIORITY: usize =
     <kernel_hal::HAL as InterruptController>::MAX_INTERRUPT_PRIORITY;
+#[allow(dead_code)]
 pub(crate) const TICK_FREQ_HZ: u64 = <kernel_hal::HAL as AlarmClockController>::TICK_FREQ_HZ;
 
 pub struct Hal {
@@ -39,9 +42,9 @@ static HAL: Hal = Hal {
     hal: SyncUnsafeCell::new(MaybeUninit::uninit()),
 };
 
-pub(crate) fn init_hal(hal: kernel_hal::HAL) {
+pub(crate) fn init_hal() {
     unsafe {
-        (&mut *HAL.get()).write(hal);
+        kernel_hal::HAL::init((&mut *HAL.get()).as_mut_ptr());
     }
 }
 
@@ -149,8 +152,8 @@ pub(crate) fn restore(restore_state: bool) {
 
 #[allow(dead_code)]
 #[inline(always)]
-pub(crate) fn start_first_task(idle_context: *mut Context) -> ! {
-    <kernel_hal::HAL as FlowController>::start_first_task(idle_context)
+pub(crate) fn start_first_thread(idle_context: *mut Context) -> ! {
+    <kernel_hal::HAL as FlowController>::start_first_thread(idle_context)
 }
 
 #[allow(dead_code)]
@@ -173,6 +176,6 @@ pub fn idle() {
 
 #[allow(dead_code)]
 #[inline(always)]
-pub(crate) fn syscall(id: usize, arg0: usize, arg1: usize) -> usize {
-    <kernel_hal::HAL as FlowController>::syscall(id, arg0, arg1)
+pub(crate) fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
+    <kernel_hal::HAL as FlowController>::syscall(id, arg0, arg1, arg2)
 }
