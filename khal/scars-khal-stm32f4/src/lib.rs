@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(panic_info_message)]
 #![feature(ptr_sub_ptr)]
 pub mod peripherals;
 use core::arch::global_asm;
