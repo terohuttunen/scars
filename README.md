@@ -1,9 +1,9 @@
 # SCARS
 SCARS is a Real-Time Operating System (RTOS) designed for hard real-time applications,
 inspired by the Ada Ravenscar profile. It is a traditional style RTOS with fixed
-priority preemptive scheduling, not an async executor. **It is still a work-in-progress,
-and is not recommended for production systems.** Currently only RISC-V without FPU, and
-pthreads based simulator are implemented. ARM and FPU support are planned.
+priority preemptive scheduling, and built-in async executor. **It is still a work-in-progress,
+and is not recommended for production systems.** Currently only RISC-V and ARM Cortex-M without FPU,
+as well as pthreads based simulator are implemented. FPU support is planned.
 
   - It implements the immediate priority ceiling protocol, and provides an unified
     priority model for threads and interrupts, which allows developers to use the same
@@ -22,6 +22,9 @@ pthreads based simulator are implemented. ARM and FPU support are planned.
   - Any priority based synchronization primitives that are below a priority ceiling,
     will not prevent higher priority threads or interrupts from executing.
 
+  - Built-in async executor allows associating async tasks to interrupt handlers.
+    Executor is polled on-interrupt, and by the kernel when needed.
+
 ## Threads
 The entry thread is defined with `entry` attribute for a function. There can be only
 one entry thread. Threads can never exit.
@@ -34,15 +37,15 @@ fn main() {
 Other threads are created with the `make_thread!` macro, which statically allocates the
 thread state, including the thread stack.
 ```rust
-const thread_PRIO: threadPriority = 2;
-const thread_STACK_SIZE: usize = 1024; 
-const CHANNEL_CEILING: AnyPriority = Priority::any_thread_priority(thread_PRIO);
+const THREAD_PRIO: Priority = Priority::thread(2);
+const THREAD_STACK_SIZE: usize = 1024;
+const CEILING_PRIO: Priority = THREAD_PRIO;
 const CHANNEL_CAPACITY: usize = 1;
 
 #[scars::entry(name = "main", priority = 1, stack_size = 2048)]
 fn main() {
-    let thread = make_thread!("thread", thread_PRIO, thread_STACK_SIZE);
-    let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CHANNEL_CEILING);
+    let thread = make_thread!("thread", THREAD_PRIO, THREAD_STACK_SIZE);
+    let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CEILING_PRIO);
 
     thread.start(move || {
         // thread closure captures `sender`
@@ -81,14 +84,14 @@ acquire a `CeilingLock` from the idle thread will result in a runtime error.
 Interrupt handlers are created similarly to threads with `make_interrupt_handler!` macro.
 ```rust
 use scars::pac;
-const INTERRUPT_PRIO: InterruptPriority = 2;
-const CHANNEL_CEILING: AnyPriority = Priority::any_interrupt_priority(INTERRUPT_PRIO);
+const INTERRUPT_PRIO: Priority = Priority::thread(2);
+const CEILING_PRIO: Priority = INTERRUPT_PRIO;
 const CHANNEL_CAPACITY: usize = 10;
 
 #[scars::entry(name = "main", priority = 1, stack_size = 2048)]
 fn main() {
     let uart_handler = make_interrupt_handler!(pac::Interrupt::UART1, INTERRUPT_PRIO);
-    let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CHANNEL_CEILING);
+    let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CEILING_PRIO);
     let mut counter: u32 = 0;
 
     uart_handler.attach(move || {
