@@ -1,10 +1,13 @@
-use crate::kernel::priority::ThreadPriority;
+use crate::kernel::priority::Priority;
 use crate::make_thread;
 use crate::sync::PreemptLock;
 use crate::thread::{RawThread, ThreadExecutionState};
 
 const IDLE_THREAD_NAME: &'static str = "[idle]";
-const IDLE_THREAD_PRIO: ThreadPriority = 0;
+const IDLE_THREAD_PRIO: Priority = Priority::Thread(0);
+
+#[cfg(test)]
+const TEST_THREAD_PRIO: Priority = Priority::Thread(1);
 
 #[cfg(not(feature = "khal-sim"))]
 const IDLE_THREAD_STACK_SIZE: usize = 1024;
@@ -53,7 +56,13 @@ pub(crate) fn init_idle_thread() -> &'static RawThread {
 
         #[cfg(test)]
         {
-            let test_thread = make_thread!("test", 1, IDLE_THREAD_STACK_SIZE, 1, executor = true);
+            let test_thread = make_thread!(
+                "test",
+                TEST_THREAD_PRIO,
+                IDLE_THREAD_STACK_SIZE,
+                1,
+                executor = true
+            );
             test_thread.start(|| {
                 crate::test_main();
                 crate::scars_test::test_succeed();

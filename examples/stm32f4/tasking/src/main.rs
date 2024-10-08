@@ -6,12 +6,13 @@
 #![feature(panic_info_message)]
 #![feature(type_alias_impl_trait)]
 use scars::khal::{Interrupt, Peripherals};
-use scars::{delay_until, make_channel, make_thread, AnyPriority, Priority};
+use scars::prelude::*;
+use scars::time::{Duration, Instant};
 
-const PRODUCER_PRIORITY: u8 = 2;
-const CONSUMER_PRIORITY: u8 = 3;
+const PRODUCER_PRIORITY: Priority = Priority::thread(3);
+const CONSUMER_PRIORITY: Priority = Priority::thread(2);
+const CEILING_PRIORITY: Priority = PRODUCER_PRIORITY.max(CONSUMER_PRIORITY);
 const THREAD_STACK_SIZE: usize = 1024;
-const CEILING_PRIORITY: AnyPriority = 3;
 const CHANNEL_CAPACITY: usize = 16;
 
 #[scars::entry(name = "main", priority = 1, stack_size = 4096)]
@@ -26,7 +27,7 @@ fn main() {
         scars::printkln!("[producer]: sending {}", count);
         let _ = sender.send(count);
         count += 1;
-        delay_until(scars::time::Instant::now() + scars::time::Duration::from_secs(1));
+        scars::delay_until(Instant::now() + Duration::from_secs(1));
     });
 
     consumer_thread.start(move || loop {

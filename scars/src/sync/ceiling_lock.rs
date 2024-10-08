@@ -1,11 +1,11 @@
 use super::TryLockError;
 use crate::cell::LockedCell;
 use crate::kernel::{
-    hal::get_interrupt_threshold,
     interrupt::RawInterruptHandler,
     list::{impl_linked, Link},
+    priority::PriorityStatus,
     scheduler::{ExecutionContext, Scheduler},
-    AnyPriority, Priority,
+    Priority,
 };
 use crate::runtime_error;
 use crate::sync::{KeyToken, Lock, PreemptLock};
@@ -41,9 +41,9 @@ unsafe impl Send for RawCeilingLock {}
 unsafe impl Sync for RawCeilingLock {}
 
 impl RawCeilingLock {
-    pub const fn new(ceiling_priority: AnyPriority) -> RawCeilingLock {
+    pub const fn new(ceiling_priority: Priority) -> RawCeilingLock {
         RawCeilingLock {
-            ceiling_priority: Priority::any(ceiling_priority),
+            ceiling_priority,
             owner: LockedCell::new(INVALID_THREAD_ID),
             lock_list_link: Link::new(),
         }
@@ -116,10 +116,6 @@ impl RawCeilingLock {
     pub(crate) unsafe fn section_start(ceiling: Priority) -> CeilingLockRestoreState {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
-                if !ceiling.is_interrupt() || ceiling.get_value() < get_interrupt_threshold() {
-                    runtime_error!(RuntimeError::CeilingPriorityViolation);
-                }
-
                 let saved_priority = current_interrupt.raise_section_lock_priority(ceiling);
 
                 CeilingLockRestoreState { saved_priority }
@@ -147,11 +143,11 @@ impl RawCeilingLock {
     }
 }
 
-pub struct CeilingLock<const CEILING: AnyPriority> {
+pub struct CeilingLock<const CEILING: Priority> {
     raw: RawCeilingLock,
 }
 
-impl<const CEILING: AnyPriority> CeilingLock<CEILING> {
+impl<const CEILING: Priority> CeilingLock<CEILING> {
     pub const fn new() -> CeilingLock<CEILING> {
         CeilingLock {
             raw: RawCeilingLock::new(CEILING),
@@ -181,16 +177,15 @@ impl<const CEILING: AnyPriority> CeilingLock<CEILING> {
 }
 
 pub struct CeilingLockRestoreState {
-    saved_priority: Priority,
+    saved_priority: PriorityStatus,
 }
 
-impl<const CEILING: AnyPriority> Lock for CeilingLock<CEILING> {
+impl<const CEILING: Priority> Lock for CeilingLock<CEILING> {
     type RestoreState = CeilingLockRestoreState;
     type Key<'lock> = CeilingLockKey<'lock, CEILING>;
 
     unsafe fn section_start() -> Self::RestoreState {
-        let ceiling = Priority::any(CEILING);
-        RawCeilingLock::section_start(ceiling)
+        RawCeilingLock::section_start(CEILING)
     }
 
     unsafe fn try_section_start() -> Result<Self::RestoreState, TryLockError> {
@@ -202,15 +197,15 @@ impl<const CEILING: AnyPriority> Lock for CeilingLock<CEILING> {
     }
 }
 
-unsafe impl<const CEILING: AnyPriority> Send for CeilingLock<CEILING> {}
-unsafe impl<const CEILING: AnyPriority> Sync for CeilingLock<CEILING> {}
+unsafe impl<const CEILING: Priority> Send for CeilingLock<CEILING> {}
+unsafe impl<const CEILING: Priority> Sync for CeilingLock<CEILING> {}
 
 #[derive(Clone, Copy, Debug)]
-pub struct CeilingLockKey<'lock, const CEILING: AnyPriority> {
+pub struct CeilingLockKey<'lock, const CEILING: Priority> {
     _private: PhantomData<&'lock ()>,
 }
 
-impl<'key, const CEILING: AnyPriority> CeilingLockKey<'key, CEILING> {
+impl<'key, const CEILING: Priority> CeilingLockKey<'key, CEILING> {
     #[inline(always)]
     pub unsafe fn new() -> Self {
         CeilingLockKey {
@@ -219,7 +214,7 @@ impl<'key, const CEILING: AnyPriority> CeilingLockKey<'key, CEILING> {
     }
 }
 
-impl<'lock, const CEILING: AnyPriority> KeyToken<'lock> for CeilingLockKey<'lock, CEILING> {
+impl<'lock, const CEILING: Priority> KeyToken<'lock> for CeilingLockKey<'lock, CEILING> {
     unsafe fn new() -> CeilingLockKey<'lock, CEILING>
     where
         Self: Sized,

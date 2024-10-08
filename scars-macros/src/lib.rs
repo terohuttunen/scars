@@ -35,7 +35,7 @@ pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
         #item
         #[export_name = "_start_main_thread"]
         pub fn _start_main_thread() {
-            let main_thread = ::scars::make_thread!(#thread_name, #thread_priority, #thread_stack_size);
+            let main_thread = ::scars::make_thread!(#thread_name, ::scars::Priority::thread(#thread_priority), #thread_stack_size);
             main_thread.start(|| {
                 #main_fn_ident();
             });

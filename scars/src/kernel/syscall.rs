@@ -119,7 +119,7 @@ unsafe fn _private_kernel_syscall_handler(
     arg2: usize,
 ) -> usize {
     static SYSCALL_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
-        SyncUnsafeCell::new(RawInterruptHandler::new(0, 0));
+        SyncUnsafeCell::new(RawInterruptHandler::new(0, Priority::interrupt(0)));
 
     let mut rval = 0;
     interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || match id {
@@ -127,7 +127,10 @@ unsafe fn _private_kernel_syscall_handler(
             Scheduler::yield_current_thread_isr();
         }
         SYSCALL_ID_WAIT => {
-            Scheduler::wait_current_thread_isr(arg0 as *mut _, Priority::any(arg1 as AnyPriority));
+            Scheduler::wait_current_thread_isr(
+                arg0 as *mut _,
+                Priority::from_any(arg1 as AnyPriority),
+            );
         }
         SYSCALL_ID_WAIT_EVENT => {
             rval = Scheduler::wait_current_thread_event_isr(arg0 as u32, None) as usize;

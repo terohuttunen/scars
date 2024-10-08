@@ -17,16 +17,16 @@ const STACK_SIZE: usize = 1024;
 const STACK_SIZE: usize = 16384;
 
 // Higher priority thread
-const THREAD0_PRIORITY: u8 = 3;
+const THREAD0_PRIORITY: Priority = Priority::thread(3);
 
 // Lower than higher priority thread
-const THREAD1_PRIORITY: u8 = 2;
+const THREAD1_PRIORITY: Priority = Priority::thread(2);
 
 // Same priority as high priority thread
-const THREAD2_PRIORITY: u8 = THREAD0_PRIORITY;
+const THREAD2_PRIORITY: Priority = THREAD0_PRIORITY;
 
 const CAPACITY: usize = 20;
-const CEILING: AnyPriority = any_thread_priority(THREAD0_PRIORITY);
+const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRIORITY);
 
 /// Test that the scheduler preempts lower priority thread when
 /// a higher priority thread becomes runnable from sleep, but does
@@ -115,6 +115,7 @@ pub fn low_priority_thread_does_not_preempt_high_priority() {
 
         scars_test::test_fail()
     });
+    scars_test::test_succeed();
     // Do work until end time. The pre-emption should happen in the middle of the
     // the work around 50ms from the beginning.
     while Instant::now() < end_time {}

@@ -3,7 +3,7 @@ use crate::events::EXECUTOR_WAKEUP_EVENT;
 pub use crate::events::{TryWaitEventsError, REQUIRE_ALL_EVENTS};
 use crate::kernel::list::{LinkedList, LinkedListTag};
 use crate::kernel::priority::{
-    any_interrupt_priority, AnyPriority, AtomicPriorityPair, InterruptPriority, Priority,
+    AtomicPriorityPair, AtomicPriorityStatusPair, InterruptPriority, Priority, PriorityStatus,
     INVALID_PRIORITY,
 };
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
@@ -91,11 +91,10 @@ pub(crate) fn current_interrupt() -> Option<NonNull<RawInterruptHandler>> {
     NonNull::new(CURRENT_INTERRUPT_CONTROL_BLOCK.load(Ordering::SeqCst))
 }
 
-pub(crate) fn set_ceiling_threshold(ceiling: Priority) {
-    if ceiling.is_valid() && ceiling.is_interrupt() {
-        set_interrupt_threshold(ceiling.get_value());
-    } else {
-        set_interrupt_threshold(0);
+pub(crate) fn set_ceiling_threshold(ceiling: PriorityStatus) {
+    match ceiling {
+        PriorityStatus::Interrupt(prio) => set_interrupt_threshold(prio),
+        PriorityStatus::Thread(_) | PriorityStatus::Invalid => set_interrupt_threshold(0),
     }
 }
 
@@ -118,7 +117,7 @@ pub struct RawInterruptHandler {
 
     closure_ptr: *const (),
 
-    lock_priorities: AtomicPriorityPair,
+    lock_priorities: AtomicPriorityStatusPair,
 
     // The kernel must keep track of owned ceiling locks also in interrupt handlers,
     // because the locks might be released in any order.
@@ -140,17 +139,14 @@ impl_atomic_linked!(
 unsafe impl Sync for RawInterruptHandler {}
 
 impl RawInterruptHandler {
-    pub(crate) const fn new(
-        intnum: InterruptNumber,
-        prio: InterruptPriority,
-    ) -> RawInterruptHandler {
+    pub(crate) const fn new(intnum: InterruptNumber, prio: Priority) -> RawInterruptHandler {
         RawInterruptHandler {
             intnum,
-            base_priority: Priority::interrupt_priority(prio),
+            base_priority: prio,
             closure_ptr: core::ptr::null(),
-            lock_priorities: AtomicPriorityPair::new((
-                Priority::interrupt_priority(prio),
-                INVALID_PRIORITY,
+            lock_priorities: AtomicPriorityStatusPair::new((
+                PriorityStatus::valid(prio),
+                PriorityStatus::invalid(),
             )),
             owned_locks: UnsafeCell::new(LinkedList::new()),
             pending_interrupt_executor_poll_link: AtomicQueueLink::new(),
@@ -220,8 +216,8 @@ impl RawInterruptHandler {
     }
 
     // Returns previous priority
-    pub(crate) fn raise_section_lock_priority(&self, new_priority: Priority) -> Priority {
-        let new_priority = new_priority.max(self.base_priority);
+    pub(crate) fn raise_section_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
+        let new_priority = new_priority.max(self.base_priority).into();
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
             let new_priorities = (current_priorities.0.max(new_priority), current_priorities.1);
@@ -239,7 +235,8 @@ impl RawInterruptHandler {
         }
     }
 
-    pub(crate) fn set_section_lock_priority(&self, new_priority: Priority) {
+    pub(crate) fn set_section_lock_priority(&self, new_priority: PriorityStatus) {
+        let new_priority = new_priority.into();
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
             let new_priorities = (new_priority, current_priorities.1);
@@ -260,9 +257,9 @@ impl RawInterruptHandler {
     fn update_owned_lock_priority(&self) {
         let locks = unsafe { &mut *self.owned_locks.get() };
         let lock_priority = if let Some(head) = locks.head() {
-            head.ceiling_priority
+            PriorityStatus::from(head.ceiling_priority)
         } else {
-            INVALID_PRIORITY
+            PriorityStatus::invalid()
         };
 
         if let Ok((raised_priority, _)) = self.lock_priorities.fetch_update(
@@ -271,7 +268,7 @@ impl RawInterruptHandler {
             |(raised_priority, _)| Some((raised_priority, lock_priority)),
         ) {
             let ceiling_priority = if lock_priority.is_valid() {
-                Priority::max(raised_priority, lock_priority)
+                PriorityStatus::max(raised_priority, lock_priority)
             } else {
                 raised_priority
             };
@@ -284,9 +281,9 @@ impl RawInterruptHandler {
         self.base_priority
     }
 
-    /// Highest lock priority. Returns `INVALID_PRIORITY` if no locks owned by the interrupt.
+    /// Highest lock priority. Returns Invalid priority if no locks owned by the interrupt.
     #[allow(dead_code)]
-    pub(crate) fn lock_priority<'key>(&self) -> Priority {
+    pub(crate) fn lock_priority<'key>(&self) -> PriorityStatus {
         let priorities = self.lock_priorities.load(Ordering::SeqCst);
         priorities.0.max(priorities.1)
     }
@@ -294,7 +291,7 @@ impl RawInterruptHandler {
     #[allow(dead_code)]
     pub(crate) fn active_priority(&self) -> Priority {
         let lock_priority = self.lock_priority();
-        self.base_priority.max(lock_priority)
+        self.base_priority.max_valid(lock_priority)
     }
 
     pub(crate) fn set_pending_executor_poll(&self) {
@@ -376,12 +373,12 @@ pub async fn wait_for_interrupt() {
     }
 }
 
-pub struct InterruptBuilder<const PRIO: InterruptPriority, F: FnMut() + Send + 'static> {
+pub struct InterruptBuilder<const PRIO: Priority, F: FnMut() + Send + 'static> {
     handler: &'static mut RawInterruptHandler,
     closure: &'static mut MaybeUninit<F>,
 }
 
-impl<const PRIO: InterruptPriority, F: FnMut() + Send + 'static> InterruptBuilder<PRIO, F> {
+impl<const PRIO: Priority, F: FnMut() + Send + 'static> InterruptBuilder<PRIO, F> {
     /// Spawns a future in the interrupt context. The future will be polled
     /// when the interrupt is triggered.
     pub fn spawn<G: Future, const N: usize>(
@@ -437,13 +434,17 @@ impl<const PRIO: InterruptPriority, F: FnMut() + Send + 'static> InterruptBuilde
     }
 }
 
-pub struct InterruptHandler<const PRIO: InterruptPriority, F: FnMut() + Send> {
+pub struct InterruptHandler<const PRIO: Priority, F: FnMut() + Send> {
     handler: ConstStaticCell<RawInterruptHandler>,
     closure: UnsafeCell<MaybeUninit<F>>,
 }
 
-impl<const PRIO: InterruptPriority, F: FnMut() + Send> InterruptHandler<PRIO, F> {
+impl<const PRIO: Priority, F: FnMut() + Send> InterruptHandler<PRIO, F> {
     pub const fn new(id: crate::pac::Interrupt) -> InterruptHandler<PRIO, F> {
+        assert!(
+            PRIO.is_interrupt(),
+            "Interrupt handler priority must be an interrupt priority"
+        );
         InterruptHandler {
             handler: ConstStaticCell::new(RawInterruptHandler::new(id as InterruptNumber, PRIO)),
             // SAFETY: locals may not be used before they are initialized in attach
@@ -473,7 +474,7 @@ impl<const PRIO: InterruptPriority, F: FnMut() + Send> InterruptHandler<PRIO, F>
     }
 }
 
-unsafe impl<const PRIO: InterruptPriority, F: FnMut() + Send> Sync for InterruptHandler<PRIO, F> {}
+unsafe impl<const PRIO: Priority, F: FnMut() + Send> Sync for InterruptHandler<PRIO, F> {}
 
 #[derive(Copy, Clone)]
 pub struct InterruptRef(NonNull<RawInterruptHandler>);

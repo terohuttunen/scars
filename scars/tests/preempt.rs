@@ -16,14 +16,14 @@ const STACK_SIZE: usize = 1024;
 #[cfg(feature = "khal-sim")]
 const STACK_SIZE: usize = 16384;
 
-// Higher priority thread
-const THREAD0_PRIORITY: u8 = 3;
-
 // Lower than higher priority thread
-const THREAD1_PRIORITY: u8 = 200;
+const THREAD0_PRIORITY: Priority = Priority::thread(3);
+
+// Higher priority thread
+const THREAD1_PRIORITY: Priority = Priority::thread(4);
 
 const CAPACITY: usize = 10;
-const CEILING: AnyPriority = any_thread_priority(THREAD1_PRIORITY);
+const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY);
 
 /// Test that the scheduler preempts lower priority thread when
 /// a higher priority thread becomes runnable from sleep.
@@ -74,7 +74,6 @@ pub fn high_priority_thread_preempts_low_priority() {
         });
 
         // Go to sleep until it is time to wake up to preempt the idle thread
-        scars::printkln!("Thead0 going to sleep until {:?}", wakeup_time);
         scars::delay_until(wakeup_time);
         // Idle thread preempted
         let preempt_latency = wakeup_time.elapsed();

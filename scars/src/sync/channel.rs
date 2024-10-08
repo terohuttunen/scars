@@ -1,4 +1,4 @@
-use crate::kernel::AnyPriority;
+use crate::kernel::Priority;
 use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::sync::condvar::Condvar;
 use crate::sync::mutex::Mutex;
@@ -131,14 +131,14 @@ pub enum TrySendError<T> {
     Full(T),
 }
 
-pub struct Channel<T, const CAPACITY: usize, const CEILING: AnyPriority> {
+pub struct Channel<T, const CAPACITY: usize, const CEILING: Priority> {
     receiver_acquired: AtomicBool,
     fifo: Mutex<FIFO<T, CAPACITY>, CEILING>,
     receivers: Condvar<CEILING>,
     senders: Condvar<CEILING>,
 }
 
-impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, CEILING> {
+impl<T, const CAPACITY: usize, const CEILING: Priority> Channel<T, CAPACITY, CEILING> {
     pub const fn new() -> Channel<T, CAPACITY, CEILING> {
         Channel {
             receiver_acquired: AtomicBool::new(false),
@@ -258,11 +258,11 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Channel<T, CAPACITY, 
 }
 
 #[derive(Clone)]
-pub struct Sender<T: 'static, const CAPACITY: usize, const CEILING: AnyPriority> {
+pub struct Sender<T: 'static, const CAPACITY: usize, const CEILING: Priority> {
     channel: &'static Channel<T, CAPACITY, CEILING>,
 }
 
-impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Sender<T, CAPACITY, CEILING> {
+impl<T, const CAPACITY: usize, const CEILING: Priority> Sender<T, CAPACITY, CEILING> {
     pub fn send(&self, t: T) {
         self.channel.send(t)
     }
@@ -284,21 +284,21 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Sender<T, CAPACITY, C
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, const CEILING: AnyPriority> Send
+unsafe impl<T: Send, const CAPACITY: usize, const CEILING: Priority> Send
     for Sender<T, CAPACITY, CEILING>
 {
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, const CEILING: AnyPriority> Sync
+unsafe impl<T: Send, const CAPACITY: usize, const CEILING: Priority> Sync
     for Sender<T, CAPACITY, CEILING>
 {
 }
 
-pub struct Receiver<T: 'static, const CAPACITY: usize, const CEILING: AnyPriority> {
+pub struct Receiver<T: 'static, const CAPACITY: usize, const CEILING: Priority> {
     channel: &'static Channel<T, CAPACITY, CEILING>,
 }
 
-impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Receiver<T, CAPACITY, CEILING> {
+impl<T, const CAPACITY: usize, const CEILING: Priority> Receiver<T, CAPACITY, CEILING> {
     pub fn recv(&self) -> T {
         self.channel.recv()
     }
@@ -324,7 +324,7 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Receiver<T, CAPACITY,
     }
 }
 
-impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Drop for Receiver<T, CAPACITY, CEILING> {
+impl<T, const CAPACITY: usize, const CEILING: Priority> Drop for Receiver<T, CAPACITY, CEILING> {
     fn drop(&mut self) {
         self.channel
             .receiver_acquired
@@ -332,7 +332,7 @@ impl<T, const CAPACITY: usize, const CEILING: AnyPriority> Drop for Receiver<T, 
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, const CEILING: AnyPriority> Send
+unsafe impl<T: Send, const CAPACITY: usize, const CEILING: Priority> Send
     for Receiver<T, CAPACITY, CEILING>
 {
 }

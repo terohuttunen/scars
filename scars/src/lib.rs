@@ -1,6 +1,7 @@
 #![doc = include_str!("../../README.md")]
 #![no_std]
 #![feature(generic_const_exprs)]
+#![feature(adt_const_params)]
 #![feature(const_maybe_uninit_assume_init)]
 #![feature(maybe_uninit_slice)]
 #![feature(const_mut_refs)]
@@ -46,7 +47,8 @@ use scars_test;
 pub use api::*;
 
 pub mod prelude {
-    pub use crate::kernel::priority::{any_thread_priority, AnyPriority, Priority};
+    pub use crate::delay_until;
+    pub use crate::kernel::priority::{AnyPriority, Priority};
     pub use crate::make_channel;
     pub use crate::make_interrupt_handler;
     pub use crate::make_rendezvous;

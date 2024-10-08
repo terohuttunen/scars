@@ -19,21 +19,21 @@ const STACK_SIZE: usize = 1024;
 const STACK_SIZE: usize = 16384;
 
 // Lower priority thread
-const LOW_PRIORITY: u8 = 3;
+const LOW_PRIORITY: Priority = Priority::thread(3);
 
 // Higher priority thread
-const HIGH_PRIORITY: u8 = 5;
+const HIGH_PRIORITY: Priority = Priority::thread(5);
 
 // Medium priority thread
-const MEDIUM_PRIORITY: u8 = 4;
+const MEDIUM_PRIORITY: Priority = Priority::thread(4);
 
 const CAPACITY: usize = 10;
-const CEILING: AnyPriority = any_thread_priority(MEDIUM_PRIORITY);
+const CEILING: Priority = MEDIUM_PRIORITY;
 
 /// Ceiling lock section prevents preemption by lower priority thread
 #[test_case]
 pub fn ceiling_lock_section_preempt() {
-    let (sender0, receiver) = make_channel!(u32, CAPACITY, any_thread_priority(HIGH_PRIORITY));
+    let (sender0, receiver) = make_channel!(u32, CAPACITY, HIGH_PRIORITY);
     let protected_data: LockedCell<usize, CeilingLock<CEILING>> = LockedCell::new(0);
     let low = make_thread!("low", LOW_PRIORITY, STACK_SIZE);
 

@@ -11,7 +11,6 @@ use crate::printkln;
 use crate::sync::interrupt_lock::InterruptLockKey;
 use core::cell::UnsafeCell;
 pub(crate) use exception::{handle_runtime_error, RuntimeError};
-pub use priority::{any_interrupt_priority, any_thread_priority};
 pub(crate) use priority::{
     AnyPriority, AtomicPriority, InterruptPriority, Priority, ThreadPriority,
 };

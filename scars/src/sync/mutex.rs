@@ -1,4 +1,4 @@
-use crate::kernel::AnyPriority;
+use crate::kernel::Priority;
 use crate::sync::RawCeilingLock;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
@@ -8,7 +8,7 @@ pub struct MutexLock {
 }
 
 impl MutexLock {
-    pub const fn new(ceiling: AnyPriority) -> MutexLock {
+    pub const fn new(ceiling: Priority) -> MutexLock {
         MutexLock {
             lock: RawCeilingLock::new(ceiling),
         }
@@ -30,15 +30,15 @@ impl MutexLock {
     }
 }
 
-pub struct Mutex<T: ?Sized, const CEILING: AnyPriority> {
+pub struct Mutex<T: ?Sized, const CEILING: Priority> {
     lock: MutexLock,
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized + Send, const CEILING: AnyPriority> Send for Mutex<T, CEILING> {}
-unsafe impl<T: ?Sized + Send, const CEILING: AnyPriority> Sync for Mutex<T, CEILING> {}
+unsafe impl<T: ?Sized + Send, const CEILING: Priority> Send for Mutex<T, CEILING> {}
+unsafe impl<T: ?Sized + Send, const CEILING: Priority> Sync for Mutex<T, CEILING> {}
 
-impl<T, const CEILING: AnyPriority> Mutex<T, CEILING> {
+impl<T, const CEILING: Priority> Mutex<T, CEILING> {
     #[inline(always)]
     pub const fn new(t: T) -> Mutex<T, CEILING> {
         Mutex {
@@ -48,7 +48,7 @@ impl<T, const CEILING: AnyPriority> Mutex<T, CEILING> {
     }
 }
 
-impl<T: ?Sized, const CEILING: AnyPriority> Mutex<T, CEILING> {
+impl<T: ?Sized, const CEILING: Priority> Mutex<T, CEILING> {
     #[inline(always)]
     pub fn lock(&self) -> MutexGuard<'_, T> {
         self.lock.lock();

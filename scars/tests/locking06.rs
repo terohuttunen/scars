@@ -19,13 +19,13 @@ const STACK_SIZE: usize = 1024;
 const STACK_SIZE: usize = 16384;
 
 // Lower priority thread
-const LOW_PRIORITY: u8 = 3;
+const LOW_PRIORITY: Priority = Priority::thread(3);
 
 // Medium priority thread
-const MEDIUM_PRIORITY: u8 = 4;
+const MEDIUM_PRIORITY: Priority = Priority::thread(4);
 
 const CAPACITY: usize = 10;
-const CEILING: AnyPriority = any_thread_priority(MEDIUM_PRIORITY);
+const CEILING: Priority = MEDIUM_PRIORITY;
 
 static IDLE_HAS_RUN: AtomicBool = AtomicBool::new(false);
 
@@ -37,11 +37,7 @@ fn idle() {
 /// Is possible for a thread to sleep and hold the lock
 #[test_case]
 pub fn ceiling_lock_owned_yield() {
-    let (sender0, receiver) = make_channel!(
-        u32,
-        CAPACITY,
-        Priority::any_thread_priority(MEDIUM_PRIORITY)
-    );
+    let (sender0, receiver) = make_channel!(u32, CAPACITY, MEDIUM_PRIORITY);
 
     let low = make_thread!("low", LOW_PRIORITY, STACK_SIZE);
 

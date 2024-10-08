@@ -9,7 +9,7 @@ use crate::syscall;
 use crate::task::task::RawTask;
 use crate::thread::RawThread;
 use crate::time::Instant;
-use crate::{AnyPriority, Priority};
+use crate::Priority;
 use core::cell::{Cell, RefCell};
 use core::future::{poll_fn, Future};
 use core::sync::atomic::AtomicPtr;
@@ -108,7 +108,7 @@ impl Suspendable {
 
     pub fn priority(&self) -> Priority {
         match &self.kind {
-            SuspendableKind::None => Priority::any(0),
+            SuspendableKind::None => Priority::Thread(0),
             SuspendableKind::Thread(thread) => unsafe { (&**thread).base_priority },
             SuspendableKind::Interrupt(interrupt) => unsafe { (&**interrupt).base_priority() },
             SuspendableKind::Async(priority, _) => *priority,
@@ -136,11 +136,11 @@ impl_linked!(wait_queue_link, Suspendable, WaitQueueTag);
 impl_linked!(sleep_queue_link, Suspendable, SleepQueueTag);
 impl_atomic_linked!(pending_schedule_link, Suspendable, ExecStateTag);
 
-pub struct WaitQueue<const CEILING: AnyPriority> {
+pub struct WaitQueue<const CEILING: Priority> {
     queue: LockedRefCell<LinkedList<Suspendable, WaitQueueTag>, CeilingLock<CEILING>>,
 }
 
-impl<const CEILING: AnyPriority> WaitQueue<CEILING> {
+impl<const CEILING: Priority> WaitQueue<CEILING> {
     pub const fn new() -> WaitQueue<CEILING> {
         WaitQueue {
             queue: LockedRefCell::new(LinkedList::new()),
@@ -148,7 +148,7 @@ impl<const CEILING: AnyPriority> WaitQueue<CEILING> {
     }
 
     pub fn wait(&self) {
-        syscall::thread_wait(self.queue.as_ptr(), CEILING);
+        syscall::thread_wait(self.queue.as_ptr(), CEILING.into_any());
     }
 
     pub async fn async_wait(&'static self) {

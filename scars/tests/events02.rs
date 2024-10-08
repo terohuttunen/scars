@@ -19,16 +19,16 @@ const STACK_SIZE: usize = 1024 * 2;
 const STACK_SIZE: usize = 16384;
 
 // Lower priority thread
-const THREAD0_PRIORITY: u8 = 3;
+const THREAD0_PRIORITY: Priority = Priority::thread(3);
 
 // Higher priority thread
-const THREAD1_PRIORITY: u8 = 5;
+const THREAD1_PRIORITY: Priority = Priority::thread(5);
 
 // Medium priority thread
-const THREAD2_PRIORITY: u8 = 4;
+const THREAD2_PRIORITY: Priority = Priority::thread(4);
 
 const CAPACITY: usize = 14;
-const CEILING: AnyPriority = any_thread_priority(THREAD1_PRIORITY);
+const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRIORITY);
 
 const UNBLOCK_EVENT1: u32 = 1u32;
 const UNBLOCK_EVENT2: u32 = 2u32;

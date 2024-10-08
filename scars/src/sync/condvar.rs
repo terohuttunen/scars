@@ -1,4 +1,4 @@
-use crate::kernel::{interrupt::in_interrupt, priority::AnyPriority, waiter::WaitQueue};
+use crate::kernel::{interrupt::in_interrupt, priority::Priority, waiter::WaitQueue};
 use crate::sync::{mutex, MutexGuard, RawCeilingLock};
 
 pub struct WaitTimeoutResult(bool);
@@ -9,11 +9,11 @@ impl WaitTimeoutResult {
     }
 }
 
-pub struct Condvar<const CEILING: AnyPriority> {
+pub struct Condvar<const CEILING: Priority> {
     waiter_queue: WaitQueue<CEILING>,
 }
 
-impl<const CEILING: AnyPriority> Condvar<CEILING> {
+impl<const CEILING: Priority> Condvar<CEILING> {
     pub const fn new() -> Condvar<CEILING> {
         Condvar {
             waiter_queue: WaitQueue::new(),
@@ -96,7 +96,7 @@ impl<const CEILING: AnyPriority> Condvar<CEILING> {
     }
 }
 
-impl<const CEILING: AnyPriority> Default for Condvar<CEILING> {
+impl<const CEILING: Priority> Default for Condvar<CEILING> {
     fn default() -> Condvar<CEILING> {
         Condvar::new()
     }

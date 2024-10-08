@@ -2,16 +2,17 @@ use crate::cell::{LockedCell, LockedRefCell};
 use crate::events::{
     WaitEventsUntilError, REQUIRE_ALL_EVENTS, SCHEDULER_NOTIFY_EVENT, SCHEDULER_WAKEUP_EVENT,
 };
+use crate::kernel::priority::PriorityStatus;
 use crate::kernel::{
     hal::Context,
     interrupt::set_ceiling_threshold,
     list::{impl_linked, Link, LinkedList, LinkedListTag},
-    priority::{AtomicPriorityPair, INVALID_PRIORITY},
+    priority::AtomicPriorityStatusPair,
     scheduler::ExecStateTag,
     scheduler::Scheduler,
     stack::StackRef,
     waiter::Suspendable,
-    Priority, ThreadPriority,
+    Priority,
 };
 use crate::sync::{preempt_lock::PreemptLockKey, OnceLock, PreemptLock, RawCeilingLock};
 use crate::syscall;
@@ -111,7 +112,7 @@ pub struct RawThread {
 
     // Atomically updated pair of (section lock priority, highest owned lock priority).
     // Either lock priority can be INVALID_PRIORITY if no such lock is held.
-    lock_priorities: AtomicPriorityPair,
+    lock_priorities: AtomicPriorityStatusPair,
 
     // List of locks which this thread is the current owner of. Ordered in descending
     // ceiling priority order so that list head is always one of the highest priority
@@ -154,7 +155,10 @@ impl RawThread {
             state: LockedCell::new(ThreadExecutionState::Created),
             name,
             base_priority,
-            lock_priorities: AtomicPriorityPair::new((INVALID_PRIORITY, INVALID_PRIORITY)),
+            lock_priorities: AtomicPriorityStatusPair::new((
+                PriorityStatus::invalid(),
+                PriorityStatus::invalid(),
+            )),
             main_fn,
             stack,
             owned_locks: LockedRefCell::new(LinkedList::new()),
@@ -248,7 +252,7 @@ impl RawThread {
     }
 
     /// Highest lock priority. Returns `INVALID_PRIORITY` if no locks owned by the thread.
-    pub(crate) fn lock_priority<'key>(&self) -> Priority {
+    pub(crate) fn lock_priority<'key>(&self) -> PriorityStatus {
         let priorities = self.lock_priorities.load(Ordering::SeqCst);
         priorities.0.max(priorities.1)
     }
@@ -260,15 +264,18 @@ impl RawThread {
     /// returns the thread base priority.
     pub(crate) fn active_priority<'key>(&self) -> Priority {
         let lock_priority = self.lock_priority();
-        self.base_priority.max(lock_priority)
+        self.base_priority.max_valid(lock_priority)
     }
 
     // Returns previous priority
-    pub(crate) fn raise_section_lock_priority(&self, new_priority: Priority) -> Priority {
+    pub(crate) fn raise_section_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
         let new_priority = new_priority.max(self.base_priority);
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
-            let new_priorities = (current_priorities.0.max(new_priority), current_priorities.1);
+            let new_priorities = (
+                current_priorities.0.max(new_priority.into()),
+                current_priorities.1,
+            );
 
             if let Ok(_) = self.lock_priorities.compare_exchange(
                 current_priorities,
@@ -283,7 +290,7 @@ impl RawThread {
         }
     }
 
-    pub(crate) fn set_section_lock_priority(&self, new_priority: Priority) {
+    pub(crate) fn set_section_lock_priority(&self, new_priority: PriorityStatus) {
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
             let new_priorities = (new_priority, current_priorities.1);
@@ -305,9 +312,9 @@ impl RawThread {
 
     fn update_owned_lock_priority<'key>(&self, pkey: PreemptLockKey<'key>) {
         let new_priority = if let Some(head) = self.owned_locks.borrow(pkey).head() {
-            head.ceiling_priority
+            PriorityStatus::from(head.ceiling_priority)
         } else {
-            INVALID_PRIORITY
+            PriorityStatus::invalid()
         };
 
         loop {
@@ -485,12 +492,12 @@ impl Eq for ThreadRef {}
 unsafe impl Sync for ThreadRef {}
 unsafe impl Send for ThreadRef {}
 
-pub struct ThreadBuilder<const PRIO: ThreadPriority, F: FnMut() + Send + 'static> {
+pub struct ThreadBuilder<const PRIO: Priority, F: FnMut() + Send + 'static> {
     thread: &'static mut RawThread,
     closure: &'static mut MaybeUninit<F>,
 }
 
-impl<const PRIO: ThreadPriority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
+impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
     pub fn start(self, closure: F) -> ThreadRef {
         let closure_ref = self.closure.write(closure);
         let closure_ptr = closure_ref as *const F as *const ();
@@ -567,17 +574,17 @@ impl<const PRIO: ThreadPriority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO
     }
 }
 
-pub struct Thread<const PRIO: ThreadPriority, F: FnMut() + Send> {
+pub struct Thread<const PRIO: Priority, F: FnMut() + Send> {
     thread: ConstStaticCell<RawThread>,
     closure: UnsafeCell<MaybeUninit<F>>,
 }
 
-impl<const PRIO: ThreadPriority, F: FnMut() + Send> Thread<PRIO, F> {
+impl<const PRIO: Priority, F: FnMut() + Send> Thread<PRIO, F> {
     pub const fn new(name: &'static str, stack: StackRef) -> Thread<PRIO, F> {
         Thread {
             thread: ConstStaticCell::new(RawThread::new(
                 name,
-                Priority::thread_priority(PRIO),
+                PRIO,
                 Self::closure_wrapper as *const (),
                 stack,
             )),
@@ -598,4 +605,4 @@ impl<const PRIO: ThreadPriority, F: FnMut() + Send> Thread<PRIO, F> {
     }
 }
 
-unsafe impl<const PRIO: ThreadPriority, F: FnMut() + Send> Sync for Thread<PRIO, F> {}
+unsafe impl<const PRIO: Priority, F: FnMut() + Send> Sync for Thread<PRIO, F> {}

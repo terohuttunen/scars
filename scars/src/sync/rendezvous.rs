@@ -32,7 +32,7 @@
 /// assert_eq!(result, 84);
 /// ```
 use crate::sync::{Condvar, Mutex};
-use crate::AnyPriority;
+use crate::Priority;
 
 /// Creates a new statically allocated `Rendezvous` with the specified ceiling priority.
 #[macro_export]
@@ -49,7 +49,7 @@ macro_rules! make_rendezvous {
 
 /// Represents a rendezvous synchronization primitive. It allows two threads to synchronize and
 /// exchange data. It acts as a synchronized remote procedure call into another thread's context.
-pub struct Rendezvous<A, R, const CEILING: AnyPriority>
+pub struct Rendezvous<A, R, const CEILING: Priority>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -59,7 +59,7 @@ where
     waiter: Condvar<CEILING>,
 }
 
-impl<A, R, const CEILING: AnyPriority> Rendezvous<A, R, CEILING>
+impl<A, R, const CEILING: Priority> Rendezvous<A, R, CEILING>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -91,7 +91,7 @@ where
 /// allows the thread to provide an argument and wait for the result. The `Entry` struct is
 /// created by calling the `split` method on a `Rendezvous` instance. The `Entry` struct is
 /// `Send` because it is intended to be passed to another thread.
-pub struct Entry<A, R, const CEILING: AnyPriority>
+pub struct Entry<A, R, const CEILING: Priority>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -99,7 +99,7 @@ where
     rendezvous: &'static Rendezvous<A, R, CEILING>,
 }
 
-impl<A, R, const CEILING: AnyPriority> Entry<A, R, CEILING>
+impl<A, R, const CEILING: Priority> Entry<A, R, CEILING>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -127,7 +127,7 @@ where
     }
 }
 
-unsafe impl<A, R, const CEILING: AnyPriority> Send for Entry<A, R, CEILING>
+unsafe impl<A, R, const CEILING: Priority> Send for Entry<A, R, CEILING>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -139,7 +139,7 @@ where
 /// the result. The `Accept` struct is created by calling the `split` method on a `Rendezvous`
 /// instance. The `Accept` struct is `Send` because it is intended to be passed to another
 /// thread.
-pub struct Accept<A, R, const CEILING: AnyPriority>
+pub struct Accept<A, R, const CEILING: Priority>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -147,7 +147,7 @@ where
     rendezvous: &'static Rendezvous<A, R, CEILING>,
 }
 
-impl<A, R, const CEILING: AnyPriority> Accept<A, R, CEILING>
+impl<A, R, const CEILING: Priority> Accept<A, R, CEILING>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -177,7 +177,7 @@ where
     }
 }
 
-unsafe impl<A, R, const CEILING: AnyPriority> Send for Accept<A, R, CEILING>
+unsafe impl<A, R, const CEILING: Priority> Send for Accept<A, R, CEILING>
 where
     A: Send + 'static,
     R: Send + 'static,

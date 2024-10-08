@@ -18,13 +18,13 @@ const STACK_SIZE: usize = 1024;
 const STACK_SIZE: usize = 16384;
 
 // Lower priority thread
-const THREAD0_PRIORITY: u8 = 3;
+const THREAD0_PRIORITY: Priority = Priority::thread(3);
 
 // Higher priority FIFO threads
-const THREAD1_PRIORITY: u8 = 5;
+const THREAD1_PRIORITY: Priority = Priority::thread(5);
 
 const CAPACITY: usize = 14;
-const CEILING: AnyPriority = any_thread_priority(THREAD1_PRIORITY);
+const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY);
 
 /// When thread yields it never switches to lower priority thread, and will
 /// alternate with same priority threads in FIFO order.

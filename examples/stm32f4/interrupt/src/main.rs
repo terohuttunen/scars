@@ -9,11 +9,11 @@ use scars::khal::{Interrupt, Peripherals};
 use scars::task::Sleep;
 use scars::{
     kernel::interrupt::wait_for_interrupt, make_channel, make_interrupt_handler, make_task_pool,
-    AnyPriority, Priority,
+    Priority,
 };
 
-const EXTI0_INTERRUPT_PRIO: u8 = 1;
-const CEILING_PRIO: AnyPriority = Priority::interrupt_priority(EXTI0_INTERRUPT_PRIO).into_any();
+const EXTI0_INTERRUPT_PRIO: Priority = Priority::interrupt(1);
+const CEILING_PRIO: Priority = EXTI0_INTERRUPT_PRIO;
 
 #[scars::entry(name = "main", priority = 1, stack_size = 4096)]
 fn main() {

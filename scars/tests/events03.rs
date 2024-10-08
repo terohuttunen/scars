@@ -20,10 +20,10 @@ const STACK_SIZE: usize = 1024 * 2;
 const STACK_SIZE: usize = 16384;
 
 // Lower priority thread
-const THREAD0_PRIORITY: u8 = 3;
+const THREAD0_PRIORITY: Priority = Priority::thread(3);
 
 const CAPACITY: usize = 14;
-const CEILING: AnyPriority = any_thread_priority(THREAD0_PRIORITY);
+const CEILING: Priority = THREAD0_PRIORITY;
 
 const UNBLOCK_EVENT: u32 = 1u32;
 

@@ -13,7 +13,7 @@ use crate::kernel::{
         current_interrupt, in_interrupt, init_isr_stack_canary, set_ceiling_threshold,
         RawInterruptHandler,
     },
-    priority::{any_interrupt_priority, AnyPriority, Priority},
+    priority::{AnyPriority, Priority, PriorityStatus},
     stack::StackCanary,
     syscall,
     waiter::{SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag},
@@ -454,7 +454,7 @@ impl Scheduler {
 
         let current_priority = self.current_thread.active_priority();
         let locks_priority = self.locks_priority_ceiling();
-        let min_priority = current_priority.max(locks_priority);
+        let min_priority = current_priority.max_valid(locks_priority);
         if min_priority < thread.active_priority() {
             Scheduler::set_pending_reschedule(RescheduleKind::YieldToHigher)
         }
@@ -560,14 +560,16 @@ impl Scheduler {
 
         // Minimum priority of a thread that is allowed to run next
         let min_priority = match kind {
-            RescheduleKind::YieldToEqualOrHigher => current_priority.max(locks_priority.succ()),
+            RescheduleKind::YieldToEqualOrHigher => {
+                current_priority.max_valid(locks_priority.succ())
+            }
             RescheduleKind::YieldToHigher => {
                 // Any thread that has higher priority than the current thread
-                current_priority.max(locks_priority).succ()
+                current_priority.max_valid(locks_priority).succ()
             }
             RescheduleKind::None => {
                 // Any thread that is above the lock ceiling
-                Priority::MIN_THREAD_PRIORITY.max(locks_priority.succ())
+                Priority::THREAD_MIN.max_valid(locks_priority.succ())
             }
         };
 
@@ -636,7 +638,7 @@ impl Scheduler {
         }
     }
 
-    fn locks_priority_ceiling(&self) -> Priority {
+    fn locks_priority_ceiling(&self) -> PriorityStatus {
         if let Some(blocked_thread) = self.blocked_list.head() {
             let blocked_prio = blocked_thread.lock_priority();
             let current_prio = self.current_thread.lock_priority();
