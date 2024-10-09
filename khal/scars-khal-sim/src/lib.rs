@@ -204,6 +204,7 @@ pub enum VirtualTrap {
 }
 
 impl FlowController for Simulator {
+    type StackAlignment = A16;
     type Context = VirtualContext;
     type Fault = Fault;
 

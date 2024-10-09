@@ -178,7 +178,7 @@ impl RawThread {
 
     pub fn get_info(&self, pkey: PreemptLockKey<'_>) -> ThreadInfo {
         let stack_addr = unsafe { self.stack.assume_init_ref() }.bottom_ptr() as *const ();
-        let stack_size = unsafe { self.stack.assume_init_ref() }.size();
+        let stack_size = unsafe { self.stack.assume_init_ref() }.alloc_size();
         ThreadInfo {
             name: self.name,
             state: self.state.get(pkey),
@@ -501,7 +501,7 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
         let closure_ptr = closure_ref as *const F as *const ();
         self.thread.stack.write(self.stack);
         let stack_ptr = unsafe { self.thread.stack.assume_init_ref() }.bottom_ptr();
-        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.size();
+        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.alloc_size();
         self.thread.thread_id = NEXT_FREE_THREAD_ID.fetch_add(1, Ordering::SeqCst);
         unsafe {
             Context::init(
@@ -525,7 +525,7 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
         let closure_ptr = closure_ref as *const F as *const ();
         self.thread.stack.write(self.stack);
         let stack_ptr = unsafe { self.thread.stack.assume_init_ref() }.bottom_ptr();
-        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.size();
+        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.alloc_size();
         self.thread.thread_id = NEXT_FREE_THREAD_ID.fetch_add(1, Ordering::SeqCst);
         unsafe {
             Context::init(

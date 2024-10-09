@@ -62,15 +62,15 @@ impl StackRefMut {
         self.canary.iter().all(|&b| b == CANARY_BYTE)
     }
 
-    pub const fn top_ptr(&self) -> *const u8 {
-        self.stack.as_ptr() as *const _
-    }
-
     pub const fn bottom_ptr(&self) -> *const u8 {
         unsafe { self.stack.as_ptr().add(self.stack.len()) as *const _ }
     }
 
     pub const fn size(&self) -> usize {
         self.stack.len() * StackElement::size()
+    }
+
+    pub const fn alloc_size(&self) -> usize {
+        self.size() + CANARY_SIZE
     }
 }
