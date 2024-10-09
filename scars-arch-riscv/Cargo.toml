@@ -15,3 +15,4 @@ test = false
 bit_field = "0.10.2"
 scars-khal = { version = "0.1.0", path = "../scars-khal" }
 riscv = { version = "0.10.1", features = ["critical-section-single-hart"] }
+aligned = "0.4.2"

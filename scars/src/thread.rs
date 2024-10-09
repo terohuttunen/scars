@@ -10,7 +10,7 @@ use crate::kernel::{
     priority::AtomicPriorityStatusPair,
     scheduler::ExecStateTag,
     scheduler::Scheduler,
-    stack::StackRef,
+    stack::StackRefMut,
     waiter::Suspendable,
     Priority,
 };
@@ -43,8 +43,8 @@ macro_rules! make_thread {
     ($name: expr, $prio : expr, $stack_size: expr) => {{
         static STACK: $crate::Stack<{ $stack_size }> = $crate::Stack::new();
         type T = impl ::core::marker::Sized + ::core::marker::Send + FnMut();
-        static THREAD: $crate::Thread<{ $prio }, T> = $crate::Thread::new($name, STACK.borrow());
-        THREAD.init()
+        static THREAD: $crate::Thread<{ $prio }, T> = $crate::Thread::new($name);
+        THREAD.init(STACK.init())
     }};
 }
 
@@ -105,7 +105,7 @@ pub struct RawThread {
 
     pub(crate) main_fn: *const (),
 
-    pub(crate) stack: StackRef,
+    pub(crate) stack: MaybeUninit<StackRefMut>,
 
     // Thread base priority
     pub base_priority: Priority,
@@ -144,12 +144,7 @@ pub struct RawThread {
 }
 
 impl RawThread {
-    const fn new(
-        name: &'static str,
-        base_priority: Priority,
-        main_fn: *const (),
-        stack: StackRef,
-    ) -> RawThread {
+    const fn new(name: &'static str, base_priority: Priority, main_fn: *const ()) -> RawThread {
         RawThread {
             thread_id: INVALID_THREAD_ID,
             state: LockedCell::new(ThreadExecutionState::Created),
@@ -160,7 +155,7 @@ impl RawThread {
                 PriorityStatus::invalid(),
             )),
             main_fn,
-            stack,
+            stack: MaybeUninit::uninit(),
             owned_locks: LockedRefCell::new(LinkedList::new()),
             exec_queue_link: Link::new(),
             suspendable: Suspendable::new(),
@@ -182,12 +177,14 @@ impl RawThread {
     }
 
     pub fn get_info(&self, pkey: PreemptLockKey<'_>) -> ThreadInfo {
+        let stack_addr = unsafe { self.stack.assume_init_ref() }.bottom_ptr() as *const ();
+        let stack_size = unsafe { self.stack.assume_init_ref() }.size();
         ThreadInfo {
             name: self.name,
             state: self.state.get(pkey),
             base_priority: self.base_priority,
-            stack_addr: self.stack.bottom_ptr() as *const (),
-            stack_size: self.stack.size(),
+            stack_addr,
+            stack_size,
             entry: self.main_fn,
         }
     }
@@ -495,24 +492,26 @@ unsafe impl Send for ThreadRef {}
 pub struct ThreadBuilder<const PRIO: Priority, F: FnMut() + Send + 'static> {
     thread: &'static mut RawThread,
     closure: &'static mut MaybeUninit<F>,
+    stack: StackRefMut,
 }
 
 impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
     pub fn start(self, closure: F) -> ThreadRef {
         let closure_ref = self.closure.write(closure);
         let closure_ptr = closure_ref as *const F as *const ();
+        self.thread.stack.write(self.stack);
+        let stack_ptr = unsafe { self.thread.stack.assume_init_ref() }.bottom_ptr();
+        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.size();
         self.thread.thread_id = NEXT_FREE_THREAD_ID.fetch_add(1, Ordering::SeqCst);
         unsafe {
             Context::init(
                 self.thread.name,
                 self.thread.main_fn,
                 Some(closure_ptr as *const u8),
-                self.thread.stack.bottom_ptr(),
-                self.thread.stack.size(),
+                stack_ptr,
+                stack_size,
                 self.thread.context.as_mut_ptr(),
             );
-            // Initialize thread stack canary
-            self.thread.stack.canary_mut().init();
         }
 
         let thread_ref = unsafe { ThreadRef::from_ptr(self.thread as *const _) };
@@ -524,18 +523,19 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
     pub fn init(self, closure: F) -> ThreadRef {
         let closure_ref = self.closure.write(closure);
         let closure_ptr = closure_ref as *const F as *const ();
+        self.thread.stack.write(self.stack);
+        let stack_ptr = unsafe { self.thread.stack.assume_init_ref() }.bottom_ptr();
+        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.size();
         self.thread.thread_id = NEXT_FREE_THREAD_ID.fetch_add(1, Ordering::SeqCst);
         unsafe {
             Context::init(
                 self.thread.name,
                 self.thread.main_fn,
                 Some(closure_ptr as *const u8),
-                self.thread.stack.bottom_ptr(),
-                self.thread.stack.size(),
+                stack_ptr,
+                stack_size,
                 self.thread.context.as_mut_ptr(),
             );
-            // Initialize thread stack canary
-            self.thread.stack.canary_mut().init();
         }
 
         ThreadRef::new(self.thread)
@@ -569,8 +569,8 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
         unsafe { ThreadRef::from_ptr(self.thread as *const _) }
     }
 
-    pub fn stack_ref(&self) -> &StackRef {
-        &self.thread.stack
+    pub fn stack_ref(&self) -> &StackRefMut {
+        &self.stack
     }
 }
 
@@ -580,13 +580,12 @@ pub struct Thread<const PRIO: Priority, F: FnMut() + Send> {
 }
 
 impl<const PRIO: Priority, F: FnMut() + Send> Thread<PRIO, F> {
-    pub const fn new(name: &'static str, stack: StackRef) -> Thread<PRIO, F> {
+    pub const fn new(name: &'static str) -> Thread<PRIO, F> {
         Thread {
             thread: ConstStaticCell::new(RawThread::new(
                 name,
                 PRIO,
                 Self::closure_wrapper as *const (),
-                stack,
             )),
             closure: UnsafeCell::new(MaybeUninit::uninit()),
         }
@@ -597,11 +596,15 @@ impl<const PRIO: Priority, F: FnMut() + Send> Thread<PRIO, F> {
         closure();
     }
 
-    pub fn init(&'static self) -> ThreadBuilder<PRIO, F> {
+    pub fn init(&'static self, stack: StackRefMut) -> ThreadBuilder<PRIO, F> {
         let thread = self.thread.take();
         thread.suspendable = Suspendable::new_thread(thread);
         let closure = unsafe { &mut *self.closure.get() };
-        ThreadBuilder { thread, closure }
+        ThreadBuilder {
+            thread,
+            closure,
+            stack,
+        }
     }
 }
 

@@ -25,7 +25,6 @@ use crate::kernel::hal::{
     get_interrupt_priority, get_interrupt_threshold, set_interrupt_priority,
     set_interrupt_threshold, Context, MAX_INTERRUPT_NUMBER,
 };
-use crate::kernel::stack::StackCanary;
 use core::cell::UnsafeCell;
 use core::future::{poll_fn, Future};
 use core::marker::PhantomData;
@@ -96,17 +95,6 @@ pub(crate) fn set_ceiling_threshold(ceiling: PriorityStatus) {
         PriorityStatus::Interrupt(prio) => set_interrupt_threshold(prio),
         PriorityStatus::Thread(_) | PriorityStatus::Invalid => set_interrupt_threshold(0),
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn init_isr_stack_canary() {
-    let canary = unsafe { &mut *(addr_of_mut!(_isr_stack_start) as *mut u8 as *mut StackCanary) };
-    canary.init();
-}
-
-#[allow(dead_code)]
-pub(crate) fn isr_stack_canary() -> &'static StackCanary {
-    unsafe { &*(addr_of!(_isr_stack_start) as *const u8 as *const StackCanary) }
 }
 
 #[repr(align(16))]

@@ -1,5 +1,6 @@
 #![no_std]
 pub mod callbacks;
+pub use aligned::*;
 pub use callbacks::KernelCallbacks;
 use core::sync::atomic::AtomicPtr;
 
@@ -87,6 +88,7 @@ pub trait ContextInfo {
 }
 
 pub trait FlowController {
+    type StackAlignment: Alignment;
     type Context: ContextInfo;
     type Fault: FaultInfo<Self::Context>;
 

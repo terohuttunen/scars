@@ -24,6 +24,8 @@ pub const MAX_INTERRUPT_PRIORITY: usize =
 #[allow(dead_code)]
 pub(crate) const TICK_FREQ_HZ: u64 = <kernel_hal::HAL as AlarmClockController>::TICK_FREQ_HZ;
 
+pub(crate) type StackAlignment = <kernel_hal::HAL as FlowController>::StackAlignment;
+
 pub struct Hal {
     hal: SyncUnsafeCell<MaybeUninit<kernel_hal::HAL>>,
 }

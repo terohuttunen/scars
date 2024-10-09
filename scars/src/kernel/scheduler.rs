@@ -9,12 +9,8 @@ use crate::kernel::{
         set_alarm, start_first_thread, Context,
     },
     handle_runtime_error,
-    interrupt::{
-        current_interrupt, in_interrupt, init_isr_stack_canary, set_ceiling_threshold,
-        RawInterruptHandler,
-    },
+    interrupt::{current_interrupt, in_interrupt, set_ceiling_threshold, RawInterruptHandler},
     priority::{AnyPriority, Priority, PriorityStatus},
-    stack::StackCanary,
     syscall,
     waiter::{SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag},
     RuntimeError, Stack, ThreadPriority,
@@ -542,8 +538,7 @@ impl Scheduler {
     }
 
     fn check_stack_overflow(&self) {
-        let canary = self.current_thread.stack.canary_ref();
-        if !canary.is_alive() {
+        if !unsafe { self.current_thread.stack.assume_init_ref() }.is_alive() {
             panic!(
                 "Stack overflow detected from canary in thread {:?}",
                 self.current_thread.name

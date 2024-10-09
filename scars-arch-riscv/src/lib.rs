@@ -224,6 +224,7 @@ fn abort() -> ! {
 }
 
 impl FlowController for RISCV32 {
+    type StackAlignment = A16;
     type Context = RISCVTrapFrame;
     type Fault = RISCFault;
 

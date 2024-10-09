@@ -226,6 +226,7 @@ pub fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
 macro_rules! impl_flow_controller {
     ($struct_name:ident) => {
         impl FlowController for $struct_name {
+            type StackAlignment = scars_khal::A8;
             type Context = $crate::Context;
             type Fault = $crate::Fault;
 
