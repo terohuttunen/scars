@@ -199,18 +199,17 @@ impl Scheduler {
             return;
         }
         tracing::thread_ready_begin(thread.as_ref());
+        let thread_priority = thread.active_priority();
         if !thread.lock_priority().is_valid() {
             // If thread is not holding any locks, then thread goes to the back of its priority queue
-            self.ready_queue
-                .insert_after_condition(thread, |queue_thread, thread| {
-                    queue_thread.active_priority() >= thread.active_priority()
-                });
+            self.ready_queue.insert_after(thread, |queue_thread| {
+                queue_thread.active_priority() >= thread_priority
+            });
         } else {
             // If thread is holding any locks, then it goes to the front of its priority queue
-            self.ready_queue
-                .insert_after_condition(thread, |queue_thread, thread| {
-                    queue_thread.active_priority() > thread.active_priority()
-                });
+            self.ready_queue.insert_after(thread, |queue_thread| {
+                queue_thread.active_priority() > thread_priority
+            });
         }
     }
 
@@ -221,21 +220,20 @@ impl Scheduler {
         }
 
         tracing::thread_ready_end(thread.as_ref());
-        self.blocked_list
-            .insert_after_condition(thread, |queue_thread, thread| {
-                let queue_thread_priority = queue_thread.lock_priority();
-                let thread_priority = thread.lock_priority();
+        let thread_priority = thread.lock_priority();
+        self.blocked_list.insert_after(thread, |queue_thread| {
+            let queue_thread_priority = queue_thread.lock_priority();
 
-                if queue_thread_priority.is_valid() && thread_priority.is_valid() {
-                    queue_thread_priority >= thread_priority
-                } else if queue_thread_priority.is_valid() {
-                    true
-                } else if thread_priority.is_valid() {
-                    false
-                } else {
-                    false
-                }
-            });
+            if queue_thread_priority.is_valid() && thread_priority.is_valid() {
+                queue_thread_priority >= thread_priority
+            } else if queue_thread_priority.is_valid() {
+                true
+            } else if thread_priority.is_valid() {
+                false
+            } else {
+                false
+            }
+        });
     }
 
     fn insert_to_suspended_list(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
@@ -255,9 +253,10 @@ impl Scheduler {
         }
 
         tracing::thread_ready_end(thread.as_ref());
+        let deadline = thread.suspendable.deadline();
         self.sleep_queue
-            .insert_after_condition(&thread.suspendable, |queue_thread, thread| {
-                queue_thread.deadline() <= thread.deadline()
+            .insert_after(&thread.suspendable, |queue_thread| {
+                queue_thread.deadline() <= deadline
             });
     }
 }
@@ -361,9 +360,10 @@ impl Scheduler {
         if interrupt.suspendable.in_sleep_queue() {
             self.sleep_queue.remove(&interrupt.suspendable);
         }
+        let deadline = interrupt.suspendable.deadline();
         self.sleep_queue
-            .insert_after_condition(&interrupt.suspendable, |queue_interrupt, interrupt| {
-                queue_interrupt.deadline() <= interrupt.deadline()
+            .insert_after(&interrupt.suspendable, |queue_interrupt| {
+                queue_interrupt.deadline() <= deadline
             });
         self.reprogram_alarm(pkey);
     }
@@ -764,10 +764,11 @@ impl Scheduler {
                     let waiter_queue = unsafe { &mut *wait_list };
                     let old_prio = icb.raise_section_lock_priority(ceiling);
 
-                    waiter_queue.insert_after_condition(
-                        &blocked_thread.suspendable,
-                        |queue_waiter, waiter| queue_waiter.priority() >= waiter.priority(),
-                    );
+                    let thread_prio = blocked_thread.suspendable.priority();
+
+                    waiter_queue.insert_after(&blocked_thread.suspendable, |queue_waiter| {
+                        queue_waiter.priority() >= thread_prio
+                    });
 
                     icb.set_section_lock_priority(old_prio);
 

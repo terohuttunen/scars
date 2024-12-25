@@ -152,8 +152,8 @@ impl RawInterruptHandler {
 
     pub(crate) fn acquire_lock(&self, lock: &RawCeilingLock) {
         let locks = unsafe { &mut *self.owned_locks.get() };
-        locks.insert_after_condition(lock, |list_lock, inserted_lock| {
-            list_lock.ceiling_priority > inserted_lock.ceiling_priority
+        locks.insert_after(lock, |list_lock| {
+            list_lock.ceiling_priority > lock.ceiling_priority
         });
 
         self.update_owned_lock_priority();

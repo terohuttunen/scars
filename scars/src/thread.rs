@@ -205,9 +205,10 @@ impl RawThread {
         match self.state.get(pkey) {
             ThreadExecutionState::Running => {
                 lock.owner.set(pkey, self.thread_id);
+                let ceiling_priority = lock.ceiling_priority;
                 self.owned_locks
                     .borrow_mut(pkey)
-                    .insert_after_condition(lock, |a, b| a.ceiling_priority > b.ceiling_priority);
+                    .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
 
                 self.update_owned_lock_priority(pkey);
             }

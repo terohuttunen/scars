@@ -202,9 +202,7 @@ impl RawInterruptExecutor {
         task.wakeup_time = deadline;
         self.sleep_queue
             .borrow_mut()
-            .insert_after_condition(task, |queue_task, task| {
-                queue_task.wakeup_time <= task.wakeup_time
-            });
+            .insert_after(task, |queue_task| queue_task.wakeup_time <= deadline);
     }
 
     pub(crate) fn task_wait_for_interrupt(&'static self, task: &mut RawTask) {
@@ -364,9 +362,7 @@ impl RawThreadExecutor {
         task.wakeup_time = deadline;
         self.sleep_queue
             .borrow_mut()
-            .insert_after_condition(task, |queue_task, task| {
-                queue_task.wakeup_time <= task.wakeup_time
-            });
+            .insert_after(task, |queue_task| queue_task.wakeup_time <= deadline);
     }
 
     // Safe to call only from the local thread

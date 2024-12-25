@@ -133,14 +133,14 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
     }
 
     // Insert to list after predicate becomes false
-    pub fn insert_after_condition<'item, P>(&mut self, item: &'item T, predicate: P)
+    pub fn insert_after<'item, P>(&mut self, item: &'item T, predicate: P)
     where
-        P: Fn(&T, &T) -> bool,
+        P: Fn(&T) -> bool,
     {
         let mut cursor = self.cursor_front_mut();
         loop {
             match cursor.get_item() {
-                Some(list_item) if predicate(list_item, item) => {
+                Some(list_item) if predicate(list_item) => {
                     cursor.move_next();
                 }
                 _ => {
