@@ -2,7 +2,7 @@ use super::TryLockError;
 use crate::cell::LockedCell;
 use crate::kernel::{
     interrupt::RawInterruptHandler,
-    list::{impl_linked, Link},
+    list::{impl_linked, Node},
     priority::PriorityStatus,
     scheduler::{ExecutionContext, Scheduler},
     Priority,
@@ -32,7 +32,7 @@ pub struct RawCeilingLock {
     // Link for thread lock list.
     // Only one threads owns the lock at any given time, and
     // the thread maintains a list of locks it holds.
-    lock_list_link: Link<Self, LockListTag>,
+    lock_list_link: Node<Self, LockListTag>,
 }
 
 impl_linked!(lock_list_link, RawCeilingLock, LockListTag);
@@ -45,7 +45,7 @@ impl RawCeilingLock {
         RawCeilingLock {
             ceiling_priority,
             owner: LockedCell::new(INVALID_THREAD_ID),
-            lock_list_link: Link::new(),
+            lock_list_link: Node::new(),
         }
     }
 

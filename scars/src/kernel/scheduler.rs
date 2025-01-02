@@ -1,6 +1,6 @@
 use crate::cell::{LockedCell, LockedRefCell, RefMut};
 use crate::events::REQUIRE_ALL_EVENTS;
-use crate::kernel::list::{impl_linked, Linked, LinkedList, LinkedListTag};
+use crate::kernel::list::{impl_linked, LinkedList, LinkedListNode, LinkedListTag};
 use crate::kernel::tracing;
 use crate::kernel::{
     atomic_list::AtomicQueue,

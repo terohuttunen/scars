@@ -1,6 +1,6 @@
 use super::LocalExecutor;
 use crate::kernel::atomic_list::*;
-use crate::kernel::list::{impl_linked, Link, LinkedListTag};
+use crate::kernel::list::{impl_linked, Node, LinkedListTag};
 use crate::kernel::waiter::{Suspendable, WaitQueueTag};
 use crate::time::Instant;
 use core::future::Future;
@@ -21,8 +21,8 @@ pub const ASYNC_TASK_STATE_FINISHED: u32 = 3;
 
 pub struct RawTask {
     pub(crate) executor: LocalExecutor,
-    ready_list_link: Link<RawTask, TaskReadyListTag>,
-    sleep_list_link: Link<RawTask, WaitQueueTag>,
+    ready_list_link: Node<RawTask, TaskReadyListTag>,
+    sleep_list_link: Node<RawTask, WaitQueueTag>,
     pending_ready_list_link: AtomicQueueLink<RawTask, TaskReadyListTag>,
     pub(crate) waiter: Suspendable,
     pub(super) wakeup_time: Instant,
@@ -135,8 +135,8 @@ impl<F: Future> Task<F> {
 
             task.control_block.write(RawTask {
                 executor,
-                ready_list_link: Link::new(),
-                sleep_list_link: Link::new(),
+                ready_list_link: Node::new(),
+                sleep_list_link: Node::new(),
                 pending_ready_list_link: AtomicQueueLink::new(),
                 waiter: Suspendable::new_async(priority, waker),
                 wakeup_time: Instant::ZERO,

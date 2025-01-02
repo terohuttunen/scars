@@ -35,7 +35,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering
 use core::task::Poll;
 
 use super::atomic_list::{impl_atomic_linked, AtomicQueue, AtomicQueueLink};
-use super::list::Linked;
+use super::list::LinkedListNode;
 
 use static_cell::ConstStaticCell;
 

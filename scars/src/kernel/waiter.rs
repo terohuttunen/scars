@@ -2,7 +2,7 @@ use crate::cell::LockedRefCell;
 use crate::in_interrupt;
 use crate::kernel::atomic_list::{impl_atomic_linked, AtomicQueueLink};
 use crate::kernel::interrupt::RawInterruptHandler;
-use crate::kernel::list::{impl_linked, Link, Linked, LinkedList, LinkedListTag};
+use crate::kernel::list::{impl_linked, Node, LinkedListNode, LinkedList, LinkedListTag};
 use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
 use crate::sync::CeilingLock;
 use crate::syscall;
@@ -42,10 +42,10 @@ pub struct Suspendable {
     deadline: Cell<Option<Instant>>,
 
     /// Link for the WaitQueue.
-    pub(crate) wait_queue_link: Link<Self, WaitQueueTag>,
+    pub(crate) wait_queue_link: Node<Self, WaitQueueTag>,
 
     /// Link for the kernel sleep queue.
-    pub(crate) sleep_queue_link: Link<Self, SleepQueueTag>,
+    pub(crate) sleep_queue_link: Node<Self, SleepQueueTag>,
 
     /// When PreemptLock cannot be acquired, the Suspendable cannot be inserted into Scheduler queues,
     /// and it is instead added to the pending schedule queue to wait for scheduling when the lock is
@@ -58,8 +58,8 @@ impl Suspendable {
         Suspendable {
             kind: SuspendableKind::None,
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicQueueLink::new(),
         }
     }
@@ -72,8 +72,8 @@ impl Suspendable {
         Suspendable {
             kind: SuspendableKind::Thread(thread),
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicQueueLink::new(),
         }
     }
@@ -82,8 +82,8 @@ impl Suspendable {
         Suspendable {
             kind: SuspendableKind::Interrupt(interrupt),
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicQueueLink::new(),
         }
     }
@@ -92,8 +92,8 @@ impl Suspendable {
         Suspendable {
             kind: SuspendableKind::Async(priority, waker),
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicQueueLink::new(),
         }
     }

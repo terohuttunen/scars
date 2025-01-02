@@ -6,7 +6,7 @@ use crate::kernel::priority::PriorityStatus;
 use crate::kernel::{
     hal::Context,
     interrupt::set_ceiling_threshold,
-    list::{impl_linked, Link, LinkedList, LinkedListTag},
+    list::{impl_linked, Node, LinkedList, LinkedListTag},
     priority::AtomicPriorityStatusPair,
     scheduler::ExecStateTag,
     scheduler::Scheduler,
@@ -129,7 +129,7 @@ pub struct RawThread {
     pub(crate) state: LockedCell<ThreadExecutionState, PreemptLock>,
 
     // Intrusive linked list entry for inserting the thread into ready, suspended, or blocked queue
-    pub(crate) exec_queue_link: Link<RawThread, ExecStateTag>,
+    pub(crate) exec_queue_link: Node<RawThread, ExecStateTag>,
 
     pub(crate) suspendable: Suspendable,
 
@@ -158,7 +158,7 @@ impl RawThread {
             main_fn,
             stack: MaybeUninit::uninit(),
             owned_locks: LockedRefCell::new(LinkedList::new()),
-            exec_queue_link: Link::new(),
+            exec_queue_link: Node::new(),
             suspendable: Suspendable::new(),
             waited_events_mask: AtomicU32::new(0),
             sent_events_mask: AtomicU32::new(0),
