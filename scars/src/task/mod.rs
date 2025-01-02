@@ -202,16 +202,22 @@ impl RawInterruptExecutor {
         task.wakeup_time = deadline;
         self.sleep_queue
             .borrow_mut()
-            .insert_after(task, |queue_task| queue_task.wakeup_time <= deadline);
+            .insert_after(unsafe { Pin::new_unchecked(task) }, |queue_task| {
+                queue_task.wakeup_time <= deadline
+            });
     }
 
     pub(crate) fn task_wait_for_interrupt(&'static self, task: &mut RawTask) {
-        self.wfi_queue.borrow_mut().push_back(task);
+        self.wfi_queue
+            .borrow_mut()
+            .push_back(unsafe { Pin::new_unchecked(task) });
     }
 
     pub fn resume_pending_tasks(&'static self) {
         while let Some(pending_ready_task) = self.pending_ready_queue.pop_front() {
-            self.ready_queue.borrow_mut().push_back(pending_ready_task);
+            self.ready_queue
+                .borrow_mut()
+                .push_back(unsafe { Pin::new_unchecked(pending_ready_task) });
         }
     }
 
@@ -224,7 +230,9 @@ impl RawInterruptExecutor {
             if let Some(head_wakeup_time) = head_wakeup_time_opt {
                 if head_wakeup_time <= now {
                     let task = sleep_queue.pop_front().unwrap();
-                    self.ready_queue.borrow_mut().push_back(task);
+                    self.ready_queue
+                        .borrow_mut()
+                        .push_back(unsafe { Pin::new_unchecked(task) });
                 } else {
                     break;
                 }
@@ -238,7 +246,9 @@ impl RawInterruptExecutor {
         // Resume tasks waiting for the interrupt to occur
         loop {
             if let Some(task) = self.wfi_queue.borrow_mut().pop_front() {
-                self.ready_queue.borrow_mut().push_back(task);
+                self.ready_queue
+                    .borrow_mut()
+                    .push_back(unsafe { Pin::new_unchecked(task) });
             } else {
                 break;
             }
@@ -247,7 +257,9 @@ impl RawInterruptExecutor {
 
     fn spawn(&'static self, task_handle: &RawTaskHandle) {
         let task_to_spawn = task_handle.as_ref();
-        self.ready_queue.borrow_mut().push_back(task_to_spawn);
+        self.ready_queue
+            .borrow_mut()
+            .push_back(unsafe { Pin::new_unchecked(task_to_spawn) });
     }
 
     fn priority(&self) -> Priority {
@@ -318,12 +330,16 @@ impl RawThreadExecutor {
 
     fn spawn(&'static self, task_handle: &RawTaskHandle) {
         let task_to_spawn = task_handle.as_ref();
-        self.ready_queue.borrow_mut().push_back(task_to_spawn);
+        self.ready_queue
+            .borrow_mut()
+            .push_back(unsafe { Pin::new_unchecked(task_to_spawn) });
     }
 
     fn block_on(&'static self, task_handle: &RawTaskHandle) -> bool {
         let block_on_task = task_handle.as_ref();
-        self.ready_queue.borrow_mut().push_back(block_on_task);
+        self.ready_queue
+            .borrow_mut()
+            .push_back(unsafe { Pin::new_unchecked(block_on_task) });
 
         loop {
             self.resume_sleeping_tasks();
@@ -362,14 +378,18 @@ impl RawThreadExecutor {
         task.wakeup_time = deadline;
         self.sleep_queue
             .borrow_mut()
-            .insert_after(task, |queue_task| queue_task.wakeup_time <= deadline);
+            .insert_after(unsafe { Pin::new_unchecked(task) }, |queue_task| {
+                queue_task.wakeup_time <= deadline
+            });
     }
 
     // Safe to call only from the local thread
     fn resume_pending_tasks(&'static self, notify_executor: bool) {
         let mut task_became_ready: bool = false;
         while let Some(pending_ready_task) = self.pending_ready_queue.pop_front() {
-            self.ready_queue.borrow_mut().push_back(pending_ready_task);
+            self.ready_queue
+                .borrow_mut()
+                .push_back(unsafe { Pin::new_unchecked(pending_ready_task) });
             task_became_ready = true;
         }
 
@@ -385,7 +405,9 @@ impl RawThreadExecutor {
             if let Some(head) = self.sleep_queue.borrow().head() {
                 if head.wakeup_time <= now {
                     let task = self.sleep_queue.borrow_mut().pop_front().unwrap();
-                    self.ready_queue.borrow_mut().push_back(task);
+                    self.ready_queue
+                        .borrow_mut()
+                        .push_back(unsafe { Pin::new_unchecked(task) });
                 } else {
                     break;
                 }

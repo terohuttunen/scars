@@ -12,6 +12,7 @@ use crate::time::Instant;
 use crate::Priority;
 use core::cell::{Cell, RefCell};
 use core::future::{poll_fn, Future};
+use core::pin::Pin;
 use core::sync::atomic::AtomicPtr;
 use core::task::{RawWaker, Waker};
 
@@ -158,7 +159,7 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
                 let mut queue = self.queue.borrow_mut(ckey);
                 let task = unsafe { &*(cx.waker().as_raw().data() as *const RawTask) };
                 if !waiter_queued {
-                    queue.push_back(&task.waiter);
+                    queue.push_back(unsafe { Pin::new_unchecked(&task.waiter) });
                     waiter_queued = true;
                     core::task::Poll::Pending
                 } else {
@@ -210,7 +211,9 @@ impl AsyncWaiterQueue {
         poll_fn(|cx| {
             let task = unsafe { &*(cx.waker().as_raw().data() as *const RawTask) };
             if !waiter_queued {
-                self.queue.borrow_mut().push_back(&task.waiter);
+                self.queue
+                    .borrow_mut()
+                    .push_back(unsafe { Pin::new_unchecked(&task.waiter) });
                 waiter_queued = true;
                 core::task::Poll::Pending
             } else {

@@ -26,6 +26,7 @@ use crate::thread::{
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use scars_khal::{ContextInfo, FlowController};
@@ -202,14 +203,16 @@ impl Scheduler {
         let thread_priority = thread.active_priority();
         if !thread.lock_priority().is_valid() {
             // If thread is not holding any locks, then thread goes to the back of its priority queue
-            self.ready_queue.insert_after(thread, |queue_thread| {
-                queue_thread.active_priority() >= thread_priority
-            });
+            self.ready_queue
+                .insert_after(Pin::static_ref(thread), |queue_thread| {
+                    queue_thread.active_priority() >= thread_priority
+                });
         } else {
             // If thread is holding any locks, then it goes to the front of its priority queue
-            self.ready_queue.insert_after(thread, |queue_thread| {
-                queue_thread.active_priority() > thread_priority
-            });
+            self.ready_queue
+                .insert_after(Pin::static_ref(thread), |queue_thread| {
+                    queue_thread.active_priority() > thread_priority
+                });
         }
     }
 
@@ -221,19 +224,20 @@ impl Scheduler {
 
         tracing::thread_ready_end(thread.as_ref());
         let thread_priority = thread.lock_priority();
-        self.blocked_list.insert_after(thread, |queue_thread| {
-            let queue_thread_priority = queue_thread.lock_priority();
+        self.blocked_list
+            .insert_after(Pin::static_ref(thread), |queue_thread| {
+                let queue_thread_priority = queue_thread.lock_priority();
 
-            if queue_thread_priority.is_valid() && thread_priority.is_valid() {
-                queue_thread_priority >= thread_priority
-            } else if queue_thread_priority.is_valid() {
-                true
-            } else if thread_priority.is_valid() {
-                false
-            } else {
-                false
-            }
-        });
+                if queue_thread_priority.is_valid() && thread_priority.is_valid() {
+                    queue_thread_priority >= thread_priority
+                } else if queue_thread_priority.is_valid() {
+                    true
+                } else if thread_priority.is_valid() {
+                    false
+                } else {
+                    false
+                }
+            });
     }
 
     fn insert_to_suspended_list(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
@@ -243,7 +247,7 @@ impl Scheduler {
         }
 
         tracing::thread_ready_end(thread.as_ref());
-        self.suspended_list.push_back(thread);
+        self.suspended_list.push_back(Pin::static_ref(thread));
     }
 
     fn insert_to_wakeup_queue(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
@@ -254,10 +258,10 @@ impl Scheduler {
 
         tracing::thread_ready_end(thread.as_ref());
         let deadline = thread.suspendable.deadline();
-        self.sleep_queue
-            .insert_after(&thread.suspendable, |queue_thread| {
-                queue_thread.deadline() <= deadline
-            });
+        self.sleep_queue.insert_after(
+            unsafe { Pin::new_unchecked(&thread.suspendable) },
+            |queue_thread| queue_thread.deadline() <= deadline,
+        );
     }
 }
 
@@ -273,7 +277,7 @@ impl Scheduler {
         match thread.state.get(pkey) {
             ThreadExecutionState::Blocked => {
                 thread.set_wakeup_event();
-                self.blocked_list.remove(thread);
+                self.blocked_list.remove(Pin::static_ref(thread));
                 self.insert_to_ready_queue(pkey, thread);
             }
             _ => (),
@@ -358,13 +362,14 @@ impl Scheduler {
         interrupt: &RawInterruptHandler,
     ) {
         if interrupt.suspendable.in_sleep_queue() {
-            self.sleep_queue.remove(&interrupt.suspendable);
+            self.sleep_queue
+                .remove(unsafe { Pin::new_unchecked(&interrupt.suspendable) });
         }
         let deadline = interrupt.suspendable.deadline();
-        self.sleep_queue
-            .insert_after(&interrupt.suspendable, |queue_interrupt| {
-                queue_interrupt.deadline() <= deadline
-            });
+        self.sleep_queue.insert_after(
+            unsafe { Pin::new_unchecked(&interrupt.suspendable) },
+            |queue_interrupt| queue_interrupt.deadline() <= deadline,
+        );
         self.reprogram_alarm(pkey);
     }
 
@@ -394,7 +399,8 @@ impl Scheduler {
         // Asynchronous tasks associated with the interrupt can block, and be resumed.
 
         if interrupt.suspendable.in_sleep_queue() {
-            self.sleep_queue.remove(&interrupt.suspendable);
+            self.sleep_queue
+                .remove(Pin::static_ref(&interrupt.suspendable));
         }
 
         interrupt.set_pending_executor_poll();
@@ -429,14 +435,15 @@ impl Scheduler {
                 thread.set_resume_event();
                 // Remove from sleep queue if blocking operation has deadline
                 if thread.suspendable.in_sleep_queue() {
-                    self.sleep_queue.remove(&thread.suspendable);
+                    self.sleep_queue
+                        .remove(Pin::static_ref(&thread.suspendable));
                 }
-                self.blocked_list.remove(thread);
+                self.blocked_list.remove(Pin::static_ref(thread));
                 self.insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Suspended => {
                 thread.set_resume_event();
-                self.suspended_list.remove(thread);
+                self.suspended_list.remove(Pin::static_ref(thread));
                 self.insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Created => {
@@ -501,7 +508,7 @@ impl Scheduler {
 
         match thread.state.get(pkey) {
             ThreadExecutionState::Ready => {
-                self.ready_queue.remove(thread);
+                self.ready_queue.remove(Pin::static_ref(thread));
                 self.insert_to_suspended_list(pkey, thread);
             }
             ThreadExecutionState::Running => {
@@ -766,9 +773,10 @@ impl Scheduler {
 
                     let thread_prio = blocked_thread.suspendable.priority();
 
-                    waiter_queue.insert_after(&blocked_thread.suspendable, |queue_waiter| {
-                        queue_waiter.priority() >= thread_prio
-                    });
+                    waiter_queue.insert_after(
+                        Pin::static_ref(&blocked_thread.suspendable),
+                        |queue_waiter| queue_waiter.priority() >= thread_prio,
+                    );
 
                     icb.set_section_lock_priority(old_prio);
 

@@ -29,6 +29,7 @@ use core::cell::UnsafeCell;
 use core::future::{poll_fn, Future};
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::pin::Pin;
 use core::ptr::{addr_of, addr_of_mut, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use core::task::Poll;
@@ -152,7 +153,7 @@ impl RawInterruptHandler {
 
     pub(crate) fn acquire_lock(&self, lock: &RawCeilingLock) {
         let locks = unsafe { &mut *self.owned_locks.get() };
-        locks.insert_after(lock, |list_lock| {
+        locks.insert_after(unsafe { Pin::new_unchecked(lock) }, |list_lock| {
             list_lock.ceiling_priority > lock.ceiling_priority
         });
 
@@ -161,7 +162,7 @@ impl RawInterruptHandler {
 
     pub(crate) fn release_lock(&self, lock: &RawCeilingLock) {
         let locks = unsafe { &mut *self.owned_locks.get() };
-        locks.remove(lock);
+        locks.remove(unsafe { Pin::new_unchecked(lock) });
 
         self.update_owned_lock_priority();
     }

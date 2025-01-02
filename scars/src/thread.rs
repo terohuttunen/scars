@@ -21,6 +21,7 @@ use crate::time::Instant;
 use crate::tls::{LocalCell, LocalStorage};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
+use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
 use scars_khal::ContextInfo;
@@ -208,7 +209,9 @@ impl RawThread {
                 let ceiling_priority = lock.ceiling_priority;
                 self.owned_locks
                     .borrow_mut(pkey)
-                    .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
+                    .insert_after(unsafe { Pin::new_unchecked(lock) }, |a| {
+                        a.ceiling_priority > ceiling_priority
+                    });
 
                 self.update_owned_lock_priority(pkey);
             }
@@ -230,7 +233,9 @@ impl RawThread {
                 ()
             }
             thread_id if thread_id == self.thread_id => {
-                self.owned_locks.borrow_mut(pkey).remove(lock);
+                self.owned_locks
+                    .borrow_mut(pkey)
+                    .remove(unsafe { Pin::new_unchecked(lock) });
                 lock.owner.set(pkey, INVALID_THREAD_ID);
 
                 self.update_owned_lock_priority(pkey);

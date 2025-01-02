@@ -4,7 +4,9 @@ use core::cell::{Cell, Ref, RefMut};
 use core::marker::PhantomData;
 use core::marker::PhantomPinned;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub trait LinkedListTag: 'static {}
 
@@ -12,9 +14,8 @@ pub(crate) struct LinkedList<T: Linked<N>, N: LinkedListTag> {
     pub(crate) head: Option<NonNull<Link<T, N>>>,
     pub(crate) tail: Option<NonNull<Link<T, N>>>,
     _phantom: PhantomData<(Cell<Link<T, N>>, N)>,
-    // Links have backreferences to containing lists.
-    // Therefore, lists must be pinned.
-    _pinned: PhantomPinned,
+    // Note: The list can be `Unpin` because the links do not contain any
+    // references to the list itself.
 }
 
 #[allow(dead_code)]
@@ -24,7 +25,6 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
             head: None,
             tail: None,
             _phantom: PhantomData,
-            _pinned: PhantomPinned,
         }
     }
 
@@ -38,14 +38,14 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
             .map(|link_ptr| unsafe { link_ptr.as_ref().get_item() })
     }
 
-    pub fn push_front<'item>(&mut self, item: &'item T) {
+    pub fn push_front<'item>(&mut self, item: Pin<&'item T>) {
         let link = item.get_link();
         let link_ptr = item.get_link_ptr();
 
-        // When node is pushed to a list it should not be a member of
-        // any other list.
-        assert!(link.next.get().is_none());
-        assert!(link.prev.get().is_none());
+        // Take ownership of the link
+        link.owned
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .expect("Item pushed into a list cannot be a member of a list");
 
         // Adjust old head links
         if let Some(head) = self.head() {
@@ -63,18 +63,16 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
             // Replace also tail if list was empty
             self.tail = Some(link_ptr);
         }
-
-        link.list.set(NonNull::new(self));
     }
 
-    pub fn push_back<'item>(&mut self, item: &'item T) {
+    pub fn push_back<'item>(&mut self, item: Pin<&'item T>) {
         let link = item.get_link();
         let link_ptr = item.get_link_ptr();
 
-        // When node is pushed to a list it should not be a member of
-        // any other list.
-        assert!(link.next.get().is_none());
-        assert!(link.prev.get().is_none());
+        // Take ownership of the link
+        link.owned
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .expect("Item pushed into a list cannot be a member of a list");
 
         // Adjust old tail links
         if let Some(tail) = self.tail() {
@@ -92,8 +90,6 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
             // Replace also head if list was empty
             self.head = Some(link_ptr);
         }
-
-        link.list.set(NonNull::new(self));
     }
 
     pub fn pop_front<'item>(&mut self) -> Option<&'item T> {
@@ -111,7 +107,7 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
             }
             head_link.next.set(None);
             head_link.prev.set(None);
-            head_link.list.set(None);
+            head_link.owned.store(false, Ordering::Relaxed);
             return Some(head);
         }
 
@@ -133,7 +129,7 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
     }
 
     // Insert to list after predicate becomes false
-    pub fn insert_after<'item, P>(&mut self, item: &'item T, predicate: P)
+    pub fn insert_after<'item, P>(&mut self, item: Pin<&'item T>, predicate: P)
     where
         P: Fn(&T) -> bool,
     {
@@ -151,15 +147,11 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
         }
     }
 
-    pub fn remove<'item>(&mut self, item: &'item T) {
+    pub fn remove<'item>(&mut self, item: Pin<&'item T>) {
         let link = item.get_link();
-        match link.list.get() {
-            Some(list_ptr) => assert!(unsafe { NonNull::new_unchecked(self) } == list_ptr),
-            None => {
-                // Trying to remove item that is not in a list
-                return;
-            }
-        }
+        link.owned
+            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+            .expect("Cannot remove item that is not in a list");
 
         if let Some(prev_link) = link.prev_link() {
             prev_link.next.set(link.next.get());
@@ -175,12 +167,15 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
 
         link.next.set(None);
         link.prev.set(None);
-        link.list.set(None);
+        link.owned.store(false, Ordering::Relaxed);
     }
 }
 
 pub(crate) struct Link<T: Linked<N>, N: LinkedListTag> {
-    pub(crate) list: Cell<Option<NonNull<LinkedList<T, N>>>>,
+    /// True if the link is in a list.
+    // Note: The owning list is not stored in the link
+    // so that the owning LinkedList does not have to be pinned.
+    pub(crate) owned: AtomicBool,
     pub(crate) next: Cell<Option<NonNull<Link<T, N>>>>,
     pub(crate) prev: Cell<Option<NonNull<Link<T, N>>>>,
     _pin: PhantomPinned,
@@ -191,7 +186,7 @@ pub(crate) struct Link<T: Linked<N>, N: LinkedListTag> {
 impl<T: Linked<N>, N: LinkedListTag> Link<T, N> {
     pub const fn new() -> Link<T, N> {
         Link {
-            list: Cell::new(None),
+            owned: AtomicBool::new(false),
             next: Cell::new(None),
             prev: Cell::new(None),
             _pin: PhantomPinned,
@@ -215,33 +210,11 @@ impl<T: Linked<N>, N: LinkedListTag> Link<T, N> {
     }
 
     pub fn in_list(&self) -> bool {
-        self.list.get().is_some()
-    }
-
-    unsafe fn get_list(&self) -> Option<&LinkedList<T, N>> {
-        self.list.get().map(|list_ptr| unsafe { list_ptr.as_ref() })
-    }
-
-    unsafe fn get_list_mut(&self) -> Option<&mut LinkedList<T, N>> {
-        self.list
-            .get()
-            .map(|mut list_ptr| unsafe { list_ptr.as_mut() })
-    }
-
-    pub fn unlink(&self) {
-        if let Some(list) = unsafe { self.get_list_mut() } {
-            list.remove(self.get_item());
-        }
+        self.owned.load(Ordering::Relaxed)
     }
 
     fn as_ptr(&self) -> NonNull<Link<T, N>> {
         unsafe { NonNull::new_unchecked(self as *const Link<T, N> as *mut Link<T, N>) }
-    }
-}
-
-impl<T: Linked<N>, N: LinkedListTag> Drop for Link<T, N> {
-    fn drop(&mut self) {
-        self.unlink();
     }
 }
 
@@ -345,7 +318,7 @@ pub(crate) struct CursorMut<'list, T: Linked<N>, N: LinkedListTag> {
 
 #[allow(dead_code)]
 impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
-    pub fn insert_before<'item>(&mut self, item: &'item T) {
+    pub fn insert_before<'item>(&mut self, item: Pin<&'item T>) {
         let node_link_ptr = item.get_link_ptr();
         match self.current {
             Some(current_ptr) => {
@@ -359,7 +332,7 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
                         item.get_link().prev.set(Some(prev_ptr));
                         item.get_link().next.set(Some(current_ptr));
                         current_link.prev.set(Some(node_link_ptr));
-                        current_link.list.set(NonNull::new(self.list as *mut _));
+                        current_link.owned.store(true, Ordering::Relaxed);
                     }
                     None => {
                         self.list.push_front(item);
@@ -373,7 +346,7 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
         }
     }
 
-    pub fn insert_after<'item>(&mut self, node: &'item T) {
+    pub fn insert_after<'item>(&mut self, node: Pin<&'item T>) {
         let node_link_ptr = node.get_link_ptr();
         match self.current {
             Some(current_ptr) => {
@@ -387,7 +360,7 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
                         node.get_link().prev.set(Some(current_ptr));
                         node.get_link().next.set(Some(next_ptr));
                         current_link.next.set(Some(node_link_ptr));
-                        current_link.list.set(NonNull::new(self.list as *mut _));
+                        current_link.owned.store(true, Ordering::Relaxed);
                     }
                     None => {
                         self.list.push_back(node);
@@ -430,6 +403,7 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
 #[cfg(test)]
 mod test {
     use super::{Link, LinkedList, LinkedListTag};
+    use core::pin::{pin, Pin};
 
     struct Tag0 {}
 
@@ -450,38 +424,38 @@ mod test {
     #[test_case]
     fn test_linked_list_1() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let mut a = Foo {
+        let mut a = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
+        });
 
-        list.push_front(&mut a);
+        list.push_front(a.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
 
-        list.push_front(&mut a);
+        list.push_front(a.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_2() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let mut a = Foo {
+        let mut a = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        let mut b = Foo {
+        });
+        let mut b = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
+        });
 
-        list.push_front(&mut a);
-        list.push_front(&mut b);
+        list.push_front(a.as_ref());
+        list.push_front(b.as_ref());
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
     }
 
     #[test_case]
@@ -495,104 +469,106 @@ mod test {
             alink: Link::new(),
             blink: Link::new(),
         };
+        let a = pin!(a);
+        let b = pin!(b);
 
-        list.push_back(&mut a);
-        list.push_back(&mut b);
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_4() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
+        let a = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        let b = Foo {
+        });
+        let b = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        let c = Foo {
+        });
+        let c = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        list.push_back(&a);
-        list.push_back(&b);
-        list.push_back(&c);
+        });
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
+        list.push_back(c.as_ref());
 
-        list.remove(&c);
+        list.remove(c.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_5() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
+        let a = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        let b = Foo {
+        });
+        let b = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        let c = Foo {
+        });
+        let c = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        list.push_back(&a);
-        list.push_back(&b);
-        list.push_back(&c);
+        });
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
+        list.push_back(c.as_ref());
 
-        list.remove(&a);
+        list.remove(a.as_ref());
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_c = list.pop_front();
-        assert!(maybe_c.unwrap() as *const Foo == &c as *const Foo);
+        assert!(maybe_c.unwrap() as *const Foo == &*c as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_5() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
+        let a = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        let b = Foo {
+        });
+        let b = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        let c = Foo {
+        });
+        let c = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
-        list.push_back(&a);
-        list.push_back(&b);
-        list.push_back(&c);
+        });
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
+        list.push_back(c.as_ref());
 
-        list.remove(&b);
+        list.remove(b.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_c = list.pop_front();
-        assert!(maybe_c.unwrap() as *const Foo == &c as *const Foo);
+        assert!(maybe_c.unwrap() as *const Foo == &*c as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_5() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
+        let a = pin!(Foo {
             alink: Link::new(),
             blink: Link::new(),
-        };
+        });
 
-        list.push_back(&a);
+        list.push_back(a.as_ref());
 
-        list.remove(&a);
+        list.remove(a.as_ref());
         assert!(list.pop_front().is_none());
     }
 }
