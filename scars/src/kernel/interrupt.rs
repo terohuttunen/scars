@@ -342,9 +342,9 @@ pub async fn wait_for_interrupt() {
                         .unwrap()
                 };
                 let task = unsafe { &mut *(cx.waker().as_raw().data() as *mut RawTask) };
-
+                let pinned_task = unsafe { Pin::new_unchecked(task) };
                 if first_poll {
-                    executor.task_wait_for_interrupt(task);
+                    executor.task_wait_for_interrupt(pinned_task);
                     first_poll = false;
                     Poll::Pending
                 } else {

@@ -258,10 +258,10 @@ impl Scheduler {
 
         tracing::thread_ready_end(thread.as_ref());
         let deadline = thread.suspendable.deadline();
-        self.sleep_queue.insert_after(
-            unsafe { Pin::new_unchecked(&thread.suspendable) },
-            |queue_thread| queue_thread.deadline() <= deadline,
-        );
+        self.sleep_queue
+            .insert_after(Pin::static_ref(&thread.suspendable), |queue_thread| {
+                queue_thread.deadline() <= deadline
+            });
     }
 }
 
@@ -359,22 +359,25 @@ impl Scheduler {
     fn schedule_interrupt_wakeup_now(
         &mut self,
         pkey: PreemptLockKey<'_>,
-        interrupt: &RawInterruptHandler,
+        interrupt: &'static RawInterruptHandler,
     ) {
         if interrupt.suspendable.in_sleep_queue() {
             self.sleep_queue
-                .remove(unsafe { Pin::new_unchecked(&interrupt.suspendable) });
+                .remove(Pin::static_ref(&interrupt.suspendable));
         }
         let deadline = interrupt.suspendable.deadline();
-        self.sleep_queue.insert_after(
-            unsafe { Pin::new_unchecked(&interrupt.suspendable) },
-            |queue_interrupt| queue_interrupt.deadline() <= deadline,
-        );
+        self.sleep_queue
+            .insert_after(Pin::static_ref(&interrupt.suspendable), |queue_interrupt| {
+                queue_interrupt.deadline() <= deadline
+            });
         self.reprogram_alarm(pkey);
     }
 
     /// Puts the interrupt handler into scheduler sleep queue to be polled later at given time.
-    pub(crate) fn schedule_interrupt_wakeup(interrupt: &RawInterruptHandler, wakeup_time: u64) {
+    pub(crate) fn schedule_interrupt_wakeup(
+        interrupt: &'static RawInterruptHandler,
+        wakeup_time: u64,
+    ) {
         // TODO: setting the deadline should be legal only if not already set
         interrupt
             .suspendable
