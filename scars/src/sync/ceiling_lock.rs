@@ -11,6 +11,8 @@ use crate::runtime_error;
 use crate::sync::{KeyToken, Lock, PreemptLock};
 use crate::thread::{LockListTag, RawThread, IDLE_THREAD_ID, INVALID_THREAD_ID};
 use core::marker::PhantomData;
+use core::pin::Pin;
+use pin_project::pin_project;
 
 /// CeilingLock is a locking primitive that allows raising the priority
 /// of a thread to a ceiling priority while the lock is being held.
@@ -29,13 +31,13 @@ pub struct RawCeilingLock {
     // The owning thread id, or INVALID_THREAD_ID if free
     pub(crate) owner: LockedCell<u32, PreemptLock>,
 
-    // Link for thread lock list.
-    // Only one threads owns the lock at any given time, and
+    // Node for thread lock list.
+    // Only one thread owns the lock at any given time, and
     // the thread maintains a list of locks it holds.
-    lock_list_link: Node<Self, LockListTag>,
+    lock_list_node: Node<Self, LockListTag>,
 }
 
-impl_linked!(lock_list_link, RawCeilingLock, LockListTag);
+impl_linked!(lock_list_node, RawCeilingLock, LockListTag);
 
 unsafe impl Send for RawCeilingLock {}
 unsafe impl Sync for RawCeilingLock {}
@@ -45,11 +47,11 @@ impl RawCeilingLock {
         RawCeilingLock {
             ceiling_priority,
             owner: LockedCell::new(INVALID_THREAD_ID),
-            lock_list_link: Node::new(),
+            lock_list_node: Node::new(),
         }
     }
 
-    fn lock_in_isr(&self, current_interrupt: &'static RawInterruptHandler) {
+    fn lock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
         // Ceiling check: If locking interrupt has priority higher than the
         // mutex ceiling, then it violates the priority ceiling protocol.
         if current_interrupt.base_priority() > self.ceiling_priority {
@@ -59,7 +61,7 @@ impl RawCeilingLock {
         current_interrupt.acquire_lock(self);
     }
 
-    fn lock_in_thread(&self, current_thread: &'static RawThread) {
+    fn lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
         PreemptLock::with(|pkey| {
             if current_thread.thread_id == IDLE_THREAD_ID {
                 runtime_error!(RuntimeError::IdleThreadCeilingLock);
@@ -80,18 +82,18 @@ impl RawCeilingLock {
         })
     }
 
-    pub fn lock(&self) {
+    pub fn lock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => self.lock_in_isr(current_interrupt),
             ExecutionContext::Thread(current_thread) => self.lock_in_thread(current_thread),
         }
     }
 
-    fn unlock_in_isr(&self, current_interrupt: &'static RawInterruptHandler) {
+    fn unlock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
         current_interrupt.release_lock(self);
     }
 
-    fn unlock_in_thread(&self, current_thread: &'static RawThread) {
+    fn unlock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
         PreemptLock::with(|pkey| {
             // If lock has not been acquired by any thread
             if self.owner.get(pkey) == INVALID_THREAD_ID {
@@ -106,7 +108,7 @@ impl RawCeilingLock {
         });
     }
 
-    pub fn unlock(&self) {
+    pub fn unlock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => self.unlock_in_isr(current_interrupt),
             ExecutionContext::Thread(current_thread) => self.unlock_in_thread(current_thread),
@@ -143,7 +145,9 @@ impl RawCeilingLock {
     }
 }
 
+#[pin_project]
 pub struct CeilingLock<const CEILING: Priority> {
+    #[pin]
     raw: RawCeilingLock,
 }
 
@@ -154,12 +158,14 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
         }
     }
 
-    pub fn lock(&self) {
-        self.raw.lock();
+    pub fn lock(self: Pin<&Self>) {
+        let this = self.project_ref();
+        this.raw.lock();
     }
 
-    pub fn unlock(&self) {
-        self.raw.unlock();
+    pub fn unlock(self: Pin<&Self>) {
+        let this = self.project_ref();
+        this.raw.unlock();
     }
 
     #[inline(always)]

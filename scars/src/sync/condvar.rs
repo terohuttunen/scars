@@ -1,5 +1,6 @@
 use crate::kernel::{interrupt::in_interrupt, priority::Priority, waiter::WaitQueue};
 use crate::sync::{mutex, MutexGuard, RawCeilingLock};
+use core::pin::Pin;
 
 pub struct WaitTimeoutResult(bool);
 
@@ -21,7 +22,7 @@ impl<const CEILING: Priority> Condvar<CEILING> {
     }
 
     #[inline(never)]
-    fn wait_lock(&self, lock: &RawCeilingLock) {
+    fn wait_lock(&self, lock: Pin<&RawCeilingLock>) {
         lock.unlock();
 
         self.waiter_queue.wait();

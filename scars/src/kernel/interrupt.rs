@@ -151,18 +151,18 @@ impl RawInterruptHandler {
         self.local_storage.set(local_storage)
     }
 
-    pub(crate) fn acquire_lock(&self, lock: &RawCeilingLock) {
+    pub(crate) fn acquire_lock(&self, lock: Pin<&RawCeilingLock>) {
         let locks = unsafe { &mut *self.owned_locks.get() };
-        locks.insert_after(unsafe { Pin::new_unchecked(lock) }, |list_lock| {
+        locks.insert_after(lock, |list_lock| {
             list_lock.ceiling_priority > lock.ceiling_priority
         });
 
         self.update_owned_lock_priority();
     }
 
-    pub(crate) fn release_lock(&self, lock: &RawCeilingLock) {
+    pub(crate) fn release_lock(&self, lock: Pin<&RawCeilingLock>) {
         let locks = unsafe { &mut *self.owned_locks.get() };
-        locks.remove(unsafe { Pin::new_unchecked(lock) });
+        locks.remove(lock);
 
         self.update_owned_lock_priority();
     }

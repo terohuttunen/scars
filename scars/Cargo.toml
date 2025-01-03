@@ -23,6 +23,7 @@ scars-khal-stm32f4 = { version = "0.1.0", path = "../khal/scars-khal-stm32f4", o
 scars-khal-sim = { version = "0.1.0", path = "../khal/scars-khal-sim", optional = true }
 scars-test = { version = "0.1.0", path = "../scars-test" }
 aligned = "0.4.2"
+pin-project = "1.1.7"
 
 
 [dev-dependencies]

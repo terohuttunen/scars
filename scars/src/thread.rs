@@ -6,7 +6,7 @@ use crate::kernel::priority::PriorityStatus;
 use crate::kernel::{
     hal::Context,
     interrupt::set_ceiling_threshold,
-    list::{impl_linked, Node, LinkedList, LinkedListTag},
+    list::{impl_linked, LinkedList, LinkedListTag, Node},
     priority::AtomicPriorityStatusPair,
     scheduler::ExecStateTag,
     scheduler::Scheduler,
@@ -197,7 +197,7 @@ impl RawThread {
     pub(crate) fn acquire_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
-        lock: &RawCeilingLock,
+        lock: Pin<&RawCeilingLock>,
     ) {
         if lock.owner.get(pkey) != INVALID_THREAD_ID {
             panic!("This should not be possible");
@@ -209,9 +209,7 @@ impl RawThread {
                 let ceiling_priority = lock.ceiling_priority;
                 self.owned_locks
                     .borrow_mut(pkey)
-                    .insert_after(unsafe { Pin::new_unchecked(lock) }, |a| {
-                        a.ceiling_priority > ceiling_priority
-                    });
+                    .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
 
                 self.update_owned_lock_priority(pkey);
             }
@@ -225,7 +223,7 @@ impl RawThread {
     pub(crate) fn release_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
-        lock: &RawCeilingLock,
+        lock: Pin<&RawCeilingLock>,
     ) {
         match lock.owner.get(pkey) {
             INVALID_THREAD_ID => {
@@ -233,9 +231,7 @@ impl RawThread {
                 ()
             }
             thread_id if thread_id == self.thread_id => {
-                self.owned_locks
-                    .borrow_mut(pkey)
-                    .remove(unsafe { Pin::new_unchecked(lock) });
+                self.owned_locks.borrow_mut(pkey).remove(lock);
                 lock.owner.set(pkey, INVALID_THREAD_ID);
 
                 self.update_owned_lock_priority(pkey);
