@@ -28,12 +28,12 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         }
     }
 
-    pub fn head<'item>(&self) -> Option<&'item T> {
+    pub fn head<'item>(&self) -> Option<Pin<&'item T>> {
         self.head
             .map(|node_ptr| unsafe { node_ptr.as_ref().get_item() })
     }
 
-    pub fn tail<'item>(&self) -> Option<&'item T> {
+    pub fn tail<'item>(&self) -> Option<Pin<&'item T>> {
         self.tail
             .map(|node_ptr| unsafe { node_ptr.as_ref().get_item() })
     }
@@ -92,7 +92,7 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         }
     }
 
-    pub fn pop_front<'item>(&mut self) -> Option<&'item T> {
+    pub fn pop_front<'item>(&mut self) -> Option<Pin<&'item T>> {
         if let Some(head) = self
             .head
             .take()
@@ -136,7 +136,7 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         let mut cursor = self.cursor_front_mut();
         loop {
             match cursor.get_item() {
-                Some(list_item) if predicate(list_item) => {
+                Some(list_item) if predicate(&*list_item) => {
                     cursor.move_next();
                 }
                 _ => {
@@ -193,11 +193,11 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> Node<T, N> {
         }
     }
 
-    fn get_item<'item>(&self) -> &'item T {
+    fn get_item<'item>(&self) -> Pin<&'item T> {
         let node_ptr = self as *const Node<T, N>;
         let node_offset = <T as LinkedListNode<N>>::node_offset();
         let item_ptr = unsafe { (node_ptr as *const u8).sub(node_offset) as *const T };
-        unsafe { &*item_ptr }
+        unsafe { Pin::new_unchecked(&*item_ptr) }
     }
 
     fn next_node(&self) -> Option<&Node<T, N>> {
@@ -287,14 +287,14 @@ impl<'list, T: LinkedListNode<N>, N: LinkedListTag> Cursor<'list, T, N> {
         }
     }
 
-    pub fn get_item<'item>(&self) -> Option<&'item T> {
+    pub fn get_item<'item>(&self) -> Option<Pin<&'item T>> {
         self.current
             .map(|current| unsafe { current.as_ref().get_item() })
     }
 }
 
 impl<'list, T: LinkedListNode<N>, N: LinkedListTag> Iterator for Cursor<'list, T, N> {
-    type Item = &'list T;
+    type Item = Pin<&'list T>;
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.get_item();
         self.move_next();
@@ -393,7 +393,7 @@ impl<'list, T: LinkedListNode<N>, N: LinkedListTag> CursorMut<'list, T, N> {
     }
 
     #[allow(dead_code)]
-    pub fn get_item<'item>(&mut self) -> Option<&'item T> {
+    pub fn get_item<'item>(&self) -> Option<Pin<&'item T>> {
         self.current
             .map(|current| unsafe { current.as_ref() }.get_item())
     }
@@ -430,11 +430,11 @@ mod test {
 
         list.push_front(a.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
 
         list.push_front(a.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
     }
 
     #[test_case]
@@ -452,9 +452,9 @@ mod test {
         list.push_front(a.as_ref());
         list.push_front(b.as_ref());
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
     }
 
     #[test_case]
@@ -474,9 +474,9 @@ mod test {
         list.push_back(a.as_ref());
         list.push_back(b.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
     }
 
     #[test_case]
@@ -500,9 +500,9 @@ mod test {
 
         list.remove(c.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
     }
 
     #[test_case]
@@ -526,9 +526,9 @@ mod test {
 
         list.remove(a.as_ref());
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &*b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_c = list.pop_front();
-        assert!(maybe_c.unwrap() as *const Foo == &*c as *const Foo);
+        assert!(&*maybe_c.unwrap() as *const Foo == &*c as *const Foo);
     }
 
     #[test_case]
@@ -552,9 +552,9 @@ mod test {
 
         list.remove(b.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &*a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_c = list.pop_front();
-        assert!(maybe_c.unwrap() as *const Foo == &*c as *const Foo);
+        assert!(&*maybe_c.unwrap() as *const Foo == &*c as *const Foo);
     }
 
     #[test_case]

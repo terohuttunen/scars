@@ -34,7 +34,7 @@ use core::ptr::{addr_of, addr_of_mut, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use core::task::Poll;
 
-use super::atomic_list::{impl_atomic_linked, AtomicQueue, AtomicQueueLink};
+use super::atomic_list::{impl_atomic_linked, AtomicNode, AtomicQueue};
 use super::list::LinkedListNode;
 
 use static_cell::ConstStaticCell;
@@ -112,7 +112,7 @@ pub struct RawInterruptHandler {
     // because the locks might be released in any order.
     owned_locks: UnsafeCell<LinkedList<RawCeilingLock, LockListTag>>,
 
-    pending_interrupt_executor_poll_link: AtomicQueueLink<RawInterruptHandler, PendingNotifyTag>,
+    pending_interrupt_executor_poll_link: AtomicNode<RawInterruptHandler, PendingNotifyTag>,
 
     pub(crate) local_storage: OnceLock<LocalStorage>,
 
@@ -138,7 +138,7 @@ impl RawInterruptHandler {
                 PriorityStatus::invalid(),
             )),
             owned_locks: UnsafeCell::new(LinkedList::new()),
-            pending_interrupt_executor_poll_link: AtomicQueueLink::new(),
+            pending_interrupt_executor_poll_link: AtomicNode::new(),
             local_storage: OnceLock::new(),
             suspendable: Suspendable::new(),
         }
@@ -289,7 +289,7 @@ impl RawInterruptHandler {
             return;
         }
 
-        PENDING_INTERRUPT_EXECUTOR_POLLS.push_back(self);
+        PENDING_INTERRUPT_EXECUTOR_POLLS.push_back(unsafe { Pin::new_unchecked(self) });
     }
 
     pub(crate) unsafe fn poll_executor(&self) {

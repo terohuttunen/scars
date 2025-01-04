@@ -140,10 +140,10 @@ pub struct Scheduler {
     // A wakeup-time sorted queue of suspendables that are waiting to be woken up at a specific time.
     sleep_queue: LinkedList<Suspendable, SleepQueueTag>,
 
-    idle_thread: &'static RawThread,
+    idle_thread: Pin<&'static RawThread>,
 
     // Currently running thread on state Running
-    current_thread: &'static RawThread,
+    current_thread: Pin<&'static RawThread>,
 }
 
 impl Scheduler {
@@ -153,8 +153,8 @@ impl Scheduler {
             sleep_queue: LinkedList::new(),
             suspended_list: LinkedList::new(),
             blocked_list: LinkedList::new(),
-            idle_thread,
-            current_thread: idle_thread,
+            idle_thread: unsafe { Pin::new_unchecked(idle_thread) },
+            current_thread: unsafe { Pin::new_unchecked(idle_thread) },
         }
     }
 
@@ -185,7 +185,7 @@ impl Scheduler {
                 ExecutionContext::Interrupt(unsafe { interrupt_context.as_ref() })
             }
             None => ExecutionContext::Thread(
-                unsafe { &*(&*SCHEDULER.get()).assume_init_ref().as_ptr() }.current_thread,
+                &*unsafe { &*(&*SCHEDULER.get()).assume_init_ref().as_ptr() }.current_thread,
             ),
         }
     }
@@ -193,73 +193,82 @@ impl Scheduler {
 
 // Queue operations
 impl Scheduler {
-    fn insert_to_ready_queue(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
+    fn insert_to_ready_queue(&mut self, pkey: PreemptLockKey<'_>, thread: Pin<&'static RawThread>) {
         thread.state.set(pkey, ThreadExecutionState::Ready);
         if thread.thread_id == self.idle_thread.thread_id {
             // Idle thread is always ready, but it is never inserted to ready queue.
             return;
         }
-        tracing::thread_ready_begin(thread.as_ref());
+        tracing::thread_ready_begin(thread.as_thread_ref());
         let thread_priority = thread.active_priority();
         if !thread.lock_priority().is_valid() {
             // If thread is not holding any locks, then thread goes to the back of its priority queue
-            self.ready_queue
-                .insert_after(Pin::static_ref(thread), |queue_thread| {
-                    queue_thread.active_priority() >= thread_priority
-                });
+            self.ready_queue.insert_after(thread, |queue_thread| {
+                queue_thread.active_priority() >= thread_priority
+            });
         } else {
             // If thread is holding any locks, then it goes to the front of its priority queue
-            self.ready_queue
-                .insert_after(Pin::static_ref(thread), |queue_thread| {
-                    queue_thread.active_priority() > thread_priority
-                });
+            self.ready_queue.insert_after(thread, |queue_thread| {
+                queue_thread.active_priority() > thread_priority
+            });
         }
     }
 
-    fn insert_to_blocked_queue(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
+    fn insert_to_blocked_queue(
+        &mut self,
+        pkey: PreemptLockKey<'_>,
+        thread: Pin<&'static RawThread>,
+    ) {
         thread.state.set(pkey, ThreadExecutionState::Blocked);
         if thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread may not block");
         }
 
-        tracing::thread_ready_end(thread.as_ref());
+        tracing::thread_ready_end(thread.as_thread_ref());
         let thread_priority = thread.lock_priority();
-        self.blocked_list
-            .insert_after(Pin::static_ref(thread), |queue_thread| {
-                let queue_thread_priority = queue_thread.lock_priority();
+        self.blocked_list.insert_after(thread, |queue_thread| {
+            let queue_thread_priority = queue_thread.lock_priority();
 
-                if queue_thread_priority.is_valid() && thread_priority.is_valid() {
-                    queue_thread_priority >= thread_priority
-                } else if queue_thread_priority.is_valid() {
-                    true
-                } else if thread_priority.is_valid() {
-                    false
-                } else {
-                    false
-                }
-            });
+            if queue_thread_priority.is_valid() && thread_priority.is_valid() {
+                queue_thread_priority >= thread_priority
+            } else if queue_thread_priority.is_valid() {
+                true
+            } else if thread_priority.is_valid() {
+                false
+            } else {
+                false
+            }
+        });
     }
 
-    fn insert_to_suspended_list(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
+    fn insert_to_suspended_list(
+        &mut self,
+        pkey: PreemptLockKey<'_>,
+        thread: Pin<&'static RawThread>,
+    ) {
         thread.state.set(pkey, ThreadExecutionState::Suspended);
         if thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread may not suspend");
         }
 
-        tracing::thread_ready_end(thread.as_ref());
-        self.suspended_list.push_back(Pin::static_ref(thread));
+        tracing::thread_ready_end(thread.as_thread_ref());
+        self.suspended_list.push_back(thread);
     }
 
-    fn insert_to_wakeup_queue(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
+    fn insert_to_wakeup_queue(
+        &mut self,
+        pkey: PreemptLockKey<'_>,
+        thread: Pin<&'static RawThread>,
+    ) {
         thread.state.set(pkey, ThreadExecutionState::Blocked);
         if thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread may not block");
         }
 
-        tracing::thread_ready_end(thread.as_ref());
+        tracing::thread_ready_end(thread.as_thread_ref());
         let deadline = thread.suspendable.deadline();
         self.sleep_queue
-            .insert_after(Pin::static_ref(&thread.suspendable), |queue_thread| {
+            .insert_after(thread.suspendable_ref(), |queue_thread| {
                 queue_thread.deadline() <= deadline
             });
     }
@@ -269,7 +278,7 @@ impl Scheduler {
 // with optional deadline, and resumed later.
 impl Scheduler {
     // Resume thread due to wakeup while rescheduling
-    fn wakeup_thread(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
+    fn wakeup_thread(&mut self, pkey: PreemptLockKey<'_>, thread: Pin<&'static RawThread>) {
         if thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread may not be woken up");
         }
@@ -277,7 +286,7 @@ impl Scheduler {
         match thread.state.get(pkey) {
             ThreadExecutionState::Blocked => {
                 thread.set_wakeup_event();
-                self.blocked_list.remove(Pin::static_ref(thread));
+                self.blocked_list.remove(thread);
                 self.insert_to_ready_queue(pkey, thread);
             }
             _ => (),
@@ -297,10 +306,10 @@ impl Scheduler {
         interrupt.set_pending_executor_poll();
     }
 
-    fn wakeup_suspendable(&mut self, pkey: PreemptLockKey<'_>, suspendable: &Suspendable) {
+    fn wakeup_suspendable(&mut self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
         match suspendable.kind {
             SuspendableKind::Thread(thread_ptr) => {
-                let thread = unsafe { &*thread_ptr };
+                let thread = unsafe { Pin::new_unchecked(&*thread_ptr) };
                 self.wakeup_thread(pkey, thread)
             }
             SuspendableKind::Interrupt(interrupt_ptr) => {
@@ -316,10 +325,10 @@ impl Scheduler {
         // Note: does not check for need to reschedule, as this is called from reschedule.
     }
 
-    fn resume_suspendable_now(&mut self, pkey: PreemptLockKey<'_>, suspendable: &Suspendable) {
+    fn resume_suspendable_now(&mut self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
         match suspendable.kind {
             SuspendableKind::Thread(thread_ptr) => {
-                let thread = unsafe { &*thread_ptr };
+                let thread = unsafe { Pin::new_unchecked(&*thread_ptr) };
                 self.resume_thread_now(pkey, thread);
             }
             SuspendableKind::Interrupt(interrupt) => {
@@ -333,7 +342,11 @@ impl Scheduler {
         }
     }
 
-    fn suspend_suspendable_now(&mut self, pkey: PreemptLockKey<'_>, suspendable: &Suspendable) {
+    fn suspend_suspendable_now(
+        &mut self,
+        pkey: PreemptLockKey<'_>,
+        suspendable: Pin<&Suspendable>,
+    ) {
         match suspendable.kind {
             SuspendableKind::Thread(_thread_ptr) => {
                 // No threads are put to the pending sleep queue yet.
@@ -389,7 +402,7 @@ impl Scheduler {
         }) {
             // Preemption lock is held by a thread or lower priority interrupt handler.
             // Delayed insertion to sleep queue will be executed when the lock is released.
-            PENDING_SLEEP.push_back(&interrupt.suspendable);
+            PENDING_SLEEP.push_back(Pin::static_ref(&interrupt.suspendable));
         };
     }
 
@@ -420,7 +433,7 @@ impl Scheduler {
             // priority ISR holds the lock.
             // Store unblocked thread in pending ready list instead, from which it will be
             // moved to ready list when the preempt lock is released.
-            PENDING_RESUME.push_back(&interrupt.suspendable);
+            PENDING_RESUME.push_back(Pin::static_ref(&interrupt.suspendable));
         };
     }
 }
@@ -429,7 +442,7 @@ impl Scheduler {
 impl Scheduler {
     // Resume thread due to notification. Will set pending reschedule flag if the resumed thread has
     // higher priority than the current thread.
-    fn resume_thread_now(&mut self, pkey: PreemptLockKey<'_>, thread: &'static RawThread) {
+    fn resume_thread_now(&mut self, pkey: PreemptLockKey<'_>, thread: Pin<&'static RawThread>) {
         match thread.state.get(pkey) {
             ThreadExecutionState::Ready | ThreadExecutionState::Running => {
                 // Thread is already in ready queue or running
@@ -437,16 +450,16 @@ impl Scheduler {
             ThreadExecutionState::Blocked => {
                 thread.set_resume_event();
                 // Remove from sleep queue if blocking operation has deadline
-                if thread.suspendable.in_sleep_queue() {
-                    self.sleep_queue
-                        .remove(Pin::static_ref(&thread.suspendable));
+                let suspendable = thread.suspendable_ref();
+                if suspendable.in_sleep_queue() {
+                    self.sleep_queue.remove(suspendable);
                 }
-                self.blocked_list.remove(Pin::static_ref(thread));
+                self.blocked_list.remove(thread);
                 self.insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Suspended => {
                 thread.set_resume_event();
-                self.suspended_list.remove(Pin::static_ref(thread));
+                self.suspended_list.remove(thread);
                 self.insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Created => {
@@ -467,7 +480,7 @@ impl Scheduler {
     }
 
     // Thread or ISR context
-    pub(crate) fn resume_thread(thread: &'static RawThread) {
+    pub(crate) fn resume_thread(thread: Pin<&'static RawThread>) {
         if let Err(_) = PreemptLock::try_with(|pkey| {
             let mut scheduler = Scheduler::borrow_mut(pkey);
             scheduler.resume_thread_now(pkey, thread);
@@ -476,14 +489,14 @@ impl Scheduler {
             // priority ISR holds the lock.
             // Store unblocked thread in pending ready list instead, from which it will be
             // moved to ready list when the preempt lock is released.
-            PENDING_RESUME.push_back(&thread.suspendable);
+            PENDING_RESUME.push_back(thread.suspendable_ref());
         };
     }
 
     fn block_thread(
         &mut self,
         pkey: PreemptLockKey<'_>,
-        thread: &'static RawThread,
+        thread: Pin<&'static RawThread>,
         timeout_opt: Option<u64>,
     ) {
         match timeout_opt {
@@ -505,13 +518,13 @@ impl Scheduler {
     fn suspend_thread(
         &mut self,
         pkey: PreemptLockKey<'_>,
-        maybe_thread: Option<&'static RawThread>,
+        maybe_thread: Option<Pin<&'static RawThread>>,
     ) {
         let thread = maybe_thread.unwrap_or(self.current_thread);
 
         match thread.state.get(pkey) {
             ThreadExecutionState::Ready => {
-                self.ready_queue.remove(Pin::static_ref(thread));
+                self.ready_queue.remove(thread);
                 self.insert_to_suspended_list(pkey, thread);
             }
             ThreadExecutionState::Running => {
@@ -538,7 +551,7 @@ impl Scheduler {
         }
     }
 
-    pub(crate) fn suspend_thread_isr(maybe_thread: Option<&'static RawThread>) {
+    pub(crate) fn suspend_thread_isr(maybe_thread: Option<Pin<&'static RawThread>>) {
         if let Err(_) = PreemptLock::try_with(|pkey| {
             let mut scheduler = Scheduler::borrow_mut(pkey);
             scheduler.suspend_thread(pkey, maybe_thread);
@@ -557,7 +570,7 @@ impl Scheduler {
     }
 
     /// Returns new thread to switch to, or `None` if staying in the current thread.
-    fn choose_thread_to_run<'a>(&mut self, kind: RescheduleKind) -> Option<&'a RawThread> {
+    fn choose_thread_to_run<'a>(&mut self, kind: RescheduleKind) -> Option<Pin<&'a RawThread>> {
         let current_priority = self.current_thread.active_priority();
 
         // Highest priority of any locks held by the current or blocked threads.
@@ -604,15 +617,15 @@ impl Scheduler {
     fn switch_thread(
         &mut self,
         pkey: PreemptLockKey<'_>,
-        new: &'static RawThread,
-    ) -> &'static RawThread {
+        new: Pin<&'static RawThread>,
+    ) -> Pin<&'static RawThread> {
         // Whenever current thread is switched out, check its stack canary for
         // stack overflow that could have occurred during the thread execution.
         self.check_stack_overflow();
         //printkln!("[scheduler] switching to thread {}", new.name);
         new.state.set(pkey, ThreadExecutionState::Running);
 
-        let new_thread_ref = new.as_ref();
+        let new_thread_ref = new.as_thread_ref();
         if new.thread_id == IDLE_THREAD_ID {
             tracing::system_idle();
         }
@@ -620,7 +633,7 @@ impl Scheduler {
         CURRENT_THREAD_CONTEXT.store(new.context.as_ptr() as *mut _, Ordering::Relaxed);
         let old = core::mem::replace(&mut self.current_thread, new);
 
-        tracing::thread_exec_end(old.as_ref());
+        tracing::thread_exec_end(old.as_thread_ref());
         tracing::thread_exec_begin(new_thread_ref);
         old.state.set(pkey, ThreadExecutionState::Ready);
 
@@ -728,9 +741,15 @@ impl Scheduler {
         }
     }
 
-    pub(crate) fn start_thread_isr(thread: &'static mut RawThread) {
-        thread.suspendable.set_thread(thread as *const _);
-        tracing::thread_new(thread.as_ref());
+    pub(crate) fn start_thread_isr(mut thread: Pin<&'static mut RawThread>) {
+        unsafe {
+            thread.as_mut().init();
+        }
+
+        // Thread mutability ends
+        let thread = thread.into_ref();
+
+        tracing::thread_new(thread.as_thread_ref());
         Scheduler::resume_thread(thread);
     }
 
@@ -767,6 +786,7 @@ impl Scheduler {
                 Some(ready) => {
                     let icb = unsafe { current_interrupt().unwrap().as_ref() };
                     let blocked_thread = scheduler.switch_thread(pkey, ready);
+                    let suspendable = blocked_thread.suspendable_ref();
 
                     // Protect access to waiter queue with priority lock.
                     // SAFETY: list is accessed within raised priority section.
@@ -774,12 +794,11 @@ impl Scheduler {
                     let waiter_queue = unsafe { &mut *wait_list };
                     let old_prio = icb.raise_section_lock_priority(ceiling);
 
-                    let thread_prio = blocked_thread.suspendable.priority();
+                    let thread_prio = suspendable.priority();
 
-                    waiter_queue.insert_after(
-                        Pin::static_ref(&blocked_thread.suspendable),
-                        |queue_waiter| queue_waiter.priority() >= thread_prio,
-                    );
+                    waiter_queue.insert_after(suspendable, |queue_waiter| {
+                        queue_waiter.priority() >= thread_prio
+                    });
 
                     icb.set_section_lock_priority(old_prio);
 
@@ -876,7 +895,7 @@ impl Scheduler {
         };
     }
 
-    pub(crate) fn threads(&self) -> impl Iterator<Item = &RawThread> {
+    pub(crate) fn threads(&self) -> impl Iterator<Item = Pin<&RawThread>> {
         Some(self.idle_thread)
             .into_iter()
             .chain(Some(self.current_thread).into_iter())

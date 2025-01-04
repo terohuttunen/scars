@@ -167,6 +167,11 @@ impl RawThread {
         }
     }
 
+    pub unsafe fn init(self: Pin<&mut Self>) {
+        let thread_ptr = &*self as *const RawThread;
+        self.suspendable_mut().init_thread(thread_ptr);
+    }
+
     pub unsafe fn start(&'static mut self) {
         if *self.state.get_mut() != ThreadExecutionState::Created {
             panic!("Cannot start thread twice");
@@ -190,8 +195,16 @@ impl RawThread {
         }
     }
 
-    pub fn as_ref(&'static self) -> ThreadRef {
-        ThreadRef::new(self)
+    pub fn suspendable_ref(self: Pin<&Self>) -> Pin<&Suspendable> {
+        unsafe { Pin::new_unchecked(&self.get_ref().suspendable) }
+    }
+
+    pub fn suspendable_mut(self: Pin<&mut Self>) -> Pin<&mut Suspendable> {
+        unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().suspendable) }
+    }
+
+    pub fn as_thread_ref(self: Pin<&'static Self>) -> ThreadRef {
+        ThreadRef::new(self.get_ref())
     }
 
     pub(crate) fn acquire_lock<'key>(
@@ -334,7 +347,7 @@ impl RawThread {
     }
 
     pub fn resume(&'static self) {
-        Scheduler::resume_thread(self);
+        Scheduler::resume_thread(Pin::static_ref(self));
     }
 
     pub(crate) fn set_wakeup_event(&self) {
@@ -369,7 +382,7 @@ impl RawThread {
         if (!require_all && received_events != 0)
             || (received_events != 0 && received_events == receiving_events)
         {
-            Scheduler::resume_thread(self);
+            Scheduler::resume_thread(Pin::static_ref(self));
         }
     }
 

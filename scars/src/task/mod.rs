@@ -77,7 +77,7 @@ impl LocalExecutor {
         }
     }
 
-    pub fn resume_task(&'static self, task: &RawTask) {
+    pub fn resume_task(&'static self, task: Pin<&RawTask>) {
         match self {
             LocalExecutor::Thread(executor) => executor.resume_task(task),
             LocalExecutor::Interrupt(executor) => executor.resume_task(task),
@@ -176,7 +176,7 @@ impl RawInterruptExecutor {
 
     // Safe to call from ISR or another thread
     // Note: This method must be called for the task's executor only
-    pub(crate) fn resume_task(&'static self, task: &RawTask) {
+    pub(crate) fn resume_task(&'static self, task: Pin<&RawTask>) {
         // Add task to the pending ready queue of the interrupt executor
         self.pending_ready_queue.push_back(task);
         if let LocalExecutor::Interrupt(task_executor) = task.executor {
@@ -213,9 +213,7 @@ impl RawInterruptExecutor {
 
     pub fn resume_pending_tasks(&'static self) {
         while let Some(pending_ready_task) = self.pending_ready_queue.pop_front() {
-            self.ready_queue
-                .borrow_mut()
-                .push_back(unsafe { Pin::new_unchecked(pending_ready_task) });
+            self.ready_queue.borrow_mut().push_back(pending_ready_task);
         }
     }
 
@@ -228,9 +226,7 @@ impl RawInterruptExecutor {
             if let Some(head_wakeup_time) = head_wakeup_time_opt {
                 if head_wakeup_time <= now {
                     let task = sleep_queue.pop_front().unwrap();
-                    self.ready_queue
-                        .borrow_mut()
-                        .push_back(unsafe { Pin::new_unchecked(task) });
+                    self.ready_queue.borrow_mut().push_back(task);
                 } else {
                     break;
                 }
@@ -244,9 +240,7 @@ impl RawInterruptExecutor {
         // Resume tasks waiting for the interrupt to occur
         loop {
             if let Some(task) = self.wfi_queue.borrow_mut().pop_front() {
-                self.ready_queue
-                    .borrow_mut()
-                    .push_back(unsafe { Pin::new_unchecked(task) });
+                self.ready_queue.borrow_mut().push_back(task);
             } else {
                 break;
             }
@@ -290,7 +284,7 @@ impl InterruptExecutor {
         self.raw.poll(kind)
     }
 
-    fn resume_task(&'static self, task: &RawTask) {
+    fn resume_task(&'static self, task: Pin<&RawTask>) {
         self.raw.resume_task(task);
     }
 
@@ -342,7 +336,7 @@ impl RawThreadExecutor {
             // Poll ready tasks
             while let Some(ready_task) = self.ready_queue.borrow_mut().pop_front() {
                 if ready_task.poll() {
-                    if ready_task as *const _ == &*block_on_task as *const _ {
+                    if &*ready_task as *const _ == &*block_on_task as *const _ {
                         return true;
                     }
                 }
@@ -362,7 +356,7 @@ impl RawThreadExecutor {
     }
 
     // Safe to call from ISR or another thread
-    fn resume_task(&'static self, task: &RawTask) {
+    fn resume_task(&'static self, task: Pin<&RawTask>) {
         self.pending_ready_queue.push_back(task);
         self.thread.send_events(EXECUTOR_WAKEUP_EVENT);
     }
@@ -381,9 +375,7 @@ impl RawThreadExecutor {
     fn resume_pending_tasks(&'static self, notify_executor: bool) {
         let mut task_became_ready: bool = false;
         while let Some(pending_ready_task) = self.pending_ready_queue.pop_front() {
-            self.ready_queue
-                .borrow_mut()
-                .push_back(unsafe { Pin::new_unchecked(pending_ready_task) });
+            self.ready_queue.borrow_mut().push_back(pending_ready_task);
             task_became_ready = true;
         }
 
@@ -399,9 +391,7 @@ impl RawThreadExecutor {
             if let Some(head) = self.sleep_queue.borrow().head() {
                 if head.wakeup_time <= now {
                     let task = self.sleep_queue.borrow_mut().pop_front().unwrap();
-                    self.ready_queue
-                        .borrow_mut()
-                        .push_back(unsafe { Pin::new_unchecked(task) });
+                    self.ready_queue.borrow_mut().push_back(task);
                 } else {
                     break;
                 }
@@ -445,7 +435,7 @@ impl ThreadExecutor {
         self.raw.priority()
     }
 
-    pub(crate) fn resume_task(&'static self, task: &RawTask) {
+    pub(crate) fn resume_task(&'static self, task: Pin<&RawTask>) {
         self.raw.resume_task(task);
     }
 

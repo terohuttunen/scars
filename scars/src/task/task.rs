@@ -23,7 +23,7 @@ pub struct RawTask {
     pub(crate) executor: LocalExecutor,
     ready_list_link: Node<RawTask, TaskReadyListTag>,
     sleep_list_link: Node<RawTask, WaitQueueTag>,
-    pending_ready_list_link: AtomicQueueLink<RawTask, TaskReadyListTag>,
+    pending_ready_list_link: AtomicNode<RawTask, TaskReadyListTag>,
     pub(crate) waiter: Suspendable,
     pub(super) wakeup_time: Instant,
     task_ptr: *mut (),
@@ -58,8 +58,8 @@ impl RawTask {
     }
 
     fn waker_wake(data: *const ()) {
-        let control_block = unsafe { &*(data as *const RawTask) };
-        control_block.executor.resume_task(control_block);
+        let raw = unsafe { &*(data as *const RawTask) };
+        raw.executor.resume_task(unsafe { Pin::new_unchecked(raw) });
     }
 
     fn waker_drop(_data: *const ()) {}
@@ -142,7 +142,7 @@ impl<F: Future> Task<F> {
                 executor,
                 ready_list_link: Node::new(),
                 sleep_list_link: Node::new(),
-                pending_ready_list_link: AtomicQueueLink::new(),
+                pending_ready_list_link: AtomicNode::new(),
                 waiter: Suspendable::new_async(priority, waker),
                 wakeup_time: Instant::ZERO,
                 task_ptr,
