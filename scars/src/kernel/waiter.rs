@@ -1,8 +1,8 @@
 use crate::cell::LockedRefCell;
 use crate::in_interrupt;
-use crate::kernel::atomic_list::{impl_atomic_linked, AtomicQueueLink};
+use crate::kernel::atomic_list::{impl_atomic_linked, AtomicNode};
 use crate::kernel::interrupt::RawInterruptHandler;
-use crate::kernel::list::{impl_linked, Link, Linked, LinkedList, LinkedListTag};
+use crate::kernel::list::{impl_linked, LinkedList, LinkedListNode, LinkedListTag, Node};
 use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
 use crate::sync::CeilingLock;
 use crate::syscall;
@@ -12,6 +12,7 @@ use crate::time::Instant;
 use crate::Priority;
 use core::cell::{Cell, RefCell};
 use core::future::{poll_fn, Future};
+use core::pin::Pin;
 use core::sync::atomic::AtomicPtr;
 use core::task::{RawWaker, Waker};
 
@@ -41,15 +42,15 @@ pub struct Suspendable {
     deadline: Cell<Option<Instant>>,
 
     /// Link for the WaitQueue.
-    pub(crate) wait_queue_link: Link<Self, WaitQueueTag>,
+    pub(crate) wait_queue_link: Node<Self, WaitQueueTag>,
 
     /// Link for the kernel sleep queue.
-    pub(crate) sleep_queue_link: Link<Self, SleepQueueTag>,
+    pub(crate) sleep_queue_link: Node<Self, SleepQueueTag>,
 
     /// When PreemptLock cannot be acquired, the Suspendable cannot be inserted into Scheduler queues,
     /// and it is instead added to the pending schedule queue to wait for scheduling when the lock is
     /// released.
-    pub(crate) pending_schedule_link: AtomicQueueLink<Self, ExecStateTag>,
+    pub(crate) pending_schedule_link: AtomicNode<Self, ExecStateTag>,
 }
 
 impl Suspendable {
@@ -57,23 +58,24 @@ impl Suspendable {
         Suspendable {
             kind: SuspendableKind::None,
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
-            pending_schedule_link: AtomicQueueLink::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
+            pending_schedule_link: AtomicNode::new(),
         }
     }
 
-    pub fn set_thread(&mut self, thread: *const RawThread) {
-        self.kind = SuspendableKind::Thread(thread);
+    pub fn init_thread(self: Pin<&mut Self>, thread_ptr: *const RawThread) {
+        let this = unsafe { self.get_unchecked_mut() };
+        this.kind = SuspendableKind::Thread(thread_ptr);
     }
 
     pub const fn new_thread(thread: *const RawThread) -> Suspendable {
         Suspendable {
             kind: SuspendableKind::Thread(thread),
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
-            pending_schedule_link: AtomicQueueLink::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
+            pending_schedule_link: AtomicNode::new(),
         }
     }
 
@@ -81,9 +83,9 @@ impl Suspendable {
         Suspendable {
             kind: SuspendableKind::Interrupt(interrupt),
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
-            pending_schedule_link: AtomicQueueLink::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
+            pending_schedule_link: AtomicNode::new(),
         }
     }
 
@@ -91,9 +93,9 @@ impl Suspendable {
         Suspendable {
             kind: SuspendableKind::Async(priority, waker),
             deadline: Cell::new(None),
-            wait_queue_link: Link::new(),
-            sleep_queue_link: Link::new(),
-            pending_schedule_link: AtomicQueueLink::new(),
+            wait_queue_link: Node::new(),
+            sleep_queue_link: Node::new(),
+            pending_schedule_link: AtomicNode::new(),
         }
     }
 
@@ -158,7 +160,7 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
                 let mut queue = self.queue.borrow_mut(ckey);
                 let task = unsafe { &*(cx.waker().as_raw().data() as *const RawTask) };
                 if !waiter_queued {
-                    queue.push_back(&task.waiter);
+                    queue.push_back(unsafe { Pin::new_unchecked(&task.waiter) });
                     waiter_queued = true;
                     core::task::Poll::Pending
                 } else {
@@ -210,7 +212,9 @@ impl AsyncWaiterQueue {
         poll_fn(|cx| {
             let task = unsafe { &*(cx.waker().as_raw().data() as *const RawTask) };
             if !waiter_queued {
-                self.queue.borrow_mut().push_back(&task.waiter);
+                self.queue
+                    .borrow_mut()
+                    .push_back(unsafe { Pin::new_unchecked(&task.waiter) });
                 waiter_queued = true;
                 core::task::Poll::Pending
             } else {

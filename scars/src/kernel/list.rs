@@ -4,114 +4,110 @@ use core::cell::{Cell, Ref, RefMut};
 use core::marker::PhantomData;
 use core::marker::PhantomPinned;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub trait LinkedListTag: 'static {}
 
-pub(crate) struct LinkedList<T: Linked<N>, N: LinkedListTag> {
-    pub(crate) head: Option<NonNull<Link<T, N>>>,
-    pub(crate) tail: Option<NonNull<Link<T, N>>>,
-    _phantom: PhantomData<(Cell<Link<T, N>>, N)>,
-    // Links have backreferences to containing lists.
-    // Therefore, lists must be pinned.
-    _pinned: PhantomPinned,
+pub(crate) struct LinkedList<T: LinkedListNode<N>, N: LinkedListTag> {
+    pub(crate) head: Option<NonNull<Node<T, N>>>,
+    pub(crate) tail: Option<NonNull<Node<T, N>>>,
+    _phantom: PhantomData<(Cell<Node<T, N>>, N)>,
+    // Note: The list can be `Unpin` because the nodes do not contain any
+    // references to the list itself.
 }
 
 #[allow(dead_code)]
-impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
+impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
     pub const fn new() -> LinkedList<T, N> {
         LinkedList {
             head: None,
             tail: None,
             _phantom: PhantomData,
-            _pinned: PhantomPinned,
         }
     }
 
-    pub fn head<'item>(&self) -> Option<&'item T> {
+    pub fn head<'item>(&self) -> Option<Pin<&'item T>> {
         self.head
-            .map(|link_ptr| unsafe { link_ptr.as_ref().get_item() })
+            .map(|node_ptr| unsafe { node_ptr.as_ref().get_item() })
     }
 
-    pub fn tail<'item>(&self) -> Option<&'item T> {
+    pub fn tail<'item>(&self) -> Option<Pin<&'item T>> {
         self.tail
-            .map(|link_ptr| unsafe { link_ptr.as_ref().get_item() })
+            .map(|node_ptr| unsafe { node_ptr.as_ref().get_item() })
     }
 
-    pub fn push_front<'item>(&mut self, item: &'item T) {
-        let link = item.get_link();
-        let link_ptr = item.get_link_ptr();
+    pub fn push_front<'item>(&mut self, item: Pin<&'item T>) {
+        let node = item.get_node();
+        let node_ptr = item.get_node_ptr();
 
-        // When node is pushed to a list it should not be a member of
-        // any other list.
-        assert!(link.next.get().is_none());
-        assert!(link.prev.get().is_none());
+        // Take ownership of the node
+        node.owned
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .expect("Item pushed into a list cannot be a member of a list");
 
         // Adjust old head links
         if let Some(head) = self.head() {
-            let head_link = head.get_link();
-            head_link.prev.set(Some(link_ptr));
+            let head_link = head.get_node();
+            head_link.prev.set(Some(node_ptr));
         }
 
         // Adjust new node links
-        link.next.set(self.head);
-        link.prev.set(None);
+        node.next.set(self.head);
+        node.prev.set(None);
 
         // Replace head with new node
-        self.head = Some(link_ptr);
+        self.head = Some(node_ptr);
         if self.tail.is_none() {
             // Replace also tail if list was empty
-            self.tail = Some(link_ptr);
+            self.tail = Some(node_ptr);
         }
-
-        link.list.set(NonNull::new(self));
     }
 
-    pub fn push_back<'item>(&mut self, item: &'item T) {
-        let link = item.get_link();
-        let link_ptr = item.get_link_ptr();
+    pub fn push_back<'item>(&mut self, item: Pin<&'item T>) {
+        let node = item.get_node();
+        let node_ptr = item.get_node_ptr();
 
-        // When node is pushed to a list it should not be a member of
-        // any other list.
-        assert!(link.next.get().is_none());
-        assert!(link.prev.get().is_none());
+        // Take ownership of the node
+        node.owned
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .expect("Item pushed into a list cannot be a member of a list");
 
         // Adjust old tail links
         if let Some(tail) = self.tail() {
-            let tail_link = tail.get_link();
-            tail_link.next.set(Some(link_ptr));
+            let tail_node = tail.get_node();
+            tail_node.next.set(Some(node_ptr));
         }
 
         // Adjust new node links
-        link.next.set(None);
-        link.prev.set(self.tail);
+        node.next.set(None);
+        node.prev.set(self.tail);
 
         // Replace tail with new node
-        self.tail = Some(link_ptr);
+        self.tail = Some(node_ptr);
         if self.head.is_none() {
             // Replace also head if list was empty
-            self.head = Some(link_ptr);
+            self.head = Some(node_ptr);
         }
-
-        link.list.set(NonNull::new(self));
     }
 
-    pub fn pop_front<'item>(&mut self) -> Option<&'item T> {
+    pub fn pop_front<'item>(&mut self) -> Option<Pin<&'item T>> {
         if let Some(head) = self
             .head
             .take()
             .map(|head| unsafe { head.as_ref().get_item() })
         {
-            let head_link = head.get_link();
-            if let Some(next_link) = head_link.next_link() {
-                next_link.prev.set(None);
-                self.head = Some(next_link.as_ptr());
+            let head_node = head.get_node();
+            if let Some(next_node) = head_node.next_node() {
+                next_node.prev.set(None);
+                self.head = Some(next_node.as_ptr());
             } else {
                 self.tail = None;
             }
-            head_link.next.set(None);
-            head_link.prev.set(None);
-            head_link.list.set(None);
+            head_node.next.set(None);
+            head_node.prev.set(None);
+            head_node.owned.store(false, Ordering::Relaxed);
             return Some(head);
         }
 
@@ -133,14 +129,14 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
     }
 
     // Insert to list after predicate becomes false
-    pub fn insert_after_condition<'item, P>(&mut self, item: &'item T, predicate: P)
+    pub fn insert_after<'item, P>(&mut self, item: Pin<&'item T>, predicate: P)
     where
-        P: Fn(&T, &T) -> bool,
+        P: Fn(&T) -> bool,
     {
         let mut cursor = self.cursor_front_mut();
         loop {
             match cursor.get_item() {
-                Some(list_item) if predicate(list_item, item) => {
+                Some(list_item) if predicate(&*list_item) => {
                     cursor.move_next();
                 }
                 _ => {
@@ -151,47 +147,45 @@ impl<T: Linked<N>, N: LinkedListTag> LinkedList<T, N> {
         }
     }
 
-    pub fn remove<'item>(&mut self, item: &'item T) {
-        let link = item.get_link();
-        match link.list.get() {
-            Some(list_ptr) => assert!(unsafe { NonNull::new_unchecked(self) } == list_ptr),
-            None => {
-                // Trying to remove item that is not in a list
-                return;
-            }
-        }
+    pub fn remove<'item>(&mut self, item: Pin<&'item T>) {
+        let node = item.get_node();
+        node.owned
+            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+            .expect("Cannot remove item that is not in a list");
 
-        if let Some(prev_link) = link.prev_link() {
-            prev_link.next.set(link.next.get());
+        if let Some(prev_node) = node.prev_node() {
+            prev_node.next.set(node.next.get());
         } else {
-            self.head = link.next.get();
+            self.head = node.next.get();
         }
 
-        if let Some(next_link) = link.next_link() {
-            next_link.prev.set(link.prev.get());
+        if let Some(next_link) = node.next_node() {
+            next_link.prev.set(node.prev.get());
         } else {
-            self.tail = link.prev.get();
+            self.tail = node.prev.get();
         }
 
-        link.next.set(None);
-        link.prev.set(None);
-        link.list.set(None);
+        node.next.set(None);
+        node.prev.set(None);
     }
 }
 
-pub(crate) struct Link<T: Linked<N>, N: LinkedListTag> {
-    pub(crate) list: Cell<Option<NonNull<LinkedList<T, N>>>>,
-    pub(crate) next: Cell<Option<NonNull<Link<T, N>>>>,
-    pub(crate) prev: Cell<Option<NonNull<Link<T, N>>>>,
+pub(crate) struct Node<T: LinkedListNode<N>, N: LinkedListTag> {
+    /// True if the node is in a list.
+    // Note: The owning list is not stored in the node
+    // so that the owning LinkedList does not have to be pinned.
+    pub(crate) owned: AtomicBool,
+    pub(crate) next: Cell<Option<NonNull<Node<T, N>>>>,
+    pub(crate) prev: Cell<Option<NonNull<Node<T, N>>>>,
     _pin: PhantomPinned,
-    _phantom: PhantomData<(fn(Link<T, N>) -> Link<T, N>, N)>,
+    _phantom: PhantomData<(fn(Node<T, N>) -> Node<T, N>, N)>,
 }
 
 #[allow(dead_code)]
-impl<T: Linked<N>, N: LinkedListTag> Link<T, N> {
-    pub const fn new() -> Link<T, N> {
-        Link {
-            list: Cell::new(None),
+impl<T: LinkedListNode<N>, N: LinkedListTag> Node<T, N> {
+    pub const fn new() -> Node<T, N> {
+        Node {
+            owned: AtomicBool::new(false),
             next: Cell::new(None),
             prev: Cell::new(None),
             _pin: PhantomPinned,
@@ -199,85 +193,63 @@ impl<T: Linked<N>, N: LinkedListTag> Link<T, N> {
         }
     }
 
-    fn get_item<'item>(&self) -> &'item T {
-        let link_ptr = self as *const Link<T, N>;
-        let link_offset = <T as Linked<N>>::link_offset();
-        let node_ptr = unsafe { (link_ptr as *const u8).sub(link_offset) as *const T };
-        unsafe { &*node_ptr }
+    fn get_item<'item>(&self) -> Pin<&'item T> {
+        let node_ptr = self as *const Node<T, N>;
+        let node_offset = <T as LinkedListNode<N>>::node_offset();
+        let item_ptr = unsafe { (node_ptr as *const u8).sub(node_offset) as *const T };
+        unsafe { Pin::new_unchecked(&*item_ptr) }
     }
 
-    fn next_link(&self) -> Option<&Link<T, N>> {
-        self.next.get().map(|link_ptr| unsafe { link_ptr.as_ref() })
+    fn next_node(&self) -> Option<&Node<T, N>> {
+        self.next.get().map(|node_ptr| unsafe { node_ptr.as_ref() })
     }
 
-    fn prev_link(&self) -> Option<&Link<T, N>> {
-        self.prev.get().map(|link_ptr| unsafe { link_ptr.as_ref() })
+    fn prev_node(&self) -> Option<&Node<T, N>> {
+        self.prev.get().map(|node_ptr| unsafe { node_ptr.as_ref() })
     }
 
     pub fn in_list(&self) -> bool {
-        self.list.get().is_some()
+        self.owned.load(Ordering::Relaxed)
     }
 
-    unsafe fn get_list(&self) -> Option<&LinkedList<T, N>> {
-        self.list.get().map(|list_ptr| unsafe { list_ptr.as_ref() })
-    }
-
-    unsafe fn get_list_mut(&self) -> Option<&mut LinkedList<T, N>> {
-        self.list
-            .get()
-            .map(|mut list_ptr| unsafe { list_ptr.as_mut() })
-    }
-
-    pub fn unlink(&self) {
-        if let Some(list) = unsafe { self.get_list_mut() } {
-            list.remove(self.get_item());
-        }
-    }
-
-    fn as_ptr(&self) -> NonNull<Link<T, N>> {
-        unsafe { NonNull::new_unchecked(self as *const Link<T, N> as *mut Link<T, N>) }
-    }
-}
-
-impl<T: Linked<N>, N: LinkedListTag> Drop for Link<T, N> {
-    fn drop(&mut self) {
-        self.unlink();
+    fn as_ptr(&self) -> NonNull<Node<T, N>> {
+        unsafe { NonNull::new_unchecked(self as *const Node<T, N> as *mut Node<T, N>) }
     }
 }
 
 #[allow(dead_code)]
-pub(crate) trait Linked<N: LinkedListTag>
+pub(crate) trait LinkedListNode<N: LinkedListTag>
 where
     Self: Sized,
 {
-    fn get_link<'item>(&'item self) -> &'item Link<Self, N>;
+    fn get_node<'item>(&'item self) -> &'item Node<Self, N>;
 
-    fn get_link_ptr(&self) -> NonNull<Link<Self, N>> {
-        let link = self.get_link();
-        NonNull::from(link)
+    fn get_node_ptr(&self) -> NonNull<Node<Self, N>> {
+        let node = self.get_node();
+        NonNull::from(node)
     }
 
-    fn link_offset() -> usize;
+    fn node_offset() -> usize;
 
-    fn get_link_from_ptr<'link>(ptr: NonNull<Self>) -> &'link Link<Self, N> {
+    fn get_node_from_ptr<'node>(ptr: NonNull<Self>) -> &'node Node<Self, N> {
         let node = unsafe { ptr.as_ref() };
-        node.get_link()
+        node.get_node()
     }
 
     fn in_list(&self) -> bool {
-        self.get_link().in_list()
+        self.get_node().in_list()
     }
 }
 
 macro_rules! impl_linked {
-    ($link_name:ident, $t:ty, $n:ty) => {
-        impl $crate::kernel::list::Linked<$n> for $t {
-            fn get_link<'item>(&'item self) -> &'item $crate::kernel::list::Link<Self, $n> {
-                &self.$link_name
+    ($node_name:ident, $t:ty, $n:ty) => {
+        impl $crate::kernel::list::LinkedListNode<$n> for $t {
+            fn get_node<'item>(&'item self) -> &'item $crate::kernel::list::Node<Self, $n> {
+                &self.$node_name
             }
 
-            fn link_offset() -> usize {
-                ::core::mem::offset_of!($t, $link_name)
+            fn node_offset() -> usize {
+                ::core::mem::offset_of!($t, $node_name)
             }
         }
     };
@@ -286,13 +258,13 @@ macro_rules! impl_linked {
 pub(crate) use impl_linked;
 
 #[allow(dead_code)]
-pub(crate) struct Cursor<'list, T: Linked<N>, N: LinkedListTag> {
-    current: Option<NonNull<Link<T, N>>>,
+pub(crate) struct Cursor<'list, T: LinkedListNode<N>, N: LinkedListTag> {
+    current: Option<NonNull<Node<T, N>>>,
     list: &'list LinkedList<T, N>,
 }
 
 #[allow(dead_code)]
-impl<'list, T: Linked<N>, N: LinkedListTag> Cursor<'list, T, N> {
+impl<'list, T: LinkedListNode<N>, N: LinkedListTag> Cursor<'list, T, N> {
     pub fn move_next(&mut self) {
         match self.current.take() {
             Some(ptr) => {
@@ -315,14 +287,14 @@ impl<'list, T: Linked<N>, N: LinkedListTag> Cursor<'list, T, N> {
         }
     }
 
-    pub fn get_item<'item>(&self) -> Option<&'item T> {
+    pub fn get_item<'item>(&self) -> Option<Pin<&'item T>> {
         self.current
             .map(|current| unsafe { current.as_ref().get_item() })
     }
 }
 
-impl<'list, T: Linked<N>, N: LinkedListTag> Iterator for Cursor<'list, T, N> {
-    type Item = &'list T;
+impl<'list, T: LinkedListNode<N>, N: LinkedListTag> Iterator for Cursor<'list, T, N> {
+    type Item = Pin<&'list T>;
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.get_item();
         self.move_next();
@@ -330,7 +302,7 @@ impl<'list, T: Linked<N>, N: LinkedListTag> Iterator for Cursor<'list, T, N> {
     }
 }
 
-impl<'list, T: Linked<N>, N: LinkedListTag> DoubleEndedIterator for Cursor<'list, T, N> {
+impl<'list, T: LinkedListNode<N>, N: LinkedListTag> DoubleEndedIterator for Cursor<'list, T, N> {
     fn next_back(&mut self) -> Option<Self::Item> {
         let item = self.get_item();
         self.move_prev();
@@ -338,28 +310,28 @@ impl<'list, T: Linked<N>, N: LinkedListTag> DoubleEndedIterator for Cursor<'list
     }
 }
 
-pub(crate) struct CursorMut<'list, T: Linked<N>, N: LinkedListTag> {
-    current: Option<NonNull<Link<T, N>>>,
+pub(crate) struct CursorMut<'list, T: LinkedListNode<N>, N: LinkedListTag> {
+    current: Option<NonNull<Node<T, N>>>,
     list: &'list mut LinkedList<T, N>,
 }
 
 #[allow(dead_code)]
-impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
-    pub fn insert_before<'item>(&mut self, item: &'item T) {
-        let node_link_ptr = item.get_link_ptr();
+impl<'list, T: LinkedListNode<N>, N: LinkedListTag> CursorMut<'list, T, N> {
+    pub fn insert_before<'item>(&mut self, item: Pin<&'item T>) {
+        let node_link_ptr = item.get_node_ptr();
         match self.current {
             Some(current_ptr) => {
-                let current_link = unsafe { current_ptr.as_ref() };
-                let maybe_prev = current_link.prev.get();
+                let current_node = unsafe { current_ptr.as_ref() };
+                let maybe_prev = current_node.prev.get();
 
                 match maybe_prev {
                     Some(prev_ptr) => {
-                        let prev_link = unsafe { prev_ptr.as_ref() };
-                        prev_link.next.set(Some(node_link_ptr));
-                        item.get_link().prev.set(Some(prev_ptr));
-                        item.get_link().next.set(Some(current_ptr));
-                        current_link.prev.set(Some(node_link_ptr));
-                        current_link.list.set(NonNull::new(self.list as *mut _));
+                        let prev_node = unsafe { prev_ptr.as_ref() };
+                        prev_node.next.set(Some(node_link_ptr));
+                        item.get_node().prev.set(Some(prev_ptr));
+                        item.get_node().next.set(Some(current_ptr));
+                        current_node.prev.set(Some(node_link_ptr));
+                        current_node.owned.store(true, Ordering::Relaxed);
                     }
                     None => {
                         self.list.push_front(item);
@@ -373,21 +345,21 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
         }
     }
 
-    pub fn insert_after<'item>(&mut self, node: &'item T) {
-        let node_link_ptr = node.get_link_ptr();
+    pub fn insert_after<'item>(&mut self, node: Pin<&'item T>) {
+        let node_ptr = node.get_node_ptr();
         match self.current {
             Some(current_ptr) => {
-                let current_link = unsafe { current_ptr.as_ref() };
-                let maybe_next = current_link.next.get();
+                let current_node = unsafe { current_ptr.as_ref() };
+                let maybe_next = current_node.next.get();
 
                 match maybe_next {
                     Some(next_ptr) => {
-                        let next_link = unsafe { next_ptr.as_ref() };
-                        next_link.prev.set(Some(node_link_ptr));
-                        node.get_link().prev.set(Some(current_ptr));
-                        node.get_link().next.set(Some(next_ptr));
-                        current_link.next.set(Some(node_link_ptr));
-                        current_link.list.set(NonNull::new(self.list as *mut _));
+                        let next_node = unsafe { next_ptr.as_ref() };
+                        next_node.prev.set(Some(node_ptr));
+                        node.get_node().prev.set(Some(current_ptr));
+                        node.get_node().next.set(Some(next_ptr));
+                        current_node.next.set(Some(node_ptr));
+                        current_node.owned.store(true, Ordering::Relaxed);
                     }
                     None => {
                         self.list.push_back(node);
@@ -421,7 +393,7 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
     }
 
     #[allow(dead_code)]
-    pub fn get_item<'item>(&mut self) -> Option<&'item T> {
+    pub fn get_item<'item>(&self) -> Option<Pin<&'item T>> {
         self.current
             .map(|current| unsafe { current.as_ref() }.get_item())
     }
@@ -429,7 +401,8 @@ impl<'list, T: Linked<N>, N: LinkedListTag> CursorMut<'list, T, N> {
 
 #[cfg(test)]
 mod test {
-    use super::{Link, LinkedList, LinkedListTag};
+    use super::{LinkedList, LinkedListTag, Node};
+    use core::pin::{pin, Pin};
 
     struct Tag0 {}
 
@@ -440,159 +413,161 @@ mod test {
     impl LinkedListTag for Tag1 {}
 
     struct Foo {
-        alink: Link<Foo, Tag0>,
-        blink: Link<Foo, Tag1>,
+        anode: Node<Foo, Tag0>,
+        bnode: Node<Foo, Tag1>,
     }
 
-    impl_linked!(alink, Foo, Tag0);
-    impl_linked!(blink, Foo, Tag1);
+    impl_linked!(anode, Foo, Tag0);
+    impl_linked!(bnode, Foo, Tag1);
 
     #[test_case]
     fn test_linked_list_1() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let mut a = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
+        let mut a = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
 
-        list.push_front(&mut a);
+        list.push_front(a.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
 
-        list.push_front(&mut a);
+        list.push_front(a.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_2() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let mut a = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        let mut b = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
+        let mut a = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        let mut b = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
 
-        list.push_front(&mut a);
-        list.push_front(&mut b);
+        list.push_front(a.as_ref());
+        list.push_front(b.as_ref());
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_3() {
         let mut list = LinkedList::<Foo, Tag0>::new();
         let mut a = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
+            anode: Node::new(),
+            bnode: Node::new(),
         };
         let mut b = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
+            anode: Node::new(),
+            bnode: Node::new(),
         };
+        let a = pin!(a);
+        let b = pin!(b);
 
-        list.push_back(&mut a);
-        list.push_back(&mut b);
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_4() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        let b = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        let c = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        list.push_back(&a);
-        list.push_back(&b);
-        list.push_back(&c);
+        let a = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        let b = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        let c = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
+        list.push_back(c.as_ref());
 
-        list.remove(&c);
+        list.remove(c.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_5() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        let b = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        let c = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        list.push_back(&a);
-        list.push_back(&b);
-        list.push_back(&c);
+        let a = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        let b = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        let c = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
+        list.push_back(c.as_ref());
 
-        list.remove(&a);
+        list.remove(a.as_ref());
         let maybe_b = list.pop_front();
-        assert!(maybe_b.unwrap() as *const Foo == &b as *const Foo);
+        assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_c = list.pop_front();
-        assert!(maybe_c.unwrap() as *const Foo == &c as *const Foo);
+        assert!(&*maybe_c.unwrap() as *const Foo == &*c as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_5() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        let b = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        let c = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
-        list.push_back(&a);
-        list.push_back(&b);
-        list.push_back(&c);
+        let a = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        let b = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        let c = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
+        list.push_back(a.as_ref());
+        list.push_back(b.as_ref());
+        list.push_back(c.as_ref());
 
-        list.remove(&b);
+        list.remove(b.as_ref());
         let maybe_a = list.pop_front();
-        assert!(maybe_a.unwrap() as *const Foo == &a as *const Foo);
+        assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_c = list.pop_front();
-        assert!(maybe_c.unwrap() as *const Foo == &c as *const Foo);
+        assert!(&*maybe_c.unwrap() as *const Foo == &*c as *const Foo);
     }
 
     #[test_case]
     fn test_linked_list_5() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let a = Foo {
-            alink: Link::new(),
-            blink: Link::new(),
-        };
+        let a = pin!(Foo {
+            anode: Node::new(),
+            bnode: Node::new(),
+        });
 
-        list.push_back(&a);
+        list.push_back(a.as_ref());
 
-        list.remove(&a);
+        list.remove(a.as_ref());
         assert!(list.pop_front().is_none());
     }
 }

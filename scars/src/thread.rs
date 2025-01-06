@@ -6,7 +6,7 @@ use crate::kernel::priority::PriorityStatus;
 use crate::kernel::{
     hal::Context,
     interrupt::set_ceiling_threshold,
-    list::{impl_linked, Link, LinkedList, LinkedListTag},
+    list::{impl_linked, LinkedList, LinkedListTag, Node},
     priority::AtomicPriorityStatusPair,
     scheduler::ExecStateTag,
     scheduler::Scheduler,
@@ -21,6 +21,7 @@ use crate::time::Instant;
 use crate::tls::{LocalCell, LocalStorage};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
+use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
 use scars_khal::ContextInfo;
@@ -128,7 +129,7 @@ pub struct RawThread {
     pub(crate) state: LockedCell<ThreadExecutionState, PreemptLock>,
 
     // Intrusive linked list entry for inserting the thread into ready, suspended, or blocked queue
-    pub(crate) exec_queue_link: Link<RawThread, ExecStateTag>,
+    pub(crate) exec_queue_link: Node<RawThread, ExecStateTag>,
 
     pub(crate) suspendable: Suspendable,
 
@@ -157,13 +158,18 @@ impl RawThread {
             main_fn,
             stack: MaybeUninit::uninit(),
             owned_locks: LockedRefCell::new(LinkedList::new()),
-            exec_queue_link: Link::new(),
+            exec_queue_link: Node::new(),
             suspendable: Suspendable::new(),
             waited_events_mask: AtomicU32::new(0),
             sent_events_mask: AtomicU32::new(0),
             local_storage: OnceLock::new(),
             context: MaybeUninit::uninit(),
         }
+    }
+
+    pub unsafe fn init(self: Pin<&mut Self>) {
+        let thread_ptr = &*self as *const RawThread;
+        self.suspendable_mut().init_thread(thread_ptr);
     }
 
     pub unsafe fn start(&'static mut self) {
@@ -189,14 +195,22 @@ impl RawThread {
         }
     }
 
-    pub fn as_ref(&'static self) -> ThreadRef {
-        ThreadRef::new(self)
+    pub fn suspendable_ref(self: Pin<&Self>) -> Pin<&Suspendable> {
+        unsafe { Pin::new_unchecked(&self.get_ref().suspendable) }
+    }
+
+    pub fn suspendable_mut(self: Pin<&mut Self>) -> Pin<&mut Suspendable> {
+        unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().suspendable) }
+    }
+
+    pub fn as_thread_ref(self: Pin<&'static Self>) -> ThreadRef {
+        ThreadRef::new(self.get_ref())
     }
 
     pub(crate) fn acquire_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
-        lock: &RawCeilingLock,
+        lock: Pin<&RawCeilingLock>,
     ) {
         if lock.owner.get(pkey) != INVALID_THREAD_ID {
             panic!("This should not be possible");
@@ -205,9 +219,10 @@ impl RawThread {
         match self.state.get(pkey) {
             ThreadExecutionState::Running => {
                 lock.owner.set(pkey, self.thread_id);
+                let ceiling_priority = lock.ceiling_priority;
                 self.owned_locks
                     .borrow_mut(pkey)
-                    .insert_after_condition(lock, |a, b| a.ceiling_priority > b.ceiling_priority);
+                    .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
 
                 self.update_owned_lock_priority(pkey);
             }
@@ -221,7 +236,7 @@ impl RawThread {
     pub(crate) fn release_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
-        lock: &RawCeilingLock,
+        lock: Pin<&RawCeilingLock>,
     ) {
         match lock.owner.get(pkey) {
             INVALID_THREAD_ID => {
@@ -332,7 +347,7 @@ impl RawThread {
     }
 
     pub fn resume(&'static self) {
-        Scheduler::resume_thread(self);
+        Scheduler::resume_thread(Pin::static_ref(self));
     }
 
     pub(crate) fn set_wakeup_event(&self) {
@@ -367,7 +382,7 @@ impl RawThread {
         if (!require_all && received_events != 0)
             || (received_events != 0 && received_events == receiving_events)
         {
-            Scheduler::resume_thread(self);
+            Scheduler::resume_thread(Pin::static_ref(self));
         }
     }
 

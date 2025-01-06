@@ -2,36 +2,10 @@ use crate::kernel::Priority;
 use crate::sync::RawCeilingLock;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-
-pub struct MutexLock {
-    lock: RawCeilingLock,
-}
-
-impl MutexLock {
-    pub const fn new(ceiling: Priority) -> MutexLock {
-        MutexLock {
-            lock: RawCeilingLock::new(ceiling),
-        }
-    }
-
-    #[inline(always)]
-    pub fn lock(&self) {
-        self.lock.lock();
-    }
-
-    #[inline(always)]
-    pub fn try_lock(&self) -> bool {
-        self.lock.lock();
-        true
-    }
-
-    pub fn unlock(&self) {
-        self.lock.unlock()
-    }
-}
+use core::pin::Pin;
 
 pub struct Mutex<T: ?Sized, const CEILING: Priority> {
-    lock: MutexLock,
+    lock: RawCeilingLock,
     data: UnsafeCell<T>,
 }
 
@@ -42,7 +16,7 @@ impl<T, const CEILING: Priority> Mutex<T, CEILING> {
     #[inline(always)]
     pub const fn new(t: T) -> Mutex<T, CEILING> {
         Mutex {
-            lock: MutexLock::new(CEILING),
+            lock: RawCeilingLock::new(CEILING),
             data: UnsafeCell::new(t),
         }
     }
@@ -51,20 +25,17 @@ impl<T, const CEILING: Priority> Mutex<T, CEILING> {
 impl<T: ?Sized, const CEILING: Priority> Mutex<T, CEILING> {
     #[inline(always)]
     pub fn lock(&self) -> MutexGuard<'_, T> {
-        self.lock.lock();
+        let pinned_lock = unsafe { Pin::new_unchecked(&self.lock) };
+        pinned_lock.lock();
         MutexGuard {
-            lock: &self.lock,
+            lock: pinned_lock,
             data: &self.data,
         }
     }
 
     #[inline(always)]
     pub fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
-        self.lock.lock();
-        Ok(MutexGuard {
-            lock: &self.lock,
-            data: &self.data,
-        })
+        Ok(self.lock())
     }
 
     #[inline(always)]
@@ -74,12 +45,12 @@ impl<T: ?Sized, const CEILING: Priority> Mutex<T, CEILING> {
 }
 
 #[inline(always)]
-pub(crate) fn guard_lock<'a, T: ?Sized>(guard: &MutexGuard<'a, T>) -> &'a RawCeilingLock {
-    &guard.lock.lock
+pub(crate) fn guard_lock<'a, T: ?Sized>(guard: &'a MutexGuard<'a, T>) -> Pin<&'a RawCeilingLock> {
+    guard.lock.as_ref()
 }
 
 pub struct MutexGuard<'a, T: ?Sized + 'a> {
-    lock: &'a MutexLock,
+    lock: Pin<&'a RawCeilingLock>,
     data: &'a UnsafeCell<T>,
 }
 

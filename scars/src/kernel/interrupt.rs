@@ -29,12 +29,13 @@ use core::cell::UnsafeCell;
 use core::future::{poll_fn, Future};
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::pin::Pin;
 use core::ptr::{addr_of, addr_of_mut, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use core::task::Poll;
 
-use super::atomic_list::{impl_atomic_linked, AtomicQueue, AtomicQueueLink};
-use super::list::Linked;
+use super::atomic_list::{impl_atomic_linked, AtomicNode, AtomicQueue};
+use super::list::LinkedListNode;
 
 use static_cell::ConstStaticCell;
 
@@ -111,7 +112,7 @@ pub struct RawInterruptHandler {
     // because the locks might be released in any order.
     owned_locks: UnsafeCell<LinkedList<RawCeilingLock, LockListTag>>,
 
-    pending_interrupt_executor_poll_link: AtomicQueueLink<RawInterruptHandler, PendingNotifyTag>,
+    pending_interrupt_executor_poll_link: AtomicNode<RawInterruptHandler, PendingNotifyTag>,
 
     pub(crate) local_storage: OnceLock<LocalStorage>,
 
@@ -137,7 +138,7 @@ impl RawInterruptHandler {
                 PriorityStatus::invalid(),
             )),
             owned_locks: UnsafeCell::new(LinkedList::new()),
-            pending_interrupt_executor_poll_link: AtomicQueueLink::new(),
+            pending_interrupt_executor_poll_link: AtomicNode::new(),
             local_storage: OnceLock::new(),
             suspendable: Suspendable::new(),
         }
@@ -150,16 +151,16 @@ impl RawInterruptHandler {
         self.local_storage.set(local_storage)
     }
 
-    pub(crate) fn acquire_lock(&self, lock: &RawCeilingLock) {
+    pub(crate) fn acquire_lock(&self, lock: Pin<&RawCeilingLock>) {
         let locks = unsafe { &mut *self.owned_locks.get() };
-        locks.insert_after_condition(lock, |list_lock, inserted_lock| {
-            list_lock.ceiling_priority > inserted_lock.ceiling_priority
+        locks.insert_after(lock, |list_lock| {
+            list_lock.ceiling_priority > lock.ceiling_priority
         });
 
         self.update_owned_lock_priority();
     }
 
-    pub(crate) fn release_lock(&self, lock: &RawCeilingLock) {
+    pub(crate) fn release_lock(&self, lock: Pin<&RawCeilingLock>) {
         let locks = unsafe { &mut *self.owned_locks.get() };
         locks.remove(lock);
 
@@ -288,7 +289,7 @@ impl RawInterruptHandler {
             return;
         }
 
-        PENDING_INTERRUPT_EXECUTOR_POLLS.push_back(self);
+        PENDING_INTERRUPT_EXECUTOR_POLLS.push_back(unsafe { Pin::new_unchecked(self) });
     }
 
     pub(crate) unsafe fn poll_executor(&self) {
@@ -341,9 +342,9 @@ pub async fn wait_for_interrupt() {
                         .unwrap()
                 };
                 let task = unsafe { &mut *(cx.waker().as_raw().data() as *mut RawTask) };
-
+                let pinned_task = unsafe { Pin::new_unchecked(task) };
                 if first_poll {
-                    executor.task_wait_for_interrupt(task);
+                    executor.task_wait_for_interrupt(pinned_task);
                     first_poll = false;
                     Poll::Pending
                 } else {

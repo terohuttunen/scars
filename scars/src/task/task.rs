@@ -1,6 +1,6 @@
 use super::LocalExecutor;
 use crate::kernel::atomic_list::*;
-use crate::kernel::list::{impl_linked, Link, LinkedListTag};
+use crate::kernel::list::{impl_linked, LinkedListTag, Node};
 use crate::kernel::waiter::{Suspendable, WaitQueueTag};
 use crate::time::Instant;
 use core::future::Future;
@@ -21,9 +21,9 @@ pub const ASYNC_TASK_STATE_FINISHED: u32 = 3;
 
 pub struct RawTask {
     pub(crate) executor: LocalExecutor,
-    ready_list_link: Link<RawTask, TaskReadyListTag>,
-    sleep_list_link: Link<RawTask, WaitQueueTag>,
-    pending_ready_list_link: AtomicQueueLink<RawTask, TaskReadyListTag>,
+    ready_list_link: Node<RawTask, TaskReadyListTag>,
+    sleep_list_link: Node<RawTask, WaitQueueTag>,
+    pending_ready_list_link: AtomicNode<RawTask, TaskReadyListTag>,
     pub(crate) waiter: Suspendable,
     pub(super) wakeup_time: Instant,
     task_ptr: *mut (),
@@ -58,11 +58,16 @@ impl RawTask {
     }
 
     fn waker_wake(data: *const ()) {
-        let control_block = unsafe { &*(data as *const RawTask) };
-        control_block.executor.resume_task(control_block);
+        let raw = unsafe { &*(data as *const RawTask) };
+        raw.executor.resume_task(unsafe { Pin::new_unchecked(raw) });
     }
 
     fn waker_drop(_data: *const ()) {}
+
+    pub fn set_wakeup_time(self: Pin<&mut Self>, wakeup_time: Instant) {
+        let task = unsafe { Pin::get_unchecked_mut(self) };
+        task.wakeup_time = wakeup_time;
+    }
 }
 
 impl Drop for RawTask {
@@ -135,9 +140,9 @@ impl<F: Future> Task<F> {
 
             task.control_block.write(RawTask {
                 executor,
-                ready_list_link: Link::new(),
-                sleep_list_link: Link::new(),
-                pending_ready_list_link: AtomicQueueLink::new(),
+                ready_list_link: Node::new(),
+                sleep_list_link: Node::new(),
+                pending_ready_list_link: AtomicNode::new(),
                 waiter: Suspendable::new_async(priority, waker),
                 wakeup_time: Instant::ZERO,
                 task_ptr,
@@ -263,8 +268,8 @@ pub(super) struct RawTaskHandle {
 }
 
 impl RawTaskHandle {
-    pub fn as_ref(&self) -> &'_ RawTask {
-        unsafe { &*(self.vtable.control_block)(self.task_ptr) }
+    pub fn as_ref(&self) -> Pin<&'_ RawTask> {
+        unsafe { Pin::new_unchecked(&*(self.vtable.control_block)(self.task_ptr)) }
     }
 
     pub fn poll(&self) -> bool {
@@ -303,7 +308,7 @@ impl<T> TaskHandle<T> {
         &self.raw
     }
 
-    pub fn as_ref(&self) -> &'_ RawTask {
+    pub fn as_ref(&self) -> Pin<&'_ RawTask> {
         self.raw.as_ref()
     }
 

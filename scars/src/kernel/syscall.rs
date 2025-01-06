@@ -14,6 +14,7 @@ use crate::sync::{interrupt_lock::InterruptLockKey, InterruptLock};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
 use core::cell::SyncUnsafeCell;
+use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 use scars_khal::FlowController;
@@ -148,11 +149,14 @@ unsafe fn _private_kernel_syscall_handler(
             crate::kernel::exception::handle_runtime_error(RuntimeError::from_id(arg0), location);
         }
         SYSCALL_ID_START_THREAD => {
-            let thread = unsafe { &mut *(arg0 as *mut RawThread) };
-            Scheduler::start_thread_isr(thread);
+            let thread: &'static mut RawThread = unsafe { &mut *(arg0 as *mut RawThread) };
+            Scheduler::start_thread_isr(Pin::static_mut(thread));
         }
         SYSCALL_ID_SUSPEND => {
-            let maybe_thread = unsafe { NonNull::new(arg0 as *mut RawThread).map(|p| p.as_ref()) };
+            let maybe_thread = unsafe {
+                NonNull::new(arg0 as *mut RawThread)
+                    .map(|p| unsafe { Pin::new_unchecked(p.as_ref()) })
+            };
             Scheduler::suspend_thread_isr(maybe_thread);
         }
         SYSCALL_ID_POLL_INTERRUPT_EXECUTOR => {

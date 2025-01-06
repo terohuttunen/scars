@@ -15,7 +15,7 @@ pub(crate) use priority::{
     AnyPriority, AtomicPriority, InterruptPriority, Priority, ThreadPriority,
 };
 use scars_khal::{ContextInfo, FlowController};
-pub use scheduler::print_threads;
+//pub use scheduler::print_threads;
 pub(crate) use scheduler::Scheduler;
 pub(crate) use stack::Stack;
 pub mod abort;
