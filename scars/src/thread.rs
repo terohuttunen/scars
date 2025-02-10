@@ -1,20 +1,20 @@
 use crate::cell::{LockedCell, LockedRefCell};
 use crate::events::{
-    WaitEventsUntilError, REQUIRE_ALL_EVENTS, SCHEDULER_NOTIFY_EVENT, SCHEDULER_WAKEUP_EVENT,
+    REQUIRE_ALL_EVENTS, SCHEDULER_NOTIFY_EVENT, SCHEDULER_WAKEUP_EVENT, WaitEventsUntilError,
 };
 use crate::kernel::priority::PriorityStatus;
 use crate::kernel::{
+    Priority,
     hal::Context,
     interrupt::set_ceiling_threshold,
-    list::{impl_linked, LinkedList, LinkedListTag, Node},
+    list::{LinkedList, LinkedListTag, Node, impl_linked},
     priority::AtomicPriorityStatusPair,
     scheduler::ExecStateTag,
     scheduler::Scheduler,
     stack::StackRefMut,
     waiter::Suspendable,
-    Priority,
 };
-use crate::sync::{preempt_lock::PreemptLockKey, OnceLock, PreemptLock, RawCeilingLock};
+use crate::sync::{OnceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
 use crate::syscall;
 use crate::task::ThreadExecutor;
 use crate::time::Instant;
@@ -207,7 +207,7 @@ impl RawThread {
         ThreadRef::new(self.get_ref())
     }
 
-    pub(crate) fn acquire_lock<'key>(
+    pub(crate) unsafe fn acquire_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
@@ -233,7 +233,7 @@ impl RawThread {
         }
     }
 
-    pub(crate) fn release_lock<'key>(
+    pub(crate) unsafe fn release_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
@@ -244,7 +244,10 @@ impl RawThread {
                 ()
             }
             thread_id if thread_id == self.thread_id => {
-                self.owned_locks.borrow_mut(pkey).remove(lock);
+                unsafe {
+                    // SAFETY: The lock is owned by the thread, and the lock is being released.
+                    self.owned_locks.borrow_mut(pkey).remove(lock);
+                }
                 lock.owner.set(pkey, INVALID_THREAD_ID);
 
                 self.update_owned_lock_priority(pkey);
@@ -473,7 +476,7 @@ impl ThreadRef {
     }
 
     unsafe fn from_ptr(ptr: *const RawThread) -> ThreadRef {
-        ThreadRef(NonNull::new_unchecked(ptr as *mut RawThread))
+        ThreadRef(unsafe { NonNull::new_unchecked(ptr as *mut RawThread) })
     }
 
     pub fn name(&self) -> &'static str {
@@ -489,7 +492,14 @@ impl ThreadRef {
     }
 
     pub(crate) unsafe fn as_ref(&self) -> &'static RawThread {
-        self.0.as_ref()
+        unsafe { self.0.as_ref() }
+    }
+
+    pub unsafe fn current() -> ThreadRef {
+        match Scheduler::current_execution_context() {
+            crate::ExecutionContext::Thread(ctx) => ThreadRef::new(ctx),
+            crate::ExecutionContext::Interrupt(_) => panic!("No current thread"),
+        }
     }
 }
 
@@ -511,37 +521,31 @@ pub struct ThreadBuilder<const PRIO: Priority, F: FnMut() + Send + 'static> {
 }
 
 impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
-    pub fn start(self, closure: F) -> ThreadRef {
-        let closure_ref = self.closure.write(closure);
-        let closure_ptr = closure_ref as *const F as *const ();
-        self.thread.stack.write(self.stack);
-        let stack_ptr = unsafe { self.thread.stack.assume_init_ref() }.bottom_ptr();
-        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.alloc_size();
-        self.thread.thread_id = NEXT_FREE_THREAD_ID.fetch_add(1, Ordering::SeqCst);
-        unsafe {
-            Context::init(
-                self.thread.name,
-                self.thread.main_fn,
-                Some(closure_ptr as *const u8),
-                stack_ptr,
-                stack_size,
-                self.thread.context.as_mut_ptr(),
-            );
-        }
-
-        let thread_ref = unsafe { ThreadRef::from_ptr(self.thread as *const _) };
-        unsafe { self.thread.start() };
-
-        thread_ref
+    pub fn start<C: FnOnce() -> F>(self, closure: C) -> ThreadRef {
+        self.attach(closure).start()
     }
 
-    pub fn init(self, closure: F) -> ThreadRef {
+    pub fn build<C: FnOnce() -> F>(self, closure: C) -> ThreadRef {
+        self.attach(closure).finish()
+    }
+
+    pub fn attach<C: FnOnce() -> F>(self, closure: C) -> InitializedThread {
+        let closure = closure();
         let closure_ref = self.closure.write(closure);
         let closure_ptr = closure_ref as *const F as *const ();
+
+        // A closure cannot be called directly, so every thread has a wrapper function
+        // that calls the closure. The wrapper function is passed as the main function
+        // to the KHAL thread context. The wrapper function then calls the closure.
+        // The closure is passed as an argument to the wrapper function.
+        self.thread.main_fn = Thread::<PRIO, F>::closure_wrapper as *const ();
+
         self.thread.stack.write(self.stack);
         let stack_ptr = unsafe { self.thread.stack.assume_init_ref() }.bottom_ptr();
         let stack_size = unsafe { self.thread.stack.assume_init_ref() }.alloc_size();
+
         self.thread.thread_id = NEXT_FREE_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+
         unsafe {
             Context::init(
                 self.thread.name,
@@ -553,7 +557,9 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
             );
         }
 
-        ThreadRef::new(self.thread)
+        InitializedThread {
+            thread: self.thread,
+        }
     }
 
     pub fn set_local_storage(&mut self, local_storage: LocalStorage) {
@@ -589,6 +595,53 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
     }
 }
 
+pub struct InitializedThread {
+    thread: &'static mut RawThread,
+}
+
+impl InitializedThread {
+    pub fn start(self) -> ThreadRef {
+        let InitializedThread { thread } = self;
+        let thread_ref = unsafe { ThreadRef::from_ptr(thread as *const _) };
+        unsafe { thread.start() };
+
+        thread_ref
+    }
+
+    pub fn finish(self) -> ThreadRef {
+        let InitializedThread { thread } = self;
+        ThreadRef::new(thread)
+    }
+
+    pub fn set_local_storage(&mut self, local_storage: LocalStorage) {
+        self.thread
+            .set_local_storage(local_storage)
+            .unwrap_or_else(|_| {
+                panic!("TLS already set");
+            });
+    }
+
+    pub fn start_executor(&mut self, executor: &'static LocalCell<ThreadExecutor>) {
+        self.thread.start_executor(executor);
+    }
+
+    pub fn modify<R>(&mut self, f: impl FnOnce(&mut RawThread) -> R) -> R {
+        f(self.thread)
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.thread.name
+    }
+
+    pub fn base_priority(&self) -> Priority {
+        self.thread.base_priority
+    }
+
+    pub fn stack_ref(&self) -> &StackRefMut {
+        unsafe { self.thread.stack.assume_init_ref() }
+    }
+}
+
 pub struct Thread<const PRIO: Priority, F: FnMut() + Send> {
     thread: ConstStaticCell<RawThread>,
     closure: UnsafeCell<MaybeUninit<F>>,
@@ -607,7 +660,7 @@ impl<const PRIO: Priority, F: FnMut() + Send> Thread<PRIO, F> {
     }
 
     unsafe extern "C" fn closure_wrapper(closure_ptr: *mut ::core::ffi::c_void) {
-        let closure = &mut *(closure_ptr as *mut F);
+        let closure = unsafe { &mut *(closure_ptr as *mut F) };
         closure();
     }
 

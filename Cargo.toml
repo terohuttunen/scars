@@ -10,7 +10,8 @@ members = [
     "scars-test",
     "scars-macros",
     "examples/stm32f4/interrupt",
-    "examples/stm32f4/tasking"]
+    "examples/stm32f4/tasking",
+    "examples/sim/hello"]
 resolver = "2"
 
 [profile.dev]

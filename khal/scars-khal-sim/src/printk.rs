@@ -5,11 +5,10 @@ pub struct Printk {}
 
 impl ::core::fmt::Write for Printk {
     fn write_str(&mut self, s: &str) -> Result<(), Error> {
-        use std::io::Error;
         use std::io::Write;
         use std::os::unix::io::FromRawFd;
         let mut f = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(1) });
-        let result = f
+        let _ = f
             .write_all(s.as_bytes())
             .map_err(|_| ::core::fmt::Error::default())?;
         Ok(())

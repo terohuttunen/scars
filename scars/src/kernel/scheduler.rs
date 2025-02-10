@@ -1,27 +1,27 @@
 use crate::cell::{LockedCell, LockedRefCell, RefMut};
 use crate::events::REQUIRE_ALL_EVENTS;
-use crate::kernel::list::{impl_linked, LinkedList, LinkedListNode, LinkedListTag};
+use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, impl_linked};
 use crate::kernel::tracing;
 use crate::kernel::{
+    RuntimeError, Stack, ThreadPriority,
     atomic_list::AtomicQueue,
     hal::{
-        disable_alarm_interrupt, disable_interrupts, enable_alarm_interrupt, enable_interrupts,
-        set_alarm, start_first_thread, Context,
+        Context, disable_alarm_interrupt, disable_interrupts, enable_alarm_interrupt,
+        enable_interrupts, set_alarm, start_first_thread,
     },
     handle_runtime_error,
-    interrupt::{current_interrupt, in_interrupt, set_ceiling_threshold, RawInterruptHandler},
+    interrupt::{RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold},
     priority::{AnyPriority, Priority, PriorityStatus},
     syscall,
     waiter::{SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag},
-    RuntimeError, Stack, ThreadPriority,
 };
 use crate::printkln;
 use crate::sync::{
-    interrupt_lock::InterruptLockKey, preempt_lock::PreemptLockKey, InterruptLock, KeyToken, Lock,
-    PreemptLock, RawCeilingLock,
+    InterruptLock, KeyToken, Lock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
+    preempt_lock::PreemptLockKey,
 };
 use crate::thread::{
-    RawThread, Thread, ThreadExecutionState, ThreadInfo, IDLE_THREAD_ID, INVALID_THREAD_ID,
+    IDLE_THREAD_ID, INVALID_THREAD_ID, RawThread, Thread, ThreadExecutionState, ThreadInfo,
 };
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
@@ -35,7 +35,7 @@ pub struct ExecStateTag {}
 
 impl LinkedListTag for ExecStateTag {}
 
-extern "C" {
+unsafe extern "C" {
     static _isr_stack_end: u8;
 }
 
@@ -118,7 +118,7 @@ static PENDING_RESCHEDULE_KIND: AtomicRescheduleKind =
 static SCHEDULER: SyncUnsafeCell<MaybeUninit<LockedRefCell<Scheduler, PreemptLock>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
 
 pub struct Scheduler {
@@ -286,7 +286,11 @@ impl Scheduler {
         match thread.state.get(pkey) {
             ThreadExecutionState::Blocked => {
                 thread.set_wakeup_event();
-                self.blocked_list.remove(thread);
+                unsafe {
+                    // SAFETY: The thread state is Blocked, so it is safe to assume that the
+                    // thread is in the blocked list.
+                    self.blocked_list.remove(thread);
+                }
                 self.insert_to_ready_queue(pkey, thread);
             }
             _ => (),
@@ -375,8 +379,13 @@ impl Scheduler {
         interrupt: &'static RawInterruptHandler,
     ) {
         if interrupt.suspendable.in_sleep_queue() {
-            self.sleep_queue
-                .remove(Pin::static_ref(&interrupt.suspendable));
+            unsafe {
+                // SAFETY: The call above checks that the interrupt is in the sleep queue.
+                // There is only one LinkedList<Suspendable, SleepQueueTag> in the system,
+                // so it must be the scheduler's sleep queue.
+                self.sleep_queue
+                    .remove(Pin::static_ref(&interrupt.suspendable));
+            }
         }
         let deadline = interrupt.suspendable.deadline();
         self.sleep_queue
@@ -415,8 +424,13 @@ impl Scheduler {
         // Asynchronous tasks associated with the interrupt can block, and be resumed.
 
         if interrupt.suspendable.in_sleep_queue() {
-            self.sleep_queue
-                .remove(Pin::static_ref(&interrupt.suspendable));
+            unsafe {
+                // SAFETY: The call above checks that the interrupt is in the sleep queue.
+                // There is only one LinkedList<Suspendable, SleepQueueTag> in the system,
+                // so it must be the scheduler's sleep queue.
+                self.sleep_queue
+                    .remove(Pin::static_ref(&interrupt.suspendable));
+            }
         }
 
         interrupt.set_pending_executor_poll();
@@ -452,14 +466,27 @@ impl Scheduler {
                 // Remove from sleep queue if blocking operation has deadline
                 let suspendable = thread.suspendable_ref();
                 if suspendable.in_sleep_queue() {
-                    self.sleep_queue.remove(suspendable);
+                    unsafe {
+                        // SAFETY: The call above checks that the thread is in the sleep queue.
+                        // There is only one LinkedList<Suspendable, SleepQueueTag> in the system,
+                        // so it must be the scheduler's sleep queue.
+                        self.sleep_queue.remove(suspendable);
+                    }
                 }
-                self.blocked_list.remove(thread);
+                unsafe {
+                    // SAFETY: The thread is in the Blocked state, so it is safe to assume that the
+                    // thread is in the blocked list.
+                    self.blocked_list.remove(thread);
+                }
                 self.insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Suspended => {
                 thread.set_resume_event();
-                self.suspended_list.remove(thread);
+                unsafe {
+                    // SAFETY: The thread is in the Suspended state, so it is safe to assume that the
+                    // thread is in the suspended list.
+                    self.suspended_list.remove(thread);
+                }
                 self.insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Created => {
@@ -524,7 +551,11 @@ impl Scheduler {
 
         match thread.state.get(pkey) {
             ThreadExecutionState::Ready => {
-                self.ready_queue.remove(thread);
+                unsafe {
+                    // SAFETY: The thread is in the Ready state, so it is safe to assume that the
+                    // thread is in the ready queue.
+                    self.ready_queue.remove(thread);
+                }
                 self.insert_to_suspended_list(pkey, thread);
             }
             ThreadExecutionState::Running => {
@@ -907,12 +938,12 @@ impl Scheduler {
     pub fn thread_info<'a, 'key: 'a>(
         &'a self,
         pkey: PreemptLockKey<'key>,
-    ) -> impl Iterator<Item = ThreadInfo> + '_ {
+    ) -> impl Iterator<Item = ThreadInfo> {
         self.threads().map(move |thread| thread.get_info(pkey))
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn _private_current_thread_context() -> *mut () {
     Scheduler::current_thread_context() as *mut ()
 }

@@ -1,7 +1,7 @@
 use crate::kernel::hal;
 use scars_khal::FlowController;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn abort() -> ! {
     #[cfg(all(test, not(feature = "khal-sim")))]
     semihosting::process::exit(1);

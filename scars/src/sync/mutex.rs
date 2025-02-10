@@ -26,7 +26,9 @@ impl<T: ?Sized, const CEILING: Priority> Mutex<T, CEILING> {
     #[inline(always)]
     pub fn lock(&self) -> MutexGuard<'_, T> {
         let pinned_lock = unsafe { Pin::new_unchecked(&self.lock) };
-        pinned_lock.lock();
+        unsafe {
+            pinned_lock.lock();
+        }
         MutexGuard {
             lock: pinned_lock,
             data: &self.data,
@@ -71,6 +73,8 @@ impl<'a, T: ?Sized> DerefMut for MutexGuard<'a, T> {
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.unlock();
+        unsafe {
+            self.lock.unlock();
+        }
     }
 }

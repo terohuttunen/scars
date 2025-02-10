@@ -1,14 +1,14 @@
 pub mod task;
 pub mod task_pool;
-use crate::events::{wait_events_until, EXECUTOR_WAKEUP_EVENT};
+use crate::Priority;
+use crate::events::{EXECUTOR_WAKEUP_EVENT, wait_events_until};
 use crate::kernel::interrupt::InterruptRef;
 use crate::kernel::list::LinkedList;
 use crate::kernel::waiter::WaitQueueTag;
-use crate::kernel::{atomic_list::AtomicQueue, scheduler::ExecutionContext, Scheduler};
+use crate::kernel::{Scheduler, atomic_list::AtomicQueue, scheduler::ExecutionContext};
 use crate::thread::ThreadRef;
 use crate::time::{Duration, Instant};
 use crate::tls::LocalStorage;
-use crate::Priority;
 use core::cell::RefCell;
 use core::future::Future;
 use core::marker::PhantomData;
@@ -16,7 +16,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 pub use task::{RawTask, Task, TaskReadyListTag};
 use task::{RawTaskHandle, TaskHandle};
-pub use task_pool::TaskPool;
+pub use task_pool::{InitializedTask, TaskPool};
 
 #[macro_export]
 macro_rules! make_interrupt_executor {
@@ -38,6 +38,7 @@ macro_rules! make_thread_executor {
 
 #[derive(Copy, Clone)]
 pub enum LocalExecutor {
+    None,
     Thread(&'static ThreadExecutor),
     Interrupt(&'static InterruptExecutor),
 }
@@ -58,20 +59,23 @@ impl LocalExecutor {
 
     pub fn task_sleep_until(&self, task: Pin<&mut RawTask>, deadline: Instant) {
         match self {
+            LocalExecutor::None => panic!("No executor found"),
             LocalExecutor::Thread(executor) => executor.task_sleep_until(task, deadline),
             LocalExecutor::Interrupt(executor) => executor.task_sleep_until(task, deadline),
         }
     }
 
-    pub fn spawn<T>(&self, task_handle: TaskHandle<T>) -> JoinHandle<T> {
+    pub fn spawn<T>(&self, task: InitializedTask<T>) -> JoinHandle<T> {
         match self {
-            LocalExecutor::Thread(executor) => executor.spawn(task_handle),
-            LocalExecutor::Interrupt(executor) => executor.spawn(task_handle),
+            LocalExecutor::None => panic!("No executor found"),
+            LocalExecutor::Thread(executor) => executor.spawn(task),
+            LocalExecutor::Interrupt(executor) => executor.spawn(task),
         }
     }
 
     pub fn priority(&self) -> Priority {
         match self {
+            LocalExecutor::None => panic!("No executor found"),
             LocalExecutor::Thread(executor) => executor.priority(),
             LocalExecutor::Interrupt(executor) => executor.priority(),
         }
@@ -79,6 +83,7 @@ impl LocalExecutor {
 
     pub fn resume_task(&'static self, task: Pin<&RawTask>) {
         match self {
+            LocalExecutor::None => panic!("No executor found"),
             LocalExecutor::Thread(executor) => executor.resume_task(task),
             LocalExecutor::Interrupt(executor) => executor.resume_task(task),
         }
@@ -86,6 +91,7 @@ impl LocalExecutor {
 
     fn resume_pending_tasks(&self) {
         match self {
+            LocalExecutor::None => panic!("No executor found"),
             LocalExecutor::Thread(executor) => executor.resume_pending_tasks(),
             LocalExecutor::Interrupt(executor) => executor.resume_pending_tasks(),
         }
@@ -275,7 +281,8 @@ impl InterruptExecutor {
         self.raw.priority()
     }
 
-    pub fn spawn<T>(&'static self, task_handle: TaskHandle<T>) -> JoinHandle<T> {
+    pub fn spawn<T>(&'static self, task: InitializedTask<T>) -> JoinHandle<T> {
+        let task_handle = task.with_executor(LocalExecutor::Interrupt(self));
         self.raw.spawn(task_handle.as_raw());
         JoinHandle::new(task_handle)
     }
@@ -416,7 +423,8 @@ impl ThreadExecutor {
         }
     }
 
-    pub fn spawn<T>(&'static self, task_handle: TaskHandle<T>) -> JoinHandle<T> {
+    pub fn spawn<T>(&'static self, task: InitializedTask<T>) -> JoinHandle<T> {
+        let task_handle = task.with_executor(LocalExecutor::Thread(self));
         self.raw.spawn(task_handle.as_raw());
         JoinHandle::new(task_handle)
     }
@@ -502,7 +510,14 @@ pub fn spawn<F: Future, const N: usize>(
     task_pool: &'static mut TaskPool<F, N>,
     future: F,
 ) -> Result<JoinHandle<F::Output>, ()> {
-    task_pool.spawn(future)
+    let executor = LocalExecutor::get();
+    match task_pool.alloc() {
+        Some(task) => {
+            let initialized_task = task.attach(|| future);
+            Ok(executor.spawn(initialized_task))
+        }
+        None => Err(()),
+    }
 }
 
 pub fn block_on<F: Future>(future: F) -> F::Output {
@@ -552,7 +567,7 @@ impl Future for Sleep {
             Poll::Ready(())
         } else {
             let executor = LocalExecutor::get();
-            let task = unsafe { &mut *(cx.waker().as_raw().data() as *mut RawTask) };
+            let task = unsafe { &mut *(cx.waker().data() as *mut RawTask) };
             let pinned_task = unsafe { Pin::new_unchecked(task) };
             executor.task_sleep_until(pinned_task, this.deadline);
             Poll::Pending

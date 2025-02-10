@@ -1,15 +1,15 @@
 use super::TryLockError;
 use crate::cell::LockedCell;
 use crate::kernel::{
+    Priority,
     interrupt::RawInterruptHandler,
-    list::{impl_linked, Node},
+    list::{Node, impl_linked},
     priority::PriorityStatus,
     scheduler::{ExecutionContext, Scheduler},
-    Priority,
 };
 use crate::runtime_error;
 use crate::sync::{KeyToken, Lock, PreemptLock};
-use crate::thread::{LockListTag, RawThread, IDLE_THREAD_ID, INVALID_THREAD_ID};
+use crate::thread::{IDLE_THREAD_ID, INVALID_THREAD_ID, LockListTag, RawThread};
 use core::marker::PhantomData;
 use core::pin::Pin;
 use pin_project::pin_project;
@@ -51,17 +51,17 @@ impl RawCeilingLock {
         }
     }
 
-    fn lock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
+    unsafe fn lock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
         // Ceiling check: If locking interrupt has priority higher than the
         // mutex ceiling, then it violates the priority ceiling protocol.
         if current_interrupt.base_priority() > self.ceiling_priority {
             runtime_error!(RuntimeError::CeilingPriorityViolation);
         }
 
-        current_interrupt.acquire_lock(self);
+        unsafe { current_interrupt.acquire_lock(self) };
     }
 
-    fn lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
+    unsafe fn lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
         PreemptLock::with(|pkey| {
             if current_thread.thread_id == IDLE_THREAD_ID {
                 runtime_error!(RuntimeError::IdleThreadCeilingLock);
@@ -78,22 +78,30 @@ impl RawCeilingLock {
             }
 
             // Acquisition of the lock raises the thread priority to the lock ceiling
-            current_thread.acquire_lock(pkey, self);
+            unsafe {
+                current_thread.acquire_lock(pkey, self);
+            }
         })
     }
 
-    pub fn lock(self: Pin<&Self>) {
+    pub unsafe fn lock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
-            ExecutionContext::Interrupt(current_interrupt) => self.lock_in_isr(current_interrupt),
-            ExecutionContext::Thread(current_thread) => self.lock_in_thread(current_thread),
+            ExecutionContext::Interrupt(current_interrupt) => unsafe {
+                self.lock_in_isr(current_interrupt)
+            },
+            ExecutionContext::Thread(current_thread) => unsafe {
+                self.lock_in_thread(current_thread)
+            },
         }
     }
 
-    fn unlock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
-        current_interrupt.release_lock(self);
+    unsafe fn unlock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
+        unsafe {
+            current_interrupt.release_lock(self);
+        }
     }
 
-    fn unlock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
+    unsafe fn unlock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
         PreemptLock::with(|pkey| {
             // If lock has not been acquired by any thread
             if self.owner.get(pkey) == INVALID_THREAD_ID {
@@ -104,14 +112,20 @@ impl RawCeilingLock {
                 runtime_error!(RuntimeError::LockOwnerViolation);
             }
 
-            current_thread.release_lock(pkey, self);
+            unsafe {
+                current_thread.release_lock(pkey, self);
+            }
         });
     }
 
-    pub fn unlock(self: Pin<&Self>) {
+    pub unsafe fn unlock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
-            ExecutionContext::Interrupt(current_interrupt) => self.unlock_in_isr(current_interrupt),
-            ExecutionContext::Thread(current_thread) => self.unlock_in_thread(current_thread),
+            ExecutionContext::Interrupt(current_interrupt) => unsafe {
+                self.unlock_in_isr(current_interrupt)
+            },
+            ExecutionContext::Thread(current_thread) => unsafe {
+                self.unlock_in_thread(current_thread)
+            },
         }
     }
 
@@ -158,14 +172,18 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
         }
     }
 
-    pub fn lock(self: Pin<&Self>) {
+    pub unsafe fn lock(self: Pin<&Self>) {
         let this = self.project_ref();
-        this.raw.lock();
+        unsafe {
+            this.raw.lock();
+        }
     }
 
-    pub fn unlock(self: Pin<&Self>) {
+    pub unsafe fn unlock(self: Pin<&Self>) {
         let this = self.project_ref();
-        this.raw.unlock();
+        unsafe {
+            this.raw.unlock();
+        }
     }
 
     #[inline(always)]
@@ -191,15 +209,15 @@ impl<const CEILING: Priority> Lock for CeilingLock<CEILING> {
     type Key<'lock> = CeilingLockKey<'lock, CEILING>;
 
     unsafe fn section_start() -> Self::RestoreState {
-        RawCeilingLock::section_start(CEILING)
+        unsafe { RawCeilingLock::section_start(CEILING) }
     }
 
     unsafe fn try_section_start() -> Result<Self::RestoreState, TryLockError> {
-        Ok(Self::section_start())
+        Ok(unsafe { Self::section_start() })
     }
 
     unsafe fn section_end(restore_state: Self::RestoreState) {
-        RawCeilingLock::section_end(restore_state)
+        unsafe { RawCeilingLock::section_end(restore_state) }
     }
 }
 
@@ -225,6 +243,6 @@ impl<'lock, const CEILING: Priority> KeyToken<'lock> for CeilingLockKey<'lock, C
     where
         Self: Sized,
     {
-        CeilingLockKey::new()
+        unsafe { CeilingLockKey::new() }
     }
 }

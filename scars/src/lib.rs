@@ -1,19 +1,14 @@
 #![doc = include_str!("../../README.md")]
 #![no_std]
 #![feature(adt_const_params)]
-#![feature(const_maybe_uninit_assume_init)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_fill)]
 #![feature(maybe_uninit_uninit_array_transpose)]
-#![feature(const_mut_refs)]
-#![feature(const_slice_split_at_mut)]
-#![feature(waker_getters)]
-#![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 #![cfg_attr(test, no_main)]
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::scars_test::test_runner)]
 #![feature(sync_unsafe_cell)]
-#![feature(noop_waker)]
 #![reexport_test_harness_main = "test_main"]
 #[macro_use]
 pub mod kernel;
@@ -25,6 +20,8 @@ pub mod task;
 pub mod thread;
 pub mod time;
 pub mod tls;
+
+extern crate self as scars;
 
 pub use scars_macros::*;
 

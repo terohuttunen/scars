@@ -1,5 +1,5 @@
 use crate::kernel::{interrupt::in_interrupt, priority::Priority, waiter::WaitQueue};
-use crate::sync::{mutex, MutexGuard, RawCeilingLock};
+use crate::sync::{MutexGuard, RawCeilingLock, mutex};
 use core::pin::Pin;
 
 pub struct WaitTimeoutResult(bool);
@@ -23,11 +23,15 @@ impl<const CEILING: Priority> Condvar<CEILING> {
 
     #[inline(never)]
     fn wait_lock(&self, lock: Pin<&RawCeilingLock>) {
-        lock.unlock();
+        unsafe {
+            lock.unlock();
+        }
 
         self.waiter_queue.wait();
 
-        lock.lock();
+        unsafe {
+            lock.lock();
+        }
     }
 
     #[inline(always)]
@@ -66,11 +70,15 @@ impl<const CEILING: Priority> Condvar<CEILING> {
         guard: MutexGuard<'static, T>,
     ) -> MutexGuard<'static, T> {
         let lock = mutex::guard_lock(&guard);
-        lock.unlock();
+        unsafe {
+            lock.unlock();
+        }
 
         self.waiter_queue.async_wait().await;
 
-        lock.lock();
+        unsafe {
+            lock.lock();
+        }
         guard
     }
 

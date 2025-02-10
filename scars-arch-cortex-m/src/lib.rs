@@ -5,8 +5,8 @@ use cortex_m::register::basepri;
 use cortex_m_rt::exception;
 use scars_khal::*;
 
-extern "C" {
-    pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context>;
+unsafe extern "C" {
+    pub unsafe static CURRENT_THREAD_CONTEXT: AtomicPtr<Context>;
 }
 
 #[repr(C)]
@@ -68,49 +68,51 @@ impl ContextInfo for Context {
         _stack_size: usize,
         context: *mut Self,
     ) {
-        (*context).r4 = 0;
-        (*context).r5 = 0;
-        (*context).r6 = 0;
-        (*context).r7 = 0;
-        (*context).r8 = 0;
-        (*context).r9 = 0;
-        (*context).r10 = 0;
-        (*context).r11 = 0;
-        (*context).lr = 0xFFFFFFFD;
+        unsafe {
+            (*context).r4 = 0;
+            (*context).r5 = 0;
+            (*context).r6 = 0;
+            (*context).r7 = 0;
+            (*context).r8 = 0;
+            (*context).r9 = 0;
+            (*context).r10 = 0;
+            (*context).r11 = 0;
+            (*context).lr = 0xFFFFFFFD;
 
-        (*context).s16 = 0.0f32;
-        (*context).s17 = 0.0f32;
-        (*context).s18 = 0.0f32;
-        (*context).s19 = 0.0f32;
-        (*context).s20 = 0.0f32;
-        (*context).s21 = 0.0f32;
-        (*context).s22 = 0.0f32;
-        (*context).s23 = 0.0f32;
-        (*context).s24 = 0.0f32;
-        (*context).s25 = 0.0f32;
-        (*context).s26 = 0.0f32;
-        (*context).s27 = 0.0f32;
-        (*context).s28 = 0.0f32;
-        (*context).s29 = 0.0f32;
-        (*context).s30 = 0.0f32;
-        (*context).s31 = 0.0f32;
+            (*context).s16 = 0.0f32;
+            (*context).s17 = 0.0f32;
+            (*context).s18 = 0.0f32;
+            (*context).s19 = 0.0f32;
+            (*context).s20 = 0.0f32;
+            (*context).s21 = 0.0f32;
+            (*context).s22 = 0.0f32;
+            (*context).s23 = 0.0f32;
+            (*context).s24 = 0.0f32;
+            (*context).s25 = 0.0f32;
+            (*context).s26 = 0.0f32;
+            (*context).s27 = 0.0f32;
+            (*context).s28 = 0.0f32;
+            (*context).s29 = 0.0f32;
+            (*context).s30 = 0.0f32;
+            (*context).s31 = 0.0f32;
 
-        // Allocate exception frame from thread stack
-        let frame_ptr = stack_ptr.sub(core::mem::size_of::<cortex_m_rt::ExceptionFrame>())
-            as *mut cortex_m_rt::ExceptionFrame;
-        (*context).sp = frame_ptr as u32;
-        // TODO: initial priority
-        (*context).basepri = basepri::read() as u32;
+            // Allocate exception frame from thread stack
+            let frame_ptr = stack_ptr.sub(core::mem::size_of::<cortex_m_rt::ExceptionFrame>())
+                as *mut cortex_m_rt::ExceptionFrame;
+            (*context).sp = frame_ptr as u32;
+            // TODO: initial priority
+            (*context).basepri = basepri::read() as u32;
 
-        (*frame_ptr).set_r0(argument.unwrap_or(core::ptr::null()) as u32);
-        (*frame_ptr).set_r1(0);
-        (*frame_ptr).set_r2(0);
-        (*frame_ptr).set_r3(0);
-        (*frame_ptr).set_r12(0);
-        (*frame_ptr).set_lr(abort as u32);
-        (*frame_ptr).set_pc(main_fn as u32);
-        // TODO: disable FPU at thread startup because not pushing FPU context
-        (*frame_ptr).set_xpsr(0x01000000);
+            (*frame_ptr).set_r0(argument.unwrap_or(core::ptr::null()) as u32);
+            (*frame_ptr).set_r1(0);
+            (*frame_ptr).set_r2(0);
+            (*frame_ptr).set_r3(0);
+            (*frame_ptr).set_r12(0);
+            (*frame_ptr).set_lr(abort as u32);
+            (*frame_ptr).set_pc(main_fn as u32);
+            // TODO: disable FPU at thread startup because not pushing FPU context
+            (*frame_ptr).set_xpsr(0x01000000);
+        }
     }
 }
 

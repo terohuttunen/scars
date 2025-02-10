@@ -2,7 +2,7 @@
 name = "scars"
 version = "0.1.0"
 authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
-edition = "2021"
+edition = "2024"
 license = "MIT/Apache-2.0"
 repository = "https://github.com/terohuttunen/scars/"
 keywords = ["RTOS"]

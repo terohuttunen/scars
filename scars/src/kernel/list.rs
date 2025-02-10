@@ -147,7 +147,8 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         }
     }
 
-    pub fn remove<'item>(&mut self, item: Pin<&'item T>) {
+    /// Safety: The caller must guarantee that the item is in the list.
+    pub unsafe fn remove<'item>(&mut self, item: Pin<&'item T>) {
         let node = item.get_node();
         node.owned
             .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
@@ -498,7 +499,7 @@ mod test {
         list.push_back(b.as_ref());
         list.push_back(c.as_ref());
 
-        list.remove(c.as_ref());
+        unsafe { list.remove(c.as_ref()) };
         let maybe_a = list.pop_front();
         assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
@@ -524,7 +525,7 @@ mod test {
         list.push_back(b.as_ref());
         list.push_back(c.as_ref());
 
-        list.remove(a.as_ref());
+        unsafe { list.remove(a.as_ref()) };
         let maybe_b = list.pop_front();
         assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_c = list.pop_front();
@@ -550,7 +551,7 @@ mod test {
         list.push_back(b.as_ref());
         list.push_back(c.as_ref());
 
-        list.remove(b.as_ref());
+        unsafe { list.remove(b.as_ref()) };
         let maybe_a = list.pop_front();
         assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_c = list.pop_front();
@@ -567,7 +568,7 @@ mod test {
 
         list.push_back(a.as_ref());
 
-        list.remove(a.as_ref());
+        unsafe { list.remove(a.as_ref()) };
         assert!(list.pop_front().is_none());
     }
 }

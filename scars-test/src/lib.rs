@@ -3,23 +3,19 @@ use core::panic::PanicInfo;
 //use minicov::{capture_coverage, CoverageWriter};
 
 #[cfg(feature = "semihosting")]
-use semihosting::{
-    print, println,
-};
+use semihosting::{print, println};
 
-#[cfg(feature = "rtt")]
-use rtt_target::{rprint as print, rprintln as println};
-#[cfg(all(feature = "std", feature = "exit"))]
-use std::process::exit;
-#[cfg(all(feature = "semihosting", feature = "exit"))]
-use semihosting::process::exit;
 #[cfg(feature = "cortex-m")]
 use cortex_m::asm;
+#[cfg(feature = "rtt")]
+use rtt_target::{rprint as print, rprintln as println};
+#[cfg(all(feature = "semihosting", feature = "exit"))]
+use semihosting::process::exit;
+#[cfg(all(feature = "std", feature = "exit"))]
+use std::process::exit;
 
- 
 #[cfg(all(feature = "rtt", feature = "exit"))]
 use semihosting::process::exit;
-
 
 pub trait ScarsTest {
     fn run(&self);
@@ -42,7 +38,7 @@ where
     }
 }
 
-pub fn test_runner(tests: &[&dyn ScarsTest]) -> !{
+pub fn test_runner(tests: &[&dyn ScarsTest]) -> ! {
     println!("Running {} tests", tests.len());
     for test in tests {
         test.run();
@@ -51,7 +47,7 @@ pub fn test_runner(tests: &[&dyn ScarsTest]) -> !{
     exit(0)
 }
 
-pub fn test_succeed() -> !{
+pub fn test_succeed() -> ! {
     println!("[ok]");
     exit(0)
 }
@@ -66,7 +62,7 @@ macro_rules! integration_test {
     () => {
         use ::scars::kernel::exception::Exception;
         use ::scars_khal::FaultInfo;
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         fn _user_exception_handler(exception: Exception) {
             match exception {
                 Exception::Panic(info) => {

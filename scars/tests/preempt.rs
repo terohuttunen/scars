@@ -4,8 +4,9 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 use scars::prelude::*;
+use scars::sync::channel::Sender;
 use scars::time::{Duration, Instant};
 use scars_test;
 
@@ -25,70 +26,71 @@ const THREAD1_PRIORITY: Priority = Priority::thread(4);
 const CAPACITY: usize = 10;
 const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY);
 
+#[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
+fn thread0(sender: Sender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
+    sender.send(Event::Thread0Start);
+    let end_time = wakeup_time + Duration::from_millis(100);
+
+    thread1(sender.clone(), wakeup_time + Duration::from_millis(25)).start();
+
+    // Go to sleep until it is time to wake up to preempt the idle thread
+    scars::delay_until(wakeup_time);
+    // Idle thread preempted
+    let preempt_latency = wakeup_time.elapsed();
+    assert!(preempt_latency < Duration::from_millis(10));
+    sender.send(Event::IdlePreempt);
+
+    // Do some work until end_time
+    while Instant::now() < end_time {}
+
+    sender.send(Event::Thread0End);
+
+    scars::delay_until(wakeup_time + Duration::from_secs(1));
+
+    scars_test::test_fail()
+}
+
+#[scars::thread(name = "thread1", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
+fn thread1(sender: Sender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
+    sender.send(Event::Thread1Start);
+    let end_time = wakeup_time + Duration::from_millis(50);
+    // Go to sleep until it is time to wake up to preempt the lower priority thread0
+    scars::delay_until(wakeup_time);
+    sender.send(Event::Thread0Preempt);
+    // Do some work until end_time
+    while Instant::now() < end_time {}
+
+    sender.send(Event::Thread1End);
+    scars::delay_until(wakeup_time + Duration::from_secs(1));
+
+    scars_test::test_fail()
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Event {
+    IdleStart,
+    IdlePreempt,
+    IdleEnd,
+    Thread0Start,
+    Thread0Preempt,
+    Thread0End,
+    Thread1Start,
+    Thread1End,
+}
+
 /// Test that the scheduler preempts lower priority thread when
 /// a higher priority thread becomes runnable from sleep.
 #[test_case]
 pub fn high_priority_thread_preempts_low_priority() {
-    #[derive(Debug, PartialEq, Eq, Clone)]
-    pub enum Event {
-        IdleStart,
-        IdlePreempt,
-        IdleEnd,
-        Thread0Start,
-        Thread0Preempt,
-        Thread0End,
-        Thread1Start,
-        Thread1End,
-    }
-
     let (sender, receiver) = make_channel!(Event, CAPACITY, CEILING);
     sender.send(Event::IdleStart);
-
-    let thread0 = make_thread!("thread0", THREAD0_PRIORITY, STACK_SIZE);
 
     let start_time = Instant::now();
     let wakeup_time = start_time + Duration::from_millis(50);
     let end_time = start_time + Duration::from_millis(100);
-    let sender0 = sender.clone();
-    thread0.start(move || {
-        sender0.send(Event::Thread0Start);
-        let end_time = wakeup_time + Duration::from_millis(100);
 
-        let thread1 = make_thread!("thread1", THREAD1_PRIORITY, STACK_SIZE);
-        let sender1 = sender0.clone();
-        thread1.start(move || {
-            let wakeup_time = wakeup_time + Duration::from_millis(25);
+    thread0(sender.clone(), wakeup_time).start();
 
-            sender1.send(Event::Thread1Start);
-            let end_time = wakeup_time + Duration::from_millis(50);
-            // Go to sleep until it is time to wake up to preempt the lower priority thread0
-            scars::delay_until(wakeup_time);
-            sender1.send(Event::Thread0Preempt);
-            // Do some work until end_time
-            while Instant::now() < end_time {}
-
-            sender1.send(Event::Thread1End);
-            scars::delay_until(wakeup_time + Duration::from_secs(1));
-
-            scars_test::test_fail()
-        });
-
-        // Go to sleep until it is time to wake up to preempt the idle thread
-        scars::delay_until(wakeup_time);
-        // Idle thread preempted
-        let preempt_latency = wakeup_time.elapsed();
-        assert!(preempt_latency < Duration::from_millis(10));
-        sender0.send(Event::IdlePreempt);
-
-        // Do some work until end_time
-        while Instant::now() < end_time {}
-
-        sender0.send(Event::Thread0End);
-
-        scars::delay_until(wakeup_time + Duration::from_secs(1));
-
-        scars_test::test_fail()
-    });
     // Do work until end time. The pre-emption should happen in the middle of the
     // the work around 50ms from the beginning.
     while Instant::now() < end_time {}

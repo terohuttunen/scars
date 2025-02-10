@@ -1,6 +1,6 @@
 use super::LocalExecutor;
 use crate::kernel::atomic_list::*;
-use crate::kernel::list::{impl_linked, LinkedListTag, Node};
+use crate::kernel::list::{LinkedListTag, Node, impl_linked};
 use crate::kernel::waiter::{Suspendable, WaitQueueTag};
 use crate::time::Instant;
 use core::future::Future;
@@ -67,6 +67,14 @@ impl RawTask {
     pub fn set_wakeup_time(self: Pin<&mut Self>, wakeup_time: Instant) {
         let task = unsafe { Pin::get_unchecked_mut(self) };
         task.wakeup_time = wakeup_time;
+    }
+
+    // SAFETY: You are allowed to do this only when the task is spawned
+    // on the executor. This is to let the task know on which executor it
+    // is running.
+    pub(crate) unsafe fn set_executor(self: Pin<&mut Self>, executor: LocalExecutor) {
+        let task = unsafe { Pin::get_unchecked_mut(self) };
+        task.executor = executor;
     }
 }
 
@@ -272,12 +280,18 @@ impl RawTaskHandle {
         unsafe { Pin::new_unchecked(&*(self.vtable.control_block)(self.task_ptr)) }
     }
 
+    pub fn as_mut(&mut self) -> Pin<&'_ mut RawTask> {
+        unsafe { Pin::new_unchecked(&mut *(self.vtable.control_block)(self.task_ptr)) }
+    }
+
     pub fn poll(&self) -> bool {
         unsafe { (self.vtable.poll)(self.task_ptr) }
     }
 
     pub(super) unsafe fn try_read_output<T>(&self, output: &mut Poll<T>, waker: &Waker) {
-        (self.vtable.try_read_output)(self.task_ptr, output as *mut Poll<T> as *mut (), waker);
+        unsafe {
+            (self.vtable.try_read_output)(self.task_ptr, output as *mut Poll<T> as *mut (), waker);
+        }
     }
 }
 
@@ -310,6 +324,10 @@ impl<T> TaskHandle<T> {
 
     pub fn as_ref(&self) -> Pin<&'_ RawTask> {
         self.raw.as_ref()
+    }
+
+    pub fn as_mut(&mut self) -> Pin<&'_ mut RawTask> {
+        self.raw.as_mut()
     }
 
     pub fn poll(&self) -> bool {

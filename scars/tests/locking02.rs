@@ -4,9 +4,10 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 use scars::prelude::*;
 use scars::sync::CeilingLock;
+use scars::sync::channel::Sender;
 use scars::time::Duration;
 use scars_test;
 
@@ -33,39 +34,8 @@ const CEILING: Priority = MEDIUM_PRIORITY;
 #[test_case]
 pub fn ceiling_lock_owned_preempt() {
     let (sender0, receiver) = make_channel!(u32, CAPACITY, HIGH_PRIORITY);
-    let low = make_thread!("low", LOW_PRIORITY, STACK_SIZE);
 
-    low.start(move || {
-        let medium = make_thread!("medium", MEDIUM_PRIORITY, STACK_SIZE);
-        let high = make_thread!("high", HIGH_PRIORITY, STACK_SIZE);
-        let medium_sender = sender0.clone();
-        let high_sender = sender0.clone();
-        let lock: CeilingLock<CEILING> = CeilingLock::new();
-
-        // Low priority thread raises its priority with a ceiling lock
-        lock.lock();
-        // Medium priority thread cannot run because of the ceiling lock
-        medium.start(move || {
-            medium_sender.send(1);
-            loop {
-                scars::delay(Duration::from_secs(1));
-            }
-        });
-        // High priority thread can run because it is above the ceiling
-        high.start(move || {
-            high_sender.send(3);
-            loop {
-                scars::delay(Duration::from_secs(1));
-            }
-        });
-        sender0.send(2);
-        lock.unlock();
-        // Medium priority thread can run now, and then low priority continues
-        sender0.send(0);
-        loop {
-            scars::delay(Duration::from_secs(1));
-        }
-    });
+    low_thread(sender0.clone(), sender0.clone(), sender0.clone()).start();
 
     assert_eq!(receiver.recv(), 3);
     assert_eq!(receiver.recv(), 2);
@@ -73,4 +43,46 @@ pub fn ceiling_lock_owned_preempt() {
     assert_eq!(receiver.recv(), 0);
 
     scars_test::test_succeed();
+}
+
+#[scars::thread(name = "low", priority = LOW_PRIORITY, stack_size = STACK_SIZE)]
+fn low_thread(
+    sender0: Sender<u32, CAPACITY, HIGH_PRIORITY>,
+    medium_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>,
+    high_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>,
+) -> ! {
+    let medium_sender = medium_sender.clone();
+    let high_sender = high_sender.clone();
+    let lock: CeilingLock<CEILING> = CeilingLock::new();
+
+    // Low priority thread raises its priority with a ceiling lock
+    let pinned = core::pin::pin!(lock);
+    unsafe { pinned.as_ref().lock() };
+    // Medium priority thread cannot run because of the ceiling lock
+    medium_thread(medium_sender).start();
+    // High priority thread can run because it is above the ceiling
+    high_thread(high_sender).start();
+    sender0.send(2);
+    unsafe { pinned.as_ref().unlock() };
+    // Medium priority thread can run now, and then low priority continues
+    sender0.send(0);
+    loop {
+        scars::delay(Duration::from_secs(1));
+    }
+}
+
+#[scars::thread(name = "medium", priority = MEDIUM_PRIORITY, stack_size = STACK_SIZE)]
+fn medium_thread(medium_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
+    medium_sender.send(1);
+    loop {
+        scars::delay(Duration::from_secs(1));
+    }
+}
+
+#[scars::thread(name = "high", priority = HIGH_PRIORITY, stack_size = STACK_SIZE)]
+fn high_thread(high_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
+    high_sender.send(3);
+    loop {
+        scars::delay(Duration::from_secs(1));
+    }
 }

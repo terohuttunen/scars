@@ -4,12 +4,12 @@ pub use aligned::*;
 pub use callbacks::KernelCallbacks;
 use core::sync::atomic::AtomicPtr;
 
-extern "C" {
-    pub static CURRENT_TASK_CONTEXT: AtomicPtr<*const ()>;
+unsafe extern "C" {
+    pub unsafe static CURRENT_TASK_CONTEXT: AtomicPtr<*const ()>;
 }
 
-extern "Rust" {
-    pub fn start_kernel() -> !;
+unsafe extern "Rust" {
+    pub unsafe fn start_kernel() -> !;
 }
 
 pub trait GetInterruptNumber {

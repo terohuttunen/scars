@@ -2,12 +2,10 @@
 #![feature(linkage)]
 extern crate libc;
 extern crate std;
-use bit_field::BitField;
-use core::arch::{asm, global_asm};
 use core::cell::{Cell, UnsafeCell};
 use core::mem::MaybeUninit;
-use core::ptr::{addr_of_mut, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::ptr::{NonNull, addr_of_mut};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use scars_khal::*;
 
 pub mod pac {
@@ -26,7 +24,7 @@ pub struct InterruptVector {
     pub locals_ptr: *const u8,
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 static mut __EXTERNAL_INTERRUPTS: [InterruptVector; MAX_INTERRUPT + 1] = [InterruptVector {
     handler_ptr: core::ptr::null(),
     locals_ptr: core::ptr::null(),
@@ -98,11 +96,13 @@ pub struct VirtualContext {
 
 impl VirtualContext {
     unsafe fn is_resumed(&self) -> bool {
-        *self.resumed.get()
+        unsafe { *self.resumed.get() }
     }
 
     unsafe fn set_resumed(&self, state: bool) {
-        *self.resumed.get() = state;
+        unsafe {
+            *self.resumed.get() = state;
+        }
     }
 
     pub fn suspend(&self) {
@@ -146,44 +146,46 @@ impl ContextInfo for VirtualContext {
         main_fn: *const (),
         argument: Option<*const u8>,
         stack_ptr: *const u8,
-        mut stack_size: usize,
+        stack_size: usize,
         context: *mut Self,
     ) {
         let mut attr = MaybeUninit::uninit();
 
-        let stackaddr = stack_ptr.sub(stack_size) as *mut libc::c_void;
-        if libc::pthread_attr_init(attr.as_mut_ptr()) != 0
-            || libc::pthread_attr_setstack(attr.as_mut_ptr(), stackaddr, stack_size) != 0
-        {
-            panic!(
-                "Failed to set thread '{}' stack to {} bytes",
-                name, stack_size
+        unsafe {
+            let stackaddr = stack_ptr.sub(stack_size) as *mut libc::c_void;
+            if libc::pthread_attr_init(attr.as_mut_ptr()) != 0
+                || libc::pthread_attr_setstack(attr.as_mut_ptr(), stackaddr, stack_size) != 0
+            {
+                panic!(
+                    "Failed to set thread '{}' stack to {} bytes",
+                    name, stack_size
+                );
+            }
+
+            // Initialize thread context variables with `thread_id` field last so that the
+            // thread can safely access its context.
+            (*context).name = name;
+            (*context).resumed = UnsafeCell::new(false);
+            (*context).suspension = UnsafeCell::new(libc::PTHREAD_COND_INITIALIZER);
+            (*context).suspension_lock = UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER);
+            (*context).main_fn = main_fn;
+            (*context).argument = argument.map(|a| NonNull::new_unchecked(a as *mut _));
+            (*context).stack_top_ptr.set(stack_ptr);
+
+            // Creating the thread initializes the last field of thread context, the `thread_id`.
+            libc::pthread_create(
+                core::ptr::addr_of_mut!((*context).thread_id),
+                attr.as_ptr(),
+                thread_main_wrapper,
+                context as *mut _,
             );
+
+            libc::pthread_attr_destroy(attr.as_mut_ptr());
+
+            // Set thread name to RTOS thread name
+            let c_name = std::ffi::CString::new(name).expect("");
+            libc::pthread_setname_np((*context).thread_id, c_name.as_ptr() as *const _);
         }
-
-        // Initialize thread context variables with `thread_id` field last so that the
-        // thread can safely access its context.
-        (*context).name = name;
-        (*context).resumed = UnsafeCell::new(false);
-        (*context).suspension = UnsafeCell::new(libc::PTHREAD_COND_INITIALIZER);
-        (*context).suspension_lock = UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER);
-        (*context).main_fn = main_fn;
-        (*context).argument = argument.map(|a| NonNull::new_unchecked(a as *mut _));
-        (*context).stack_top_ptr.set(stack_ptr);
-
-        // Creating the thread initializes the last field of thread context, the `thread_id`.
-        libc::pthread_create(
-            core::ptr::addr_of_mut!((*context).thread_id),
-            attr.as_ptr(),
-            thread_main_wrapper,
-            context as *mut _,
-        );
-
-        libc::pthread_attr_destroy(attr.as_mut_ptr());
-
-        // Set thread name to RTOS thread name
-        let c_name = std::ffi::CString::new(name).expect("");
-        libc::pthread_setname_np((*context).thread_id, c_name.as_ptr() as *const _);
     }
 }
 
@@ -238,7 +240,6 @@ impl FlowController for Simulator {
     fn abort() -> ! {
         unsafe {
             libc::exit(1);
-            loop {}
         }
     }
 
@@ -261,18 +262,14 @@ impl FlowController for Simulator {
         };
         let context = current_thread_context();
         if unsafe {
-            libc::pthread_sigqueue(
-                context.thread_id,
-                libc::SIGUSR1,
-                libc::sigval {
-                    sival_ptr: &mut trap as *mut VirtualTrap as *mut std::ffi::c_void,
-                },
-            )
+            libc::pthread_sigqueue(context.thread_id, libc::SIGUSR1, libc::sigval {
+                sival_ptr: &mut trap as *mut VirtualTrap as *mut std::ffi::c_void,
+            })
         } != 0
         {
             panic!("");
         }
-        if let VirtualTrap::Syscall { id, args, rval } = trap {
+        if let VirtualTrap::Syscall { rval, .. } = trap {
             rval
         } else {
             unreachable!()
@@ -365,7 +362,7 @@ pub struct VirtualInterruptController {
     priority: [AtomicU8; MAX_INTERRUPT + 1],
     threshold: AtomicU8,
     enable: [AtomicBool; MAX_INTERRUPT + 1],
-    status: [AtomicBool; MAX_INTERRUPT + 1],
+    _status: [AtomicBool; MAX_INTERRUPT + 1],
     interrupt_sigmask: libc::sigset_t,
 }
 
@@ -392,7 +389,7 @@ impl VirtualInterruptController {
                 panic!("");
             }
 
-            let mut sigaction = libc::sigaction {
+            let sigaction = libc::sigaction {
                 sa_sigaction: trap_signal_handler as libc::sighandler_t,
                 sa_mask: mask.assume_init(),
                 sa_flags: libc::SA_SIGINFO,
@@ -406,17 +403,17 @@ impl VirtualInterruptController {
             priority: [INITIAL_PRIORITY; MAX_INTERRUPT + 1],
             threshold: AtomicU8::new(0),
             enable: [INITIAL_ENABLE; MAX_INTERRUPT + 1],
-            status: [INITIAL_STATUS; MAX_INTERRUPT + 1],
+            _status: [INITIAL_STATUS; MAX_INTERRUPT + 1],
             interrupt_sigmask: unsafe { interrupt_sigmask.assume_init() },
         }
     }
 
     fn handle_trap(trap: &mut VirtualTrap) {
         match trap {
-            VirtualTrap::Syscall {
+            &mut VirtualTrap::Syscall {
                 ref id,
                 ref args,
-                rval,
+                ref mut rval,
             } => {
                 *rval =
                     unsafe { Simulator::kernel_syscall_handler(*id, args[0], args[1], args[2]) };
@@ -489,7 +486,7 @@ impl InterruptController for Simulator {
         unimplemented!()
     }
 
-    fn complete_interrupt(&self, claim: InterruptClaim) {
+    fn complete_interrupt(&self, _claim: InterruptClaim) {
         unimplemented!()
     }
 
@@ -568,7 +565,7 @@ impl VirtualTimer {
             sevp.sigev_notify = libc::SIGEV_SIGNAL;
             sevp.sigev_signo = libc::SIGUSR2;
             sevp.sigev_value.sival_ptr =
-                unsafe { addr_of_mut!(ALARM_TRAP) as *const VirtualTrap as *mut libc::c_void };
+                addr_of_mut!(ALARM_TRAP) as *const VirtualTrap as *mut libc::c_void;
             if libc::timer_create(libc::CLOCK_MONOTONIC, &mut sevp, timer_id.as_mut_ptr()) != 0 {
                 panic!("Failed to create timer");
             }
@@ -646,14 +643,14 @@ impl AlarmClockController for Simulator {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn main() {
     unsafe {
         start_kernel();
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[linkage = "weak"]
 fn _scars_idle_thread_hook() {
     Simulator::idle();
@@ -672,9 +669,11 @@ impl HardwareAbstractionLayer for Simulator {
     const NAME: &'static str = "Simulator";
 
     unsafe fn init(hal: *mut Self) {
-        *hal = Simulator {
-            timer: VirtualTimer::new(),
-            interrupt_controller: VirtualInterruptController::new(),
+        unsafe {
+            *hal = Simulator {
+                timer: VirtualTimer::new(),
+                interrupt_controller: VirtualInterruptController::new(),
+            }
         }
     }
 }

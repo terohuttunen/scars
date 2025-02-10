@@ -4,8 +4,9 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 use scars::prelude::*;
+use scars::sync::channel::Sender;
 use scars::sync::{Condvar, Mutex};
 use scars::time::Duration;
 use scars_test;
@@ -29,44 +30,47 @@ const THREAD2_PRIORITY: Priority = Priority::thread(4);
 const CAPACITY: usize = 14;
 const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRIORITY);
 
+static LOCK: Mutex<bool, CEILING> = Mutex::new(false);
+static CVAR: Condvar<CEILING> = Condvar::new();
+
+#[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
+fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+    let sender0 = sender.clone();
+    thread1(sender0).start();
+    let guarded_started = LOCK.lock();
+    CVAR.wait_while(guarded_started, |started| !*started);
+    sender.send(0);
+    scars::delay(Duration::from_millis(1000));
+    scars_test::test_fail()
+}
+
+#[scars::thread(name = "thread1", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
+fn thread1(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+    let sender1 = sender.clone();
+    thread2(sender1).start();
+    let guarded_started = LOCK.lock();
+    CVAR.wait_while(guarded_started, |started| !*started);
+    sender.send(1);
+    scars::delay(Duration::from_millis(1000));
+    scars_test::test_fail()
+}
+
+#[scars::thread(name = "thread2", priority = THREAD2_PRIORITY, stack_size = STACK_SIZE)]
+fn thread2(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+    let guarded_started = LOCK.lock();
+    CVAR.wait_while(guarded_started, |started| !*started);
+    sender.send(2);
+    scars::delay(Duration::from_millis(1000));
+    scars_test::test_fail()
+}
+
 /// Block two threads with different priorities and verify that the
 /// higher priority thread is started first when the threads are notified.
 #[test_case]
 pub fn block_unblock_thread() {
     let (sender, receiver) = make_channel!(u32, CAPACITY, CEILING);
-    static LOCK: Mutex<bool, CEILING> = Mutex::new(false);
-    static CVAR: Condvar<CEILING> = Condvar::new();
 
-    let thread0 = make_thread!("thread0", THREAD0_PRIORITY, STACK_SIZE);
-    let sender0 = sender.clone();
-    thread0.start(move || {
-        let thread1 = make_thread!("thread1", THREAD1_PRIORITY, STACK_SIZE);
-        let sender1 = sender0.clone();
-        thread1.start(move || {
-            // Medium priority thread created last
-            let thread2 = make_thread!("thread2", THREAD2_PRIORITY, STACK_SIZE);
-            let sender2 = sender1.clone();
-            thread2.start(move || {
-                let guarded_started = LOCK.lock();
-                CVAR.wait_while(guarded_started, |started| !*started);
-                sender2.send(2);
-                scars::delay(Duration::from_millis(1000));
-                scars_test::test_fail()
-            });
-
-            let guarded_started = LOCK.lock();
-            CVAR.wait_while(guarded_started, |started| !*started);
-            sender1.send(1);
-            scars::delay(Duration::from_millis(1000));
-            scars_test::test_fail()
-        });
-
-        let guarded_started = LOCK.lock();
-        CVAR.wait_while(guarded_started, |started| !*started);
-        sender0.send(0);
-        scars::delay(Duration::from_millis(1000));
-        scars_test::test_fail()
-    });
+    thread0(sender).start();
 
     // Release the barrier flag holding the treads and notify threads
     *LOCK.lock() = true;

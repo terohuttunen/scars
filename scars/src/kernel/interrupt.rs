@@ -1,40 +1,42 @@
 use crate::cell::LockedCell;
 use crate::events::EXECUTOR_WAKEUP_EVENT;
-pub use crate::events::{TryWaitEventsError, REQUIRE_ALL_EVENTS};
+pub use crate::events::{REQUIRE_ALL_EVENTS, TryWaitEventsError};
 use crate::kernel::list::{LinkedList, LinkedListTag};
 use crate::kernel::priority::{
-    AtomicPriorityPair, AtomicPriorityStatusPair, InterruptPriority, Priority, PriorityStatus,
-    INVALID_PRIORITY,
+    AtomicPriorityPair, AtomicPriorityStatusPair, INVALID_PRIORITY, InterruptPriority, Priority,
+    PriorityStatus,
 };
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::kernel::tracing;
 use crate::kernel::waiter::Suspendable;
 use crate::sync::{
+    KeyToken, Lock, OnceLock,
     ceiling_lock::RawCeilingLock,
     interrupt_lock::{InterruptLock, InterruptLockKey},
-    KeyToken, Lock, OnceLock,
 };
-use crate::task::{InterruptExecutor, JoinHandle, PollKind, RawTask, TaskPool, ThreadExecutor};
+use crate::task::{
+    InitializedTask, InterruptExecutor, JoinHandle, PollKind, RawTask, TaskPool, ThreadExecutor,
+};
 use crate::thread::{LockListTag, RawThread};
 use crate::tls::{LocalCell, LocalStorage, LocalStorageArray};
 pub use critical_section::CriticalSection;
 use scars_khal::*;
 
 use crate::kernel::hal::{
-    claim_interrupt, complete_interrupt, disable_interrupts, enable_interrupt, enable_interrupts,
-    get_interrupt_priority, get_interrupt_threshold, set_interrupt_priority,
-    set_interrupt_threshold, Context, MAX_INTERRUPT_NUMBER,
+    Context, MAX_INTERRUPT_NUMBER, claim_interrupt, complete_interrupt, disable_interrupts,
+    enable_interrupt, enable_interrupts, get_interrupt_priority, get_interrupt_threshold,
+    set_interrupt_priority, set_interrupt_threshold,
 };
 use core::cell::UnsafeCell;
-use core::future::{poll_fn, Future};
+use core::future::{Future, poll_fn};
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
-use core::ptr::{addr_of, addr_of_mut, NonNull};
+use core::ptr::{NonNull, addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use core::task::Poll;
 
-use super::atomic_list::{impl_atomic_linked, AtomicNode, AtomicQueue};
+use super::atomic_list::{AtomicNode, AtomicQueue, impl_atomic_linked};
 use super::list::LinkedListNode;
 
 use static_cell::ConstStaticCell;
@@ -67,7 +69,7 @@ macro_rules! make_interrupt_handler {
     }};
 }
 
-extern "C" {
+unsafe extern "C" {
     static mut _isr_stack_start: u8;
 }
 
@@ -151,7 +153,8 @@ impl RawInterruptHandler {
         self.local_storage.set(local_storage)
     }
 
-    pub(crate) fn acquire_lock(&self, lock: Pin<&RawCeilingLock>) {
+    /// SAFETY: Caller must guarantee that the lock is free, and that it will be released.
+    pub(crate) unsafe fn acquire_lock(&self, lock: Pin<&RawCeilingLock>) {
         let locks = unsafe { &mut *self.owned_locks.get() };
         locks.insert_after(lock, |list_lock| {
             list_lock.ceiling_priority > lock.ceiling_priority
@@ -160,9 +163,12 @@ impl RawInterruptHandler {
         self.update_owned_lock_priority();
     }
 
-    pub(crate) fn release_lock(&self, lock: Pin<&RawCeilingLock>) {
+    /// SAFETY: Caller must guarantee that lock has been acquired by the interrupt handler
+    pub(crate) unsafe fn release_lock(&self, lock: Pin<&RawCeilingLock>) {
         let locks = unsafe { &mut *self.owned_locks.get() };
-        locks.remove(lock);
+        unsafe {
+            locks.remove(lock);
+        }
 
         self.update_owned_lock_priority();
     }
@@ -177,22 +183,20 @@ impl RawInterruptHandler {
     ) {
         self.closure_ptr = closure_ptr;
         set_interrupt_priority(self.intnum, self.base_priority.get_value());
-        set_interrupt_vector(
-            self.intnum,
-            key,
-            InterruptVector {
-                handler_ptr,
-                icb_ptr: self as *const _,
-            },
-        );
+        set_interrupt_vector(self.intnum, key, InterruptVector {
+            handler_ptr,
+            icb_ptr: self as *const _,
+        });
 
         // TODO: this should use some shared code
         let old_priority = self.raise_section_lock_priority(self.base_priority);
-        interrupt_context(self as *const _ as *mut _, || {
-            if let Some(executor) = LocalStorage::get::<InterruptExecutor>() {
-                executor.poll(PollKind::OnAttach)
-            }
-        });
+        unsafe {
+            interrupt_context(self as *const _ as *mut _, || {
+                if let Some(executor) = LocalStorage::get::<InterruptExecutor>() {
+                    executor.poll(PollKind::OnAttach)
+                }
+            });
+        }
         self.set_section_lock_priority(old_priority);
     }
 
@@ -292,19 +296,21 @@ impl RawInterruptHandler {
         PENDING_INTERRUPT_EXECUTOR_POLLS.push_back(unsafe { Pin::new_unchecked(self) });
     }
 
-    pub(crate) unsafe fn poll_executor(&self) {
+    pub(crate) fn poll_executor(&self) {
         // Raise priority to interrupt's priority, as it would be when polled due to interrupt.
         let old_priority = self.raise_section_lock_priority(self.base_priority);
 
         // Polling is done within the interrupt's context.
-        interrupt_context(self as *const _ as *mut _, || {
-            // Current interrupt context is now set, so LocalStorage::get will access the local storage
-            // of the awaken interrupt.
-            if let Some(executor) = LocalStorage::get::<InterruptExecutor>() {
-                // TODO: when on_wakeup?
-                executor.poll(PollKind::OnWakeup)
-            }
-        });
+        unsafe {
+            interrupt_context(self as *const _ as *mut _, || {
+                // Current interrupt context is now set, so LocalStorage::get will access the local storage
+                // of the awaken interrupt.
+                if let Some(executor) = LocalStorage::get::<InterruptExecutor>() {
+                    // TODO: when on_wakeup?
+                    executor.poll(PollKind::OnWakeup)
+                }
+            });
+        }
 
         self.set_section_lock_priority(old_priority);
     }
@@ -341,7 +347,7 @@ pub async fn wait_for_interrupt() {
                         .raw_get::<InterruptExecutor>()
                         .unwrap()
                 };
-                let task = unsafe { &mut *(cx.waker().as_raw().data() as *mut RawTask) };
+                let task = unsafe { &mut *(cx.waker().data() as *mut RawTask) };
                 let pinned_task = unsafe { Pin::new_unchecked(task) };
                 if first_poll {
                     executor.task_wait_for_interrupt(pinned_task);
@@ -370,17 +376,13 @@ pub struct InterruptBuilder<const PRIO: Priority, F: FnMut() + Send + 'static> {
 impl<const PRIO: Priority, F: FnMut() + Send + 'static> InterruptBuilder<PRIO, F> {
     /// Spawns a future in the interrupt context. The future will be polled
     /// when the interrupt is triggered.
-    pub fn spawn<G: Future, const N: usize>(
-        &mut self,
-        pool: &'static TaskPool<G, N>,
-        f: G,
-    ) -> Result<JoinHandle<G::Output>, ()> {
+    pub fn spawn<T>(&mut self, task: InitializedTask<T>) -> Result<JoinHandle<T>, ()> {
         match self
             .handler
             .local_storage_mut()
             .and_then(|local_storage| unsafe { local_storage.raw_get::<InterruptExecutor>() })
         {
-            Some(executor) => pool.spawn_in_interrupt(executor, f),
+            Some(executor) => Ok(executor.spawn(task)),
             None => Err(()),
         }
     }
@@ -401,7 +403,8 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> InterruptBuilder<PRIO, F
         f(self.handler)
     }
 
-    pub fn attach(self, closure: F) -> InterruptRef {
+    pub fn attach<C: FnOnce() -> F>(self, closure: C) -> InitializedInterruptHandler {
+        let closure = closure();
         let closure_ref = self.closure.write(closure);
         let closure_ptr = closure_ref as *const F as *const ();
         InterruptLock::with(|key| unsafe {
@@ -411,7 +414,9 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> InterruptBuilder<PRIO, F
                 key,
             )
         });
-        InterruptRef::new(self.handler)
+        InitializedInterruptHandler {
+            handler: self.handler,
+        }
     }
 
     pub fn local_storage(&self) -> Option<&LocalStorage> {
@@ -420,6 +425,53 @@ impl<const PRIO: Priority, F: FnMut() + Send + 'static> InterruptBuilder<PRIO, F
 
     pub fn local_storage_mut(&mut self) -> Option<&mut LocalStorage> {
         self.handler.local_storage.get_mut()
+    }
+}
+
+pub struct InitializedInterruptHandler {
+    handler: &'static mut RawInterruptHandler,
+}
+
+impl InitializedInterruptHandler {
+    pub fn spawn<T>(&self, task: InitializedTask<T>) -> Result<JoinHandle<T>, ()> {
+        match self
+            .handler
+            .local_storage()
+            .and_then(|local_storage| unsafe { local_storage.raw_get::<InterruptExecutor>() })
+        {
+            Some(executor) => Ok(executor.spawn(task)),
+            None => Err(()),
+        }
+    }
+
+    pub fn set_local_storage(&self, local_storage: LocalStorage) {
+        self.handler
+            .set_local_storage(local_storage)
+            .unwrap_or_else(|_| {
+                panic!("Local storage already set for interrupt handler");
+            });
+    }
+
+    pub fn modify<R>(&mut self, f: impl FnOnce(&mut RawInterruptHandler) -> R) -> R {
+        f(self.handler)
+    }
+
+    pub fn start_executor(&mut self, executor: &'static LocalCell<InterruptExecutor>) {
+        self.handler.start_executor(executor);
+    }
+
+    pub fn local_storage(&self) -> Option<&LocalStorage> {
+        self.handler.local_storage.get()
+    }
+
+    pub fn local_storage_mut(&mut self) -> Option<&mut LocalStorage> {
+        self.handler.local_storage.get_mut()
+    }
+
+    pub fn enable(self) -> InterruptRef {
+        let interrupt_ref = InterruptRef::new(self.handler);
+        interrupt_ref.enable();
+        interrupt_ref
     }
 }
 
@@ -449,8 +501,8 @@ impl<const PRIO: Priority, F: FnMut() + Send> InterruptHandler<PRIO, F> {
     }
 
     unsafe extern "C" fn closure_wrapper(icb_ptr: *mut ::core::ffi::c_void) {
-        let icb = &*(icb_ptr as *const RawInterruptHandler);
-        let closure = &mut *(icb.closure_ptr as *mut F);
+        let icb = unsafe { &*(icb_ptr as *const RawInterruptHandler) };
+        let closure = unsafe { &mut *(icb.closure_ptr as *mut F) };
 
         // Call closure
         closure();
@@ -474,7 +526,7 @@ impl InterruptRef {
     }
 
     unsafe fn from_ptr(ptr: *const RawInterruptHandler) -> InterruptRef {
-        InterruptRef(NonNull::new_unchecked(ptr as *mut RawInterruptHandler))
+        InterruptRef(unsafe { NonNull::new_unchecked(ptr as *mut RawInterruptHandler) })
     }
 
     pub fn base_priority(&self) -> Priority {
@@ -502,7 +554,7 @@ impl InterruptRef {
     /// any of the aliasing rules, you can use this method to obtain a reference
     /// to the underlying data and call re-entrant methods and read immutable data.
     pub(crate) unsafe fn as_ref(&self) -> &'static RawInterruptHandler {
-        self.0.as_ref()
+        unsafe { self.0.as_ref() }
     }
 }
 
@@ -536,7 +588,7 @@ pub(crate) fn set_interrupt_vector(
     INTERRUPT_VECTORS.as_array_of_cells()[number as usize].set(key, vector)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) unsafe fn _private_kernel_interrupt_handler() {
     let claim = claim_interrupt();
     let interrupt_number = claim.get_interrupt_number();
@@ -552,9 +604,11 @@ pub(crate) unsafe fn _private_kernel_interrupt_handler() {
         unsafe { core::mem::transmute(vector.handler_ptr) };
     let icb_ptr = vector.icb_ptr as *mut _;
 
-    interrupt_context(icb_ptr, || {
-        handler_fn(icb_ptr);
-    });
+    unsafe {
+        interrupt_context(icb_ptr, || {
+            handler_fn(icb_ptr);
+        });
+    }
 
     complete_interrupt(claim);
 }

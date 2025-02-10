@@ -10,7 +10,7 @@ use crate::cell::LockedCell;
 use crate::printkln;
 use crate::sync::interrupt_lock::InterruptLockKey;
 use core::cell::UnsafeCell;
-pub(crate) use exception::{handle_runtime_error, RuntimeError};
+pub(crate) use exception::{RuntimeError, handle_runtime_error};
 pub(crate) use priority::{
     AnyPriority, AtomicPriority, InterruptPriority, Priority, ThreadPriority,
 };
@@ -26,7 +26,7 @@ pub mod syscall;
 pub(crate) mod tracing;
 pub mod waiter;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn start_kernel() -> ! {
     //#[cfg(not(feature = "arch-std"))]
     //init_isr_stack_canary();

@@ -20,7 +20,7 @@ impl<'lock> PreemptLockKey<'lock> {
 
 impl<'a> KeyToken<'a> for PreemptLockKey<'a> {
     unsafe fn new() -> Self {
-        PreemptLockKey::new()
+        unsafe { PreemptLockKey::new() }
     }
 }
 

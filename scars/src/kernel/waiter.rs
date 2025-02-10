@@ -158,7 +158,7 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
         poll_fn(|cx| {
             CeilingLock::with(|ckey| {
                 let mut queue = self.queue.borrow_mut(ckey);
-                let task = unsafe { &*(cx.waker().as_raw().data() as *const RawTask) };
+                let task = unsafe { &*(cx.waker().data() as *const RawTask) };
                 if !waiter_queued {
                     queue.push_back(unsafe { Pin::new_unchecked(&task.waiter) });
                     waiter_queued = true;
@@ -210,7 +210,7 @@ impl AsyncWaiterQueue {
     pub async fn wait(&'static self) {
         let mut waiter_queued: bool = false;
         poll_fn(|cx| {
-            let task = unsafe { &*(cx.waker().as_raw().data() as *const RawTask) };
+            let task = unsafe { &*(cx.waker().data() as *const RawTask) };
             if !waiter_queued {
                 self.queue
                     .borrow_mut()

@@ -1,6 +1,6 @@
 pub use stm32f4xx_hal::pac::{self, *};
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 static mut NON_KERNEL_PERIPHERALS: bool = false;
 #[doc = r"All the peripherals not used by the kernel"]
 #[allow(non_snake_case)]
@@ -199,7 +199,7 @@ impl Peripherals {
     #[doc = r"Unchecked version of `Peripherals::take`"]
     #[inline]
     pub unsafe fn steal() -> Self {
-        NON_KERNEL_PERIPHERALS = true;
+        unsafe { NON_KERNEL_PERIPHERALS = true };
         let pp = unsafe { pac::Peripherals::steal() };
         Peripherals {
             RNG: pp.RNG,

@@ -3,7 +3,7 @@ use crate::thread::{ThreadInfo, ThreadRef};
 mod internal {
     use crate::thread::{ThreadInfo, ThreadRef};
     #[allow(dead_code)]
-    extern "Rust" {
+    unsafe extern "Rust" {
         #[link_name = "_scars_trace_thread_new"]
         pub(super) fn thread_new(thread: ThreadRef);
 
@@ -110,29 +110,29 @@ pub(crate) fn isr_exit_to_scheduler() {
     }
 }
 
-#[export_name = "_scars_default_trace_thread_new"]
+#[unsafe(export_name = "_scars_default_trace_thread_new")]
 fn default_thread_new(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_thread_exec_begin"]
+#[unsafe(export_name = "_scars_default_trace_thread_exec_begin")]
 fn default_thread_exec_begin(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_thread_exec_end"]
+#[unsafe(export_name = "_scars_default_trace_thread_exec_end")]
 fn default_thread_exec_end(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_thread_ready_begin"]
+#[unsafe(export_name = "_scars_default_trace_thread_ready_begin")]
 fn default_thread_ready_begin(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_thread_ready_end"]
+#[unsafe(export_name = "_scars_default_trace_thread_ready_end")]
 fn default_thread_ready_end(_thread: ThreadRef) {}
 
-#[export_name = "_scars_default_trace_system_idle"]
+#[unsafe(export_name = "_scars_default_trace_system_idle")]
 fn default_system_idle() {}
 
-#[export_name = "_scars_default_trace_isr_enter"]
+#[unsafe(export_name = "_scars_default_trace_isr_enter")]
 fn default_isr_enter() {}
 
-#[export_name = "_scars_default_trace_isr_exit"]
+#[unsafe(export_name = "_scars_default_trace_isr_exit")]
 fn default_isr_exit() {}
 
-#[export_name = "_scars_default_trace_isr_exit_to_scheduler"]
+#[unsafe(export_name = "_scars_default_trace_isr_exit_to_scheduler")]
 fn default_isr_exit_to_scheduler() {}

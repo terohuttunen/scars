@@ -7,13 +7,7 @@ use static_cell::ConstStaticCell;
 const ELEMENT_SIZE: usize = core::mem::align_of::<StackAlignment>();
 
 const CANARY_BYTE: u8 = 0x55;
-const CANARY_SIZE: usize = {
-    if ELEMENT_SIZE > 16 {
-        ELEMENT_SIZE
-    } else {
-        16
-    }
-};
+const CANARY_SIZE: usize = if ELEMENT_SIZE > 16 { ELEMENT_SIZE } else { 16 };
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]

@@ -88,7 +88,7 @@ pub fn handle_runtime_error(error: RuntimeError, location: &Location<'static>) -
     abort()
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe fn _private_hardware_exception_handler(fault: *const u8) -> ! {
     let fault = unsafe { &*(fault as *const Fault) };
 
@@ -106,10 +106,10 @@ pub unsafe fn _private_hardware_exception_handler(fault: *const u8) -> ! {
     abort()
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn _scars_default_user_exception_handler(_exception: Exception) {}
 
-extern "Rust" {
+unsafe extern "Rust" {
     fn _user_exception_handler(exception: Exception);
 }
 

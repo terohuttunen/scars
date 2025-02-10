@@ -34,27 +34,29 @@ fn main() {
     loop {}
 }
 ```
-Other threads are created with the `make_thread!` macro, which statically allocates the
-thread state, including the thread stack.
+Other threads are defined with a the `thread` attribute macro, which statically
+allocates the thread state, including the thread stack. The thread is created by calling
+the thread function, and started with the `start` method.
 ```rust
 const THREAD_PRIO: Priority = Priority::thread(2);
 const THREAD_STACK_SIZE: usize = 1024;
 const CEILING_PRIO: Priority = THREAD_PRIO;
 const CHANNEL_CAPACITY: usize = 1;
 
+#[scars::thread(name = "thread", priority = THREAD_PRIO, stack_size = THREAD_STACK_SIZE)]
+fn thread(sender: Sender<u32, CEILING_PRIO>) {
+    let mut counter: u32 = 0;
+    loop {
+        sender.send(counter);
+        counter += 1;
+    }
+}
+
 #[scars::entry(name = "main", priority = 1, stack_size = 2048)]
 fn main() {
-    let thread = make_thread!("thread", THREAD_PRIO, THREAD_STACK_SIZE);
     let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CEILING_PRIO);
 
-    thread.start(move || {
-        // thread closure captures `sender`
-        let mut counter: u32 = 0;
-        loop {
-            sender.send(counter);
-            counter += 1;
-        }
-    });
+    thread(sender).start();
 
     loop {
         let value = receiver.recv();
@@ -81,27 +83,44 @@ from the priority ceiling protocol, it may not acquire a `CeilingLock`. An attem
 acquire a `CeilingLock` from the idle thread will result in a runtime error.
 
 ## Interrupt Handlers
-Interrupt handlers are created similarly to threads with `make_interrupt_handler!` macro.
+Interrupt handlers are created similarly to threads with `interrupt_handler` attribute
+macro.
 ```rust
-use scars::pac;
-const INTERRUPT_PRIO: Priority = Priority::thread(2);
+use scars::khal::{Interrupt, Peripherals, pac::EXTI};
+use scars::sync::channel::Sender;
+const INTERRUPT_PRIO: Priority = Priority::interrupt(2);
 const CEILING_PRIO: Priority = INTERRUPT_PRIO;
 const CHANNEL_CAPACITY: usize = 10;
 
+#[scars::interrupt_handler(interrupt = Interrupt::EXTI0, priority = INTERRUPT_PRIO)]
+fn exti0_handler(sender: Sender<u32, CEILING_PRIO>, mut counter: u32, exti: EXTI) {
+    // Interrupt handler closure captures `sender` and `counter`
+    counter += 1;
+    // Must use non-blocking `try_send` in interrupt
+    let _ = sender.try_send(counter);
+
+    // Clear EXTI0 interrupt flag
+    exti.pr.write(|w| w.pr0().set_bit());
+}
+
 #[scars::entry(name = "main", priority = 1, stack_size = 2048)]
 fn main() {
-    let uart_handler = make_interrupt_handler!(pac::Interrupt::UART1, INTERRUPT_PRIO);
-    let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CEILING_PRIO);
-    let mut counter: u32 = 0;
+    let Peripherals { SYSCFG, EXTI, .. } = Peripherals::take().unwrap();
 
-    uart_handler.attach(move || {
-        // Interrupt handler closure captures `sender` and `counter`
-        counter += 1;
-        // Must use non-blocking `try_send` in interrupt
-        let _ = sender.try_send(counter);
-    });
-    
-    uart_handler.enable_interrupt();
+    // Source EXTI0 interrupt from PA0 GPIO
+    SYSCFG.exticr1.write(|w| unsafe { w.exti0().bits(0) });
+
+    // Enable EXTI0 interrupt in EXTI
+    EXTI.imr.write(|w| w.mr0().set_bit());
+
+    // Trigger interrupt from rising edge
+    EXTI.rtsr.write(|w| w.tr0().set_bit());
+
+    let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CEILING_PRIO);
+    let counter: u32 = 0;
+
+    let exti0 = exti0_handler(sender, counter, EXTI);
+    exti0.enable();
 
     loop {
         let value = receiver.recv();

@@ -4,10 +4,10 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 use scars::events::wait_events_until;
 use scars::prelude::*;
-use scars::sync::{Condvar, Mutex};
+use scars::sync::{Condvar, Mutex, channel::Sender};
 use scars::thread_suspend;
 use scars::time::Duration;
 use scars_test;
@@ -27,21 +27,21 @@ const CEILING: Priority = THREAD0_PRIORITY;
 
 const UNBLOCK_EVENT: u32 = 1u32;
 
+#[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
+fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+    let deadline = scars::time::Instant::now() + Duration::from_millis(10);
+    let wait_result = wait_events_until(UNBLOCK_EVENT, Some(deadline));
+    assert!(wait_result.is_err());
+    sender.send(0);
+    thread_suspend(None);
+}
+
 /// Block a thread waiting for event and let it timeout
 #[test_case]
 pub fn block_waiting_event() {
     let (sender, receiver) = make_channel!(u32, CAPACITY, CEILING);
 
-    let thread0 = make_thread!("thread0", THREAD0_PRIORITY, STACK_SIZE);
-    let thread0_ref = thread0.as_ref();
-    let sender0 = sender.clone();
-    thread0.start(move || {
-        let deadline = scars::time::Instant::now() + Duration::from_millis(10);
-        let wait_result = wait_events_until(UNBLOCK_EVENT, Some(deadline));
-        assert!(wait_result.is_err());
-        sender0.send(0);
-        thread_suspend(None);
-    });
+    thread0(sender).start();
 
     assert_eq!(receiver.recv(), 0);
 

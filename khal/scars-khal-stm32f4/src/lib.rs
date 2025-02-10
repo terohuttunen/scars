@@ -17,7 +17,7 @@ pub use stm32f4xx_hal::pac::Interrupt;
 pub use stm32f4xx_hal::{
     pac,
     prelude::*,
-    rcc::{Clocks, Enable, Rcc, RccBus, APB1},
+    rcc::{APB1, Clocks, Enable, Rcc, RccBus},
     timer::{Event, Timer},
 };
 
@@ -76,7 +76,7 @@ impl HardwareAbstractionLayer for STM32F4 {
     unsafe fn init(hal: *mut Self) {
         let pac::Peripherals {
             TIM2, TIM5, RCC, ..
-        } = pac::Peripherals::steal();
+        } = unsafe { pac::Peripherals::steal() };
 
         let cortex_m::Peripherals {
             FPU,
@@ -84,29 +84,31 @@ impl HardwareAbstractionLayer for STM32F4 {
             SYST,
             SCB,
             ..
-        } = cortex_m::Peripherals::steal();
+        } = unsafe { cortex_m::Peripherals::steal() };
 
         pac::TIM2::enable(&RCC);
         pac::TIM5::enable(&RCC);
 
-        pac::NVIC::unmask(pac::Interrupt::TIM2);
+        unsafe { pac::NVIC::unmask(pac::Interrupt::TIM2) };
 
         let rcc = RCC.constrain();
 
         let clocks = rcc.cfgr.use_hse(8.MHz()).sysclk(180.MHz()).freeze();
 
-        *hal = STM32F4 {
-            nvic: Mutex::new(RefCell::new(NVIC)),
-            fpu: FPU,
-            syst: SYST,
-            tim2: TIM2,
-            tim5: TIM5,
-            scb: SCB,
-            clocks,
-        };
+        unsafe {
+            *hal = STM32F4 {
+                nvic: Mutex::new(RefCell::new(NVIC)),
+                fpu: FPU,
+                syst: SYST,
+                tim2: TIM2,
+                tim5: TIM5,
+                scb: SCB,
+                clocks,
+            };
 
-        (*hal).setup_clock();
-        (*hal).set_interrupt_priority(pac::Interrupt::TIM2 as u16, 0);
+            (*hal).setup_clock();
+            (*hal).set_interrupt_priority(pac::Interrupt::TIM2 as u16, 0);
+        }
     }
 }
 

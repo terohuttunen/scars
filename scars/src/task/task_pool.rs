@@ -1,6 +1,5 @@
-use super::{InterruptExecutor, JoinHandle, LocalExecutor, Task, ThreadExecutor};
-use crate::tls::LocalStorage;
-use crate::{ExecutionContext, Scheduler};
+use super::{LocalExecutor, Task, TaskHandle};
+
 use core::cell::UnsafeCell;
 use core::future::Future;
 use core::pin::Pin;
@@ -26,50 +25,41 @@ impl<F: Future, const N: usize> TaskPool<F, N> {
         }
     }
 
-    pub fn spawn(&'static self, future: F) -> Result<JoinHandle<F::Output>, ()> {
-        match Scheduler::current_execution_context() {
-            ExecutionContext::Interrupt(_) => {
-                let interrupt_executor = LocalStorage::get::<InterruptExecutor>().unwrap();
-                self.spawn_in_interrupt(interrupt_executor, future)
-            }
-            ExecutionContext::Thread(_) => {
-                let thread_executor = LocalStorage::get::<ThreadExecutor>().unwrap();
-                self.spawn_in_thread(thread_executor, future)
-            }
-        }
-    }
-
-    pub fn spawn_in_thread(
-        &'static self,
-        executor: &'static ThreadExecutor,
-        future: F,
-    ) -> Result<JoinHandle<F::Output>, ()> {
+    pub fn alloc(&'static self) -> Option<TaskBuilder<F>> {
         self.task_cells
             .iter()
             .find_map(|task_cell| unsafe { &mut *task_cell.get() }.claim())
             .map(|task| Pin::static_mut(task))
-            .map(|pinned_task| {
-                let task_handle = pinned_task.init(future, LocalExecutor::Thread(executor));
-                Ok(executor.spawn(task_handle))
-            })
-            .unwrap_or(Err(()))
-    }
-
-    pub fn spawn_in_interrupt(
-        &'static self,
-        executor: &'static InterruptExecutor,
-        future: F,
-    ) -> Result<JoinHandle<F::Output>, ()> {
-        self.task_cells
-            .iter()
-            .find_map(|task_cell| unsafe { &mut *task_cell.get() }.claim())
-            .map(|task| Pin::static_mut(task))
-            .map(|pinned_task| {
-                let task_handle = pinned_task.init(future, LocalExecutor::Interrupt(executor));
-                Ok(executor.spawn(task_handle))
-            })
-            .unwrap_or(Err(()))
+            .map(|pinned_task| TaskBuilder { task: pinned_task })
     }
 }
 
 unsafe impl<F: Future, const N: usize> Sync for TaskPool<F, N> {}
+
+pub struct TaskBuilder<F: Future + 'static> {
+    task: Pin<&'static mut Task<F>>,
+}
+
+impl<F: Future> TaskBuilder<F> {
+    pub fn attach<C: FnOnce() -> F>(self, future: C) -> InitializedTask<F::Output> {
+        let future = future();
+        // Task is initialized without executor
+        InitializedTask {
+            task_handle: self.task.init(future, LocalExecutor::None),
+        }
+    }
+}
+
+// Task is initialized and ready to be executed. Executor has not been yet assigned.
+pub struct InitializedTask<T> {
+    task_handle: TaskHandle<T>,
+}
+
+impl<T> InitializedTask<T> {
+    pub(crate) fn with_executor(mut self, executor: LocalExecutor) -> TaskHandle<T> {
+        unsafe {
+            self.task_handle.as_mut().set_executor(executor);
+        }
+        self.task_handle
+    }
+}
