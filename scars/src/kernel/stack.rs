@@ -20,14 +20,12 @@ impl StackElement {
 }
 
 pub struct Stack<const SIZE: usize>(
-    Aligned<StackAlignment, ConstStaticCell<[MaybeUninit<u8>; SIZE]>>,
+    ConstStaticCell<Aligned<StackAlignment, [MaybeUninit<u8>; SIZE]>>,
 );
 
 impl<const SIZE: usize> Stack<SIZE> {
     pub const fn new() -> Stack<SIZE> {
-        Stack(Aligned(ConstStaticCell::new(
-            MaybeUninit::uninit().transpose(),
-        )))
+        Stack(ConstStaticCell::new(Aligned([MaybeUninit::uninit(); SIZE])))
     }
 
     pub fn init(&'static self) -> StackRefMut {
