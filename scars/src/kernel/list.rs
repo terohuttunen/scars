@@ -1,5 +1,4 @@
 use crate::cell::LockedRefCell;
-use crate::sync::{Lock, NoLock};
 use core::cell::{Cell, Ref, RefMut};
 use core::marker::PhantomData;
 use core::marker::PhantomPinned;
@@ -403,7 +402,7 @@ impl<'list, T: LinkedListNode<N>, N: LinkedListTag> CursorMut<'list, T, N> {
 #[cfg(test)]
 mod test {
     use super::{LinkedList, LinkedListTag, Node};
-    use core::pin::{pin, Pin};
+    use core::pin::{Pin, pin};
 
     struct Tag0 {}
 

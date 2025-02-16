@@ -1,11 +1,11 @@
 use crate::cell::LockedOnceCell;
-use crate::sync::{InterruptLock, Lock};
+use crate::sync::{InterruptLock, NestingLock};
 
-pub struct OnceLock<T, L: Lock = InterruptLock> {
+pub struct OnceLock<T, L: NestingLock = InterruptLock> {
     cell: LockedOnceCell<T, L>,
 }
 
-impl<T, L: Lock> OnceLock<T, L> {
+impl<T, L: NestingLock> OnceLock<T, L> {
     pub const fn new() -> OnceLock<T, L> {
         OnceLock {
             cell: LockedOnceCell::new(),
@@ -21,14 +21,14 @@ impl<T, L: Lock> OnceLock<T, L> {
     }
 
     pub fn set(&self, value: T) -> Result<(), T> {
-        <L as Lock>::with(|key| self.cell.set(key, value))
+        <L as NestingLock>::with(|key| self.cell.set(key, value))
     }
 
     pub fn get_or_init<F>(&self, init: F) -> &T
     where
         F: FnOnce() -> T,
     {
-        <L as Lock>::with(|key| self.cell.get_or_init(key, init))
+        <L as NestingLock>::with(|key| self.cell.get_or_init(key, init))
     }
 
     pub fn into_inner(self) -> Option<T> {

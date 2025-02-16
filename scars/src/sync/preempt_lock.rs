@@ -1,4 +1,4 @@
-use super::{KeyToken, Lock, TryLockError};
+use super::{NestingLock, TryLockError};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -18,66 +18,32 @@ impl<'lock> PreemptLockKey<'lock> {
     }
 }
 
-impl<'a> KeyToken<'a> for PreemptLockKey<'a> {
-    unsafe fn new() -> Self {
-        unsafe { PreemptLockKey::new() }
-    }
-}
-
 pub struct PreemptLock {}
 
 impl PreemptLock {
     #[inline(always)]
-    pub fn with<R>(f: impl FnOnce(<Self as Lock>::Key<'_>) -> R) -> R
-    where
-        Self: Sized,
-    {
-        <Self as Lock>::with(f)
+    pub fn with<R>(f: impl FnOnce(PreemptLockKey<'_>) -> R) -> R {
+        let restore_state = unsafe { Self::acquire_nesting_lock() };
+        let key = unsafe { PreemptLockKey::new() };
+        let result = f(key);
+        unsafe { Self::release_nesting_lock(restore_state) };
+        result
     }
 
     #[inline(always)]
-    pub fn try_with<R>(f: impl FnOnce(<Self as Lock>::Key<'_>) -> R) -> Result<R, TryLockError> {
-        <Self as Lock>::try_with(f)
-    }
-}
-
-unsafe impl Send for PreemptLock {}
-unsafe impl Sync for PreemptLock {}
-
-static PREEMPT_LOCK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-mod sealed {
-    use crate::kernel::interrupt::RawInterruptHandler;
-    use crate::thread::RawThread;
-
-    pub enum PreemptLockRestoreState {
-        Interrupt(*const RawInterruptHandler),
-        Thread(*const RawThread),
-    }
-
-    impl PreemptLockRestoreState {
-        pub fn is_interrupt(&self) -> bool {
-            matches!(self, PreemptLockRestoreState::Interrupt(_))
-        }
-
-        pub fn is_null(&self) -> bool {
-            match self {
-                PreemptLockRestoreState::Interrupt(current_interrupt) => {
-                    current_interrupt.is_null()
-                }
-                PreemptLockRestoreState::Thread(current_thread) => current_thread.is_null(),
+    pub fn try_with<R>(f: impl FnOnce(PreemptLockKey<'_>) -> R) -> Result<R, TryLockError> {
+        match unsafe { Self::try_acquire_nesting_lock() } {
+            Ok(restore_state) => {
+                let key = unsafe { PreemptLockKey::new() };
+                let result = f(key);
+                unsafe { Self::release_nesting_lock(restore_state) };
+                Ok(result)
             }
+            Err(err) => Err(err),
         }
     }
-}
 
-pub type PreemptLockRestoreState = sealed::PreemptLockRestoreState;
-
-impl Lock for PreemptLock {
-    type RestoreState = PreemptLockRestoreState;
-    type Key<'a> = PreemptLockKey<'a>;
-
-    unsafe fn section_start() -> Self::RestoreState {
+    unsafe fn acquire_nesting_lock() -> PreemptLockRestoreState {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(_current_interrupt) => {
                 crate::runtime_error!(RuntimeError::InterruptHandlerViolation)
@@ -90,7 +56,7 @@ impl Lock for PreemptLock {
         }
     }
 
-    unsafe fn try_section_start() -> Result<Self::RestoreState, TryLockError> {
+    unsafe fn try_acquire_nesting_lock() -> Result<PreemptLockRestoreState, TryLockError> {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
                 // To acquire in interrupt, the lock may not be held by a thread or a
@@ -129,7 +95,7 @@ impl Lock for PreemptLock {
         }
     }
 
-    unsafe fn section_end(restore_state: Self::RestoreState) {
+    unsafe fn release_nesting_lock(restore_state: PreemptLockRestoreState) {
         if restore_state.is_null() {
             let key = unsafe { PreemptLockKey::new() };
 
@@ -161,6 +127,54 @@ impl Lock for PreemptLock {
                 }
             }
         }
+    }
+}
+
+unsafe impl Send for PreemptLock {}
+unsafe impl Sync for PreemptLock {}
+
+static PREEMPT_LOCK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+mod sealed {
+    use crate::kernel::interrupt::RawInterruptHandler;
+    use crate::thread::RawThread;
+
+    pub enum PreemptLockRestoreState {
+        Interrupt(*const RawInterruptHandler),
+        Thread(*const RawThread),
+    }
+
+    impl PreemptLockRestoreState {
+        pub fn is_interrupt(&self) -> bool {
+            matches!(self, PreemptLockRestoreState::Interrupt(_))
+        }
+
+        pub fn is_null(&self) -> bool {
+            match self {
+                PreemptLockRestoreState::Interrupt(current_interrupt) => {
+                    current_interrupt.is_null()
+                }
+                PreemptLockRestoreState::Thread(current_thread) => current_thread.is_null(),
+            }
+        }
+    }
+}
+
+pub type PreemptLockRestoreState = sealed::PreemptLockRestoreState;
+
+impl NestingLock for PreemptLock {
+    type Key<'a> = PreemptLockKey<'a>;
+
+    fn with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> R {
+        Self::with(f)
+    }
+
+    fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
+        Self::try_with(f)
+    }
+
+    unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
+        unsafe { PreemptLockKey::new() }
     }
 }
 

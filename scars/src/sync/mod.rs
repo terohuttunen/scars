@@ -58,47 +58,40 @@ pub enum TryLockError {
     WouldBlock,
 }
 
-pub trait KeyToken<'a>: Copy {
-    unsafe fn new() -> Self
-    where
-        Self: Sized;
+// A Guard may or may not implement this trait, depending on the lock type.
+pub trait Unlock {
+    unsafe fn unlock(&mut self);
+
+    fn relock(&mut self);
 }
 
-pub trait Lock {
-    type RestoreState;
-    type Key<'a>: KeyToken<'a>;
-
-    // SAFETY: there must always be a corresponding section_end() call
-    // in exactly reverse order to section starts.
-    unsafe fn section_start() -> Self::RestoreState;
-
-    unsafe fn try_section_start() -> Result<Self::RestoreState, TryLockError>;
-
-    // SAFETY: there must always be a corresponding section_start() call
-    // in exactly reverse order to section ends.
-    unsafe fn section_end(restore_state: Self::RestoreState);
-
-    // Nested locks
-    fn with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> R
+pub trait ScopedLock {
+    // RAII-style lock guard that releases the lock when dropped. Guards
+    // may be dropped in any order.
+    type Guard<'lock>
     where
-        Self: Sized,
-    {
-        let restore_state = unsafe { Self::section_start() };
-        let key = unsafe { Self::Key::new() };
-        let rval = f(key);
-        unsafe { Self::section_end(restore_state) };
-        rval
-    }
+        Self: 'lock;
 
-    fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
-        match unsafe { Self::try_section_start() } {
-            Ok(restore_state) => {
-                let key = unsafe { Self::Key::new() };
-                let rval = f(key);
-                unsafe { Self::section_end(restore_state) };
-                Ok(rval)
-            }
-            Err(err) => Err(err),
-        }
+    fn lock(&self) -> Self::Guard<'_>;
+
+    fn try_lock(&self) -> Result<Self::Guard<'_>, TryLockError>;
+
+    fn get_key<'guard, 'lock: 'guard>(_guard: &'guard Self::Guard<'lock>) -> Self::Key<'guard>
+    where
+        Self: NestingLock,
+    {
+        unsafe { Self::get_key_unchecked() }
     }
+}
+
+// A lock that can be acquired and released in a nested fashion. The lock is released
+// in reverse order of acquisition.
+pub trait NestingLock {
+    type Key<'guard>: Copy;
+
+    fn with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> R;
+
+    fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError>;
+
+    unsafe fn get_key_unchecked<'a>() -> Self::Key<'a>;
 }

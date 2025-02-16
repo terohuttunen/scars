@@ -17,7 +17,7 @@ use crate::kernel::{
 };
 use crate::printkln;
 use crate::sync::{
-    InterruptLock, KeyToken, Lock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
+    InterruptLock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
     preempt_lock::PreemptLockKey,
 };
 use crate::thread::{
@@ -823,7 +823,7 @@ impl Scheduler {
                     // SAFETY: list is accessed within raised priority section.
                     // TODO: priority is not immutable
                     let waiter_queue = unsafe { &mut *wait_list };
-                    let old_prio = icb.raise_section_lock_priority(ceiling);
+                    let old_prio = icb.raise_nesting_lock_priority(ceiling);
 
                     let thread_prio = suspendable.priority();
 
@@ -831,7 +831,7 @@ impl Scheduler {
                         queue_waiter.priority() >= thread_prio
                     });
 
-                    icb.set_section_lock_priority(old_prio);
+                    icb.set_nesting_lock_priority(old_prio);
 
                     scheduler.block_thread(pkey, blocked_thread, None);
                 }

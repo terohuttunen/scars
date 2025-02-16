@@ -10,7 +10,7 @@ use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::kernel::tracing;
 use crate::kernel::waiter::Suspendable;
 use crate::sync::{
-    KeyToken, Lock, OnceLock,
+    OnceLock,
     ceiling_lock::RawCeilingLock,
     interrupt_lock::{InterruptLock, InterruptLockKey},
 };
@@ -189,7 +189,7 @@ impl RawInterruptHandler {
         });
 
         // TODO: this should use some shared code
-        let old_priority = self.raise_section_lock_priority(self.base_priority);
+        let old_priority = self.raise_nesting_lock_priority(self.base_priority);
         unsafe {
             interrupt_context(self as *const _ as *mut _, || {
                 if let Some(executor) = LocalStorage::get::<InterruptExecutor>() {
@@ -197,7 +197,7 @@ impl RawInterruptHandler {
                 }
             });
         }
-        self.set_section_lock_priority(old_priority);
+        self.set_nesting_lock_priority(old_priority);
     }
 
     pub fn is_attached(&self, _key: InterruptLockKey<'_>) -> bool {
@@ -209,7 +209,7 @@ impl RawInterruptHandler {
     }
 
     // Returns previous priority
-    pub(crate) fn raise_section_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
+    pub(crate) fn raise_nesting_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
         let new_priority = new_priority.max(self.base_priority).into();
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
@@ -228,7 +228,7 @@ impl RawInterruptHandler {
         }
     }
 
-    pub(crate) fn set_section_lock_priority(&self, new_priority: PriorityStatus) {
+    pub(crate) fn set_nesting_lock_priority(&self, new_priority: PriorityStatus) {
         let new_priority = new_priority.into();
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
@@ -298,7 +298,7 @@ impl RawInterruptHandler {
 
     pub(crate) fn poll_executor(&self) {
         // Raise priority to interrupt's priority, as it would be when polled due to interrupt.
-        let old_priority = self.raise_section_lock_priority(self.base_priority);
+        let old_priority = self.raise_nesting_lock_priority(self.base_priority);
 
         // Polling is done within the interrupt's context.
         unsafe {
@@ -312,7 +312,7 @@ impl RawInterruptHandler {
             });
         }
 
-        self.set_section_lock_priority(old_priority);
+        self.set_nesting_lock_priority(old_priority);
     }
 
     pub fn local_storage(&self) -> Option<&LocalStorage> {

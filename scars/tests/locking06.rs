@@ -44,9 +44,8 @@ fn low_thread(
 
     // Low priority thread raises its priority with a ceiling lock
     let pinned = core::pin::pin!(lock);
-    unsafe {
-        pinned.as_ref().lock();
-    }
+    let guard = pinned.as_ref().lock();
+
     // Medium priority thread cannot start because of the ceiling lock
     medium_thread(medium_sender.clone()).start();
     // Low priority thread goes to sleep, but idle thread will
@@ -56,7 +55,7 @@ fn low_thread(
     scars::delay(Duration::from_millis(50));
     assert!(IDLE_HAS_RUN.load(Ordering::SeqCst));
     sender0.send(2);
-    unsafe { pinned.as_ref().unlock() };
+    drop(guard);
     // Medium priority thread can run now, and then low priority continues
     sender0.send(0);
     loop {

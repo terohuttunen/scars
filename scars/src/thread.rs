@@ -115,11 +115,11 @@ pub struct RawThread {
     // Either lock priority can be INVALID_PRIORITY if no such lock is held.
     lock_priorities: AtomicPriorityStatusPair,
 
-    // List of locks which this thread is the current owner of. Ordered in descending
+    // List of scioed locks which this thread is the current owner of. Ordered in descending
     // ceiling priority order so that list head is always one of the highest priority
-    // locks. List of owned locks must be maintained because in Rust programming model
-    // nested locks may be released in any order.
-    pub(crate) owned_locks: LockedRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
+    // locks. List of scoped locks must be maintained because in Rust programming model
+    // nested lock guards may be dropped in any order.
+    pub(crate) scoped_locks: LockedRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
 
     // Thread state that tells in which queue the thread currently is
     //  Stopped: Not in any queue
@@ -157,7 +157,7 @@ impl RawThread {
             )),
             main_fn,
             stack: MaybeUninit::uninit(),
-            owned_locks: LockedRefCell::new(LinkedList::new()),
+            scoped_locks: LockedRefCell::new(LinkedList::new()),
             exec_queue_link: Node::new(),
             suspendable: Suspendable::new(),
             waited_events_mask: AtomicU32::new(0),
@@ -207,20 +207,25 @@ impl RawThread {
         ThreadRef::new(self.get_ref())
     }
 
-    pub(crate) unsafe fn acquire_lock<'key>(
+    pub(crate) unsafe fn acquire_scoped_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
-        if lock.owner.get(pkey) != INVALID_THREAD_ID {
-            panic!("This should not be possible");
-        }
-
         match self.state.get(pkey) {
             ThreadExecutionState::Running => {
-                lock.owner.set(pkey, self.thread_id);
+                lock.owner
+                    .compare_exchange(
+                        core::ptr::null_mut(),
+                        self as *const _ as *mut (),
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .unwrap_or_else(|_| {
+                        panic!("Lock already owned. The scheduler should have prevented this.")
+                    });
                 let ceiling_priority = lock.ceiling_priority;
-                self.owned_locks
+                self.scoped_locks
                     .borrow_mut(pkey)
                     .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
 
@@ -233,22 +238,19 @@ impl RawThread {
         }
     }
 
-    pub(crate) unsafe fn release_lock<'key>(
+    pub(crate) unsafe fn release_scoped_lock<'key>(
         &'static self,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
-        match lock.owner.get(pkey) {
-            INVALID_THREAD_ID => {
-                // Thread has not been acquired, nothing to release
-                ()
-            }
-            thread_id if thread_id == self.thread_id => {
+        let owner = lock.owner.load(Ordering::Relaxed);
+        if !owner.is_null() {
+            if owner == self as *const _ as *mut () {
                 unsafe {
                     // SAFETY: The lock is owned by the thread, and the lock is being released.
-                    self.owned_locks.borrow_mut(pkey).remove(lock);
+                    self.scoped_locks.borrow_mut(pkey).remove(lock);
                 }
-                lock.owner.set(pkey, INVALID_THREAD_ID);
+                lock.owner.store(core::ptr::null_mut(), Ordering::Release);
 
                 self.update_owned_lock_priority(pkey);
 
@@ -257,8 +259,7 @@ impl RawThread {
                 // below the priority of another ready thread, rescheduling must
                 // be executed.
                 Scheduler::cond_reschedule(pkey);
-            }
-            _ => {
+            } else {
                 // The `thread` is not the owner of the lock. A lock can be released only
                 // by the owner.
                 crate::runtime_error!(RuntimeError::LockOwnerViolation);
@@ -283,7 +284,7 @@ impl RawThread {
     }
 
     // Returns previous priority
-    pub(crate) fn raise_section_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
+    pub(crate) fn raise_nesting_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
         let new_priority = new_priority.max(self.base_priority);
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
@@ -305,7 +306,7 @@ impl RawThread {
         }
     }
 
-    pub(crate) fn set_section_lock_priority(&self, new_priority: PriorityStatus) {
+    pub(crate) fn set_nesting_lock_priority(&self, new_priority: PriorityStatus) {
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
             let new_priorities = (new_priority, current_priorities.1);
@@ -326,7 +327,7 @@ impl RawThread {
     }
 
     fn update_owned_lock_priority<'key>(&self, pkey: PreemptLockKey<'key>) {
-        let new_priority = if let Some(head) = self.owned_locks.borrow(pkey).head() {
+        let new_priority = if let Some(head) = self.scoped_locks.borrow(pkey).head() {
             PriorityStatus::from(head.ceiling_priority)
         } else {
             PriorityStatus::invalid()

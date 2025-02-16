@@ -1,24 +1,24 @@
-use crate::sync::{KeyToken, Lock, Once};
+use crate::sync::{NestingLock, Once};
 use core::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut, UnsafeCell};
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
 #[repr(transparent)]
-pub struct LockedCell<T: ?Sized, L: Lock> {
+pub struct LockedCell<T: ?Sized, L: NestingLock> {
     _phantom: PhantomData<L>,
     value: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized, L: Lock> Send for LockedCell<T, L>
+unsafe impl<T: ?Sized, L: NestingLock> Send for LockedCell<T, L>
 where
     T: Send,
     L: Send,
 {
 }
 
-unsafe impl<T: ?Sized, L: Lock> Sync for LockedCell<T, L> where L: Sync {}
+unsafe impl<T: ?Sized, L: NestingLock> Sync for LockedCell<T, L> where L: Sync {}
 
-impl<T, L: Lock> LockedCell<T, L> {
+impl<T, L: NestingLock> LockedCell<T, L> {
     #[inline]
     pub const fn new(value: T) -> LockedCell<T, L> {
         LockedCell {
@@ -49,7 +49,7 @@ impl<T, L: Lock> LockedCell<T, L> {
     }
 }
 
-impl<T: Copy, L: Lock> LockedCell<T, L> {
+impl<T: Copy, L: NestingLock> LockedCell<T, L> {
     #[inline]
     pub fn update<F>(&self, key: L::Key<'_>, f: F) -> T
     where
@@ -62,7 +62,7 @@ impl<T: Copy, L: Lock> LockedCell<T, L> {
     }
 }
 
-impl<T: ?Sized, L: Lock> LockedCell<T, L> {
+impl<T: ?Sized, L: NestingLock> LockedCell<T, L> {
     #[inline]
     pub const fn as_ptr(&self) -> *mut T {
         self.value.get()
@@ -79,45 +79,45 @@ impl<T: ?Sized, L: Lock> LockedCell<T, L> {
     }
 }
 
-impl<T: Default, L: Lock> LockedCell<T, L> {
+impl<T: Default, L: NestingLock> LockedCell<T, L> {
     pub fn take(&self, key: L::Key<'_>) -> T {
         self.replace(key, Default::default())
     }
 }
 
-impl<T: Default, L: Lock> Default for LockedCell<T, L> {
+impl<T: Default, L: NestingLock> Default for LockedCell<T, L> {
     #[inline]
     fn default() -> LockedCell<T, L> {
         LockedCell::new(Default::default())
     }
 }
 
-impl<T, L: Lock> From<T> for LockedCell<T, L> {
+impl<T, L: NestingLock> From<T> for LockedCell<T, L> {
     fn from(t: T) -> LockedCell<T, L> {
         LockedCell::new(t)
     }
 }
 
-impl<T, L: Lock> LockedCell<[T], L> {
+impl<T, L: NestingLock> LockedCell<[T], L> {
     pub fn as_slice_of_cells(&self) -> &[LockedCell<T, L>] {
         // SAFETY: `LockedCell<T, L>` has the same memory layout as `T`
         unsafe { &*(self as *const LockedCell<[T], L> as *const [LockedCell<T, L>]) }
     }
 }
 
-impl<T, L: Lock, const N: usize> LockedCell<[T; N], L> {
+impl<T, L: NestingLock, const N: usize> LockedCell<[T; N], L> {
     pub fn as_array_of_cells(&self) -> &[LockedCell<T, L>; N] {
         // SAFETY: `LockedCell<T, L>` has the same memory layout as `T`
         unsafe { &*(self as *const LockedCell<[T; N], L> as *const [LockedCell<T, L>; N]) }
     }
 }
 
-pub struct LockedRefCell<T: ?Sized, L: Lock> {
+pub struct LockedRefCell<T: ?Sized, L: NestingLock> {
     _phantom: PhantomData<L>,
     value: RefCell<T>,
 }
 
-impl<T, L: Lock> LockedRefCell<T, L> {
+impl<T, L: NestingLock> LockedRefCell<T, L> {
     pub const fn new(value: T) -> LockedRefCell<T, L> {
         LockedRefCell {
             _phantom: PhantomData,
@@ -141,7 +141,7 @@ impl<T, L: Lock> LockedRefCell<T, L> {
     }
 }
 
-impl<T: ?Sized, L: Lock> LockedRefCell<T, L> {
+impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
     #[inline]
     pub fn borrow<'key, 'a: 'key>(&'a self, _key: L::Key<'key>) -> Ref<'key, T> {
         self.value.borrow()
@@ -179,41 +179,41 @@ impl<T: ?Sized, L: Lock> LockedRefCell<T, L> {
     }
 }
 
-impl<T: Default, L: Lock> LockedRefCell<T, L> {
+impl<T: Default, L: NestingLock> LockedRefCell<T, L> {
     pub fn take<'key>(&self, _key: L::Key<'key>) -> T {
         self.value.replace(Default::default())
     }
 }
 
-unsafe impl<T: ?Sized, L: Lock> Send for LockedRefCell<T, L>
+unsafe impl<T: ?Sized, L: NestingLock> Send for LockedRefCell<T, L>
 where
     T: Send,
     L: Send,
 {
 }
 
-unsafe impl<T: ?Sized, L: Lock> Sync for LockedRefCell<T, L> where L: Sync {}
+unsafe impl<T: ?Sized, L: NestingLock> Sync for LockedRefCell<T, L> where L: Sync {}
 
-impl<T: Default, L: Lock> Default for LockedRefCell<T, L> {
+impl<T: Default, L: NestingLock> Default for LockedRefCell<T, L> {
     #[inline]
     fn default() -> LockedRefCell<T, L> {
         LockedRefCell::new(Default::default())
     }
 }
 
-impl<T, L: Lock> From<T> for LockedRefCell<T, L> {
+impl<T, L: NestingLock> From<T> for LockedRefCell<T, L> {
     fn from(t: T) -> LockedRefCell<T, L> {
         LockedRefCell::new(t)
     }
 }
 
-pub struct LockedOnceCell<T, L: Lock> {
+pub struct LockedOnceCell<T, L: NestingLock> {
     once: Once,
     value: LockedCell<MaybeUninit<T>, L>,
     _phantom: PhantomData<(L, T)>,
 }
 
-impl<T, L: Lock> LockedOnceCell<T, L> {
+impl<T, L: NestingLock> LockedOnceCell<T, L> {
     pub const fn new() -> LockedOnceCell<T, L> {
         LockedOnceCell {
             once: Once::new(),
@@ -224,7 +224,7 @@ impl<T, L: Lock> LockedOnceCell<T, L> {
 
     pub fn get(&self) -> Option<&T> {
         if self.once.is_completed() {
-            let _key = unsafe { <L as Lock>::Key::new() };
+            let _key = unsafe { L::get_key_unchecked() };
             let value = unsafe { (&*self.value.as_ptr()).assume_init_ref() };
             Some(value)
         } else {
@@ -234,7 +234,7 @@ impl<T, L: Lock> LockedOnceCell<T, L> {
 
     pub fn get_mut(&mut self) -> Option<&mut T> {
         if self.once.is_completed() {
-            let _key = unsafe { <L as Lock>::Key::new() };
+            let _key = unsafe { L::get_key_unchecked() };
             let value = unsafe { (&mut *self.value.as_ptr()).assume_init_mut() };
             Some(value)
         } else {
@@ -265,7 +265,7 @@ impl<T, L: Lock> LockedOnceCell<T, L> {
 
     pub fn into_inner(self) -> Option<T> {
         if self.once.is_completed() {
-            let key = unsafe { <L as Lock>::Key::new() };
+            let key = unsafe { L::get_key_unchecked() };
             let value = unsafe { self.value.replace(key, MaybeUninit::uninit()).assume_init() };
             Some(value)
         } else {
@@ -275,7 +275,7 @@ impl<T, L: Lock> LockedOnceCell<T, L> {
 
     pub fn take(&mut self) -> Option<T> {
         if self.once.is_completed() {
-            let key = unsafe { L::Key::new() };
+            let key = unsafe { L::get_key_unchecked() };
             let value = unsafe { self.value.replace(key, MaybeUninit::uninit()).assume_init() };
             Some(value)
         } else {

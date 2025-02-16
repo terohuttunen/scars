@@ -1,5 +1,4 @@
 use super::TryLockError;
-use crate::cell::LockedCell;
 use crate::kernel::{
     Priority,
     interrupt::RawInterruptHandler,
@@ -8,10 +7,12 @@ use crate::kernel::{
     scheduler::{ExecutionContext, Scheduler},
 };
 use crate::runtime_error;
-use crate::sync::{KeyToken, Lock, PreemptLock};
-use crate::thread::{IDLE_THREAD_ID, INVALID_THREAD_ID, LockListTag, RawThread};
+use crate::sync::{NestingLock, PreemptLock, ScopedLock, TryLockResult, Unlock};
+use crate::thread::{IDLE_THREAD_ID, LockListTag, RawThread};
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use pin_project::pin_project;
 
 /// CeilingLock is a locking primitive that allows raising the priority
@@ -28,8 +29,8 @@ pub struct RawCeilingLock {
     // Ceiling priority
     pub ceiling_priority: Priority,
 
-    // The owning thread id, or INVALID_THREAD_ID if free
-    pub(crate) owner: LockedCell<u32, PreemptLock>,
+    // The owning thread or interrupt ptr, or null if free
+    pub(crate) owner: AtomicPtr<()>,
 
     // Node for thread lock list.
     // Only one thread owns the lock at any given time, and
@@ -46,28 +47,35 @@ impl RawCeilingLock {
     pub const fn new(ceiling_priority: Priority) -> RawCeilingLock {
         RawCeilingLock {
             ceiling_priority,
-            owner: LockedCell::new(INVALID_THREAD_ID),
+            owner: AtomicPtr::new(core::ptr::null_mut()),
             lock_list_node: Node::new(),
         }
     }
 
-    unsafe fn lock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
+    unsafe fn acquire_scoped_lock_in_interrupt(
+        self: Pin<&Self>,
+        current_interrupt: &'static RawInterruptHandler,
+    ) {
         // Ceiling check: If locking interrupt has priority higher than the
         // mutex ceiling, then it violates the priority ceiling protocol.
         if current_interrupt.base_priority() > self.ceiling_priority {
             runtime_error!(RuntimeError::CeilingPriorityViolation);
         }
 
+        if current_interrupt as *const _ as *const () == self.owner.load(Ordering::Relaxed) {
+            runtime_error!(RuntimeError::RecursiveLock);
+        }
+
         unsafe { current_interrupt.acquire_lock(self) };
     }
 
-    unsafe fn lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
+    unsafe fn acquire_scoped_lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
         PreemptLock::with(|pkey| {
             if current_thread.thread_id == IDLE_THREAD_ID {
                 runtime_error!(RuntimeError::IdleThreadCeilingLock);
             }
 
-            if current_thread.thread_id == self.owner.get(pkey) {
+            if current_thread as *const _ as *const () == self.owner.load(Ordering::Relaxed) {
                 runtime_error!(RuntimeError::RecursiveLock);
             }
 
@@ -79,83 +87,146 @@ impl RawCeilingLock {
 
             // Acquisition of the lock raises the thread priority to the lock ceiling
             unsafe {
-                current_thread.acquire_lock(pkey, self);
+                current_thread.acquire_scoped_lock(pkey, self);
             }
         })
     }
 
-    pub unsafe fn lock(self: Pin<&Self>) {
+    unsafe fn acquire_scoped_lock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => unsafe {
-                self.lock_in_isr(current_interrupt)
+                self.acquire_scoped_lock_in_interrupt(current_interrupt)
             },
             ExecutionContext::Thread(current_thread) => unsafe {
-                self.lock_in_thread(current_thread)
+                self.acquire_scoped_lock_in_thread(current_thread)
             },
         }
     }
 
-    unsafe fn unlock_in_isr(self: Pin<&Self>, current_interrupt: &'static RawInterruptHandler) {
+    pub fn lock(self: Pin<&Self>) -> RawCeilingLockGuard<'_> {
+        unsafe {
+            self.acquire_scoped_lock();
+        }
+        RawCeilingLockGuard { lock: self }
+    }
+
+    unsafe fn release_scoped_lock_in_interrupt(
+        self: Pin<&Self>,
+        current_interrupt: &'static RawInterruptHandler,
+    ) {
         unsafe {
             current_interrupt.release_lock(self);
         }
     }
 
-    unsafe fn unlock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
-        PreemptLock::with(|pkey| {
-            // If lock has not been acquired by any thread
-            if self.owner.get(pkey) == INVALID_THREAD_ID {
-                return;
-            }
+    unsafe fn release_scoped_lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
+        let owner = self.owner.load(Ordering::Relaxed);
 
-            if self.owner.get(pkey) != current_thread.thread_id {
-                runtime_error!(RuntimeError::LockOwnerViolation);
-            }
+        // If lock has not been acquired by any thread. Most likely
+        // an attempt to release a lock twice. For example, guard is
+        // used to unlock the lock, and then the guard is dropped.
+        if owner.is_null() {
+            return;
+        }
 
-            unsafe {
-                current_thread.release_lock(pkey, self);
-            }
+        if owner != current_thread as *const _ as *mut () {
+            runtime_error!(RuntimeError::LockOwnerViolation);
+        }
+
+        PreemptLock::with(|pkey| unsafe {
+            current_thread.release_scoped_lock(pkey, self);
         });
     }
 
-    pub unsafe fn unlock(self: Pin<&Self>) {
+    unsafe fn release_scoped_lock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => unsafe {
-                self.unlock_in_isr(current_interrupt)
+                self.release_scoped_lock_in_interrupt(current_interrupt)
             },
             ExecutionContext::Thread(current_thread) => unsafe {
-                self.unlock_in_thread(current_thread)
+                self.release_scoped_lock_in_thread(current_thread)
             },
         }
     }
 
-    pub(crate) unsafe fn section_start(ceiling: Priority) -> CeilingLockRestoreState {
+    pub(crate) unsafe fn acquire_nesting_lock(ceiling: Priority) -> CeilingLockRestoreState {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
-                let saved_priority = current_interrupt.raise_section_lock_priority(ceiling);
+                let saved_priority = current_interrupt.raise_nesting_lock_priority(ceiling);
 
                 CeilingLockRestoreState { saved_priority }
             }
             ExecutionContext::Thread(current_thread) => {
-                let saved_priority = current_thread.raise_section_lock_priority(ceiling);
+                let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
 
                 CeilingLockRestoreState { saved_priority }
             }
         }
     }
 
-    pub(crate) unsafe fn section_end(restore_state: CeilingLockRestoreState) {
+    pub(crate) unsafe fn release_nesting_lock(restore_state: CeilingLockRestoreState) {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
-                current_interrupt.set_section_lock_priority(restore_state.saved_priority);
+                current_interrupt.set_nesting_lock_priority(restore_state.saved_priority);
             }
             ExecutionContext::Thread(current_thread) => {
-                current_thread.set_section_lock_priority(restore_state.saved_priority);
+                current_thread.set_nesting_lock_priority(restore_state.saved_priority);
                 PreemptLock::with(|pkey| {
                     Scheduler::cond_reschedule(pkey);
                 });
             }
         }
+    }
+}
+
+pub struct RawCeilingLockGuard<'lock> {
+    lock: Pin<&'lock RawCeilingLock>,
+}
+
+impl<'lock> Unlock for RawCeilingLockGuard<'lock> {
+    unsafe fn unlock(&mut self) {
+        unsafe {
+            self.lock.release_scoped_lock();
+        }
+    }
+
+    fn relock(&mut self) {
+        unsafe { self.lock.acquire_scoped_lock() }
+    }
+}
+
+impl<'lock> Deref for RawCeilingLockGuard<'lock> {
+    type Target = Pin<&'lock RawCeilingLock>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.lock
+    }
+}
+
+impl<'lock> DerefMut for RawCeilingLockGuard<'lock> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.lock
+    }
+}
+
+impl Drop for RawCeilingLockGuard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            self.unlock();
+        }
+    }
+}
+
+impl ScopedLock for RawCeilingLock {
+    type Guard<'guard> = RawCeilingLockGuard<'guard>;
+
+    fn lock(&self) -> Self::Guard<'_> {
+        let this = unsafe { Pin::new_unchecked(self) };
+        this.lock()
+    }
+
+    fn try_lock(&self) -> TryLockResult<Self::Guard<'_>> {
+        Ok(self.lock())
     }
 }
 
@@ -172,31 +243,35 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
         }
     }
 
-    pub unsafe fn lock(self: Pin<&Self>) {
+    pub fn lock(self: Pin<&Self>) -> CeilingLockGuard<'_, CEILING> {
         let this = self.project_ref();
-        unsafe {
-            this.raw.lock();
-        }
+        let raw_guard = this.raw.lock();
+        CeilingLockGuard { raw: raw_guard }
     }
 
     pub unsafe fn unlock(self: Pin<&Self>) {
         let this = self.project_ref();
         unsafe {
-            this.raw.unlock();
+            this.raw.release_scoped_lock();
         }
     }
 
     #[inline(always)]
-    pub fn with<R>(f: impl FnOnce(<Self as Lock>::Key<'_>) -> R) -> R
-    where
-        Self: Sized,
-    {
-        <Self as Lock>::with(f)
+    pub fn with<R>(f: impl FnOnce(<Self as NestingLock>::Key<'_>) -> R) -> R {
+        let restore_state = unsafe { RawCeilingLock::acquire_nesting_lock(CEILING) };
+        let key = unsafe { CeilingLockKey::new() };
+
+        let result = f(key);
+
+        unsafe { RawCeilingLock::release_nesting_lock(restore_state) };
+        result
     }
 
     #[inline(always)]
-    pub fn try_with<R>(f: impl FnOnce(<Self as Lock>::Key<'_>) -> R) -> Result<R, TryLockError> {
-        <Self as Lock>::try_with(f)
+    pub fn try_with<R>(
+        f: impl FnOnce(<Self as NestingLock>::Key<'_>) -> R,
+    ) -> Result<R, TryLockError> {
+        Ok(Self::with(f))
     }
 }
 
@@ -204,20 +279,48 @@ pub struct CeilingLockRestoreState {
     saved_priority: PriorityStatus,
 }
 
-impl<const CEILING: Priority> Lock for CeilingLock<CEILING> {
-    type RestoreState = CeilingLockRestoreState;
-    type Key<'lock> = CeilingLockKey<'lock, CEILING>;
+pub struct CeilingLockGuard<'lock, const CEILING: Priority> {
+    raw: RawCeilingLockGuard<'lock>,
+}
 
-    unsafe fn section_start() -> Self::RestoreState {
-        unsafe { RawCeilingLock::section_start(CEILING) }
+impl<'lock, const CEILING: Priority> Unlock for CeilingLockGuard<'lock, CEILING> {
+    unsafe fn unlock(&mut self) {
+        unsafe {
+            self.raw.unlock();
+        }
     }
 
-    unsafe fn try_section_start() -> Result<Self::RestoreState, TryLockError> {
-        Ok(unsafe { Self::section_start() })
+    fn relock(&mut self) {
+        self.raw.lock();
+    }
+}
+
+impl<const CEILING: Priority> ScopedLock for CeilingLock<CEILING> {
+    type Guard<'guard> = CeilingLockGuard<'guard, CEILING>;
+
+    fn lock(&self) -> Self::Guard<'_> {
+        let this = unsafe { Pin::new_unchecked(self) };
+        this.lock()
     }
 
-    unsafe fn section_end(restore_state: Self::RestoreState) {
-        unsafe { RawCeilingLock::section_end(restore_state) }
+    fn try_lock(&self) -> TryLockResult<Self::Guard<'_>> {
+        Ok(self.lock())
+    }
+}
+
+impl<const CEILING: Priority> NestingLock for CeilingLock<CEILING> {
+    type Key<'guard> = CeilingLockKey<'guard, CEILING>;
+
+    fn with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> R {
+        Self::with(f)
+    }
+
+    fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
+        Ok(Self::with(f))
+    }
+
+    unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
+        unsafe { CeilingLockKey::new() }
     }
 }
 
@@ -235,14 +338,5 @@ impl<'key, const CEILING: Priority> CeilingLockKey<'key, CEILING> {
         CeilingLockKey {
             _private: PhantomData,
         }
-    }
-}
-
-impl<'lock, const CEILING: Priority> KeyToken<'lock> for CeilingLockKey<'lock, CEILING> {
-    unsafe fn new() -> CeilingLockKey<'lock, CEILING>
-    where
-        Self: Sized,
-    {
-        unsafe { CeilingLockKey::new() }
     }
 }

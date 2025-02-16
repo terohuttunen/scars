@@ -1,6 +1,5 @@
 use crate::kernel::{interrupt::in_interrupt, priority::Priority, waiter::WaitQueue};
-use crate::sync::{MutexGuard, RawCeilingLock, mutex};
-use core::pin::Pin;
+use crate::sync::{MutexGuard, Unlock, ceiling_lock::RawCeilingLockGuard, mutex};
 
 pub struct WaitTimeoutResult(bool);
 
@@ -22,27 +21,25 @@ impl<const CEILING: Priority> Condvar<CEILING> {
     }
 
     #[inline(never)]
-    fn wait_lock(&self, lock: Pin<&RawCeilingLock>) {
+    fn wait_lock(&self, guard: &mut RawCeilingLockGuard) {
         unsafe {
-            lock.unlock();
+            guard.unlock();
         }
 
         self.waiter_queue.wait();
 
-        unsafe {
-            lock.lock();
-        }
+        guard.relock();
     }
 
     #[inline(always)]
-    pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    pub fn wait<'a, T>(&self, mut guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         if in_interrupt() {
             // Error: cannot wait condition variable in interrupt handler
             crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
         }
 
-        let lock = mutex::guard_lock(&guard);
-        self.wait_lock(lock);
+        let raw = mutex::guard_raw(&mut guard);
+        self.wait_lock(raw);
         guard
     }
 
@@ -67,18 +64,16 @@ impl<const CEILING: Priority> Condvar<CEILING> {
 
     pub async fn async_wait<'a, T>(
         &'static self,
-        guard: MutexGuard<'static, T>,
+        mut guard: MutexGuard<'static, T>,
     ) -> MutexGuard<'static, T> {
-        let lock = mutex::guard_lock(&guard);
+        let raw = mutex::guard_raw(&mut guard);
         unsafe {
-            lock.unlock();
+            raw.unlock();
         }
 
         self.waiter_queue.async_wait().await;
 
-        unsafe {
-            lock.lock();
-        }
+        raw.lock();
         guard
     }
 

@@ -57,7 +57,7 @@ fn low_thread(
 
     // Low priority thread raises its priority with a ceiling lock
     let pinned = core::pin::pin!(lock);
-    unsafe { pinned.as_ref().lock() };
+    let _guard = pinned.as_ref().lock();
     // Medium priority thread cannot run because of the ceiling lock
     medium_thread(medium_sender).start();
     // High priority thread can run because it is above the ceiling
