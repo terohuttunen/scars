@@ -244,6 +244,14 @@ impl FlowController for E310x {
     fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
         RISCV32::syscall(id, arg0, arg1, arg2)
     }
+
+    fn current_thread_context() -> *const Self::Context {
+        RISCV32::current_thread_context()
+    }
+
+    fn set_current_thread_context(context: *const Self::Context) {
+        RISCV32::set_current_thread_context(context)
+    }
 }
 
 unsafe impl Sync for E310x {}

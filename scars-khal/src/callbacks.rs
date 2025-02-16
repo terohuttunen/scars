@@ -43,11 +43,6 @@ pub trait KernelCallbacks<Context, Exception> {
             private::_private_hardware_exception_handler(exception as *const Exception as *const u8)
         }
     }
-
-    #[inline(always)]
-    fn current_thread_context() -> &'static Context {
-        unsafe { &*(private::_private_current_thread_context() as *const Context) }
-    }
 }
 
 impl<T> KernelCallbacks<T::Context, T::Fault> for T where T: FlowController {}

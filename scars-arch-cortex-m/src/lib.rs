@@ -5,9 +5,8 @@ use cortex_m::register::basepri;
 use cortex_m_rt::exception;
 use scars_khal::*;
 
-unsafe extern "C" {
-    pub unsafe static CURRENT_THREAD_CONTEXT: AtomicPtr<Context>;
-}
+#[unsafe(no_mangle)]
+pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
 
 #[repr(C)]
 #[derive(Debug)]
@@ -255,6 +254,18 @@ macro_rules! impl_flow_controller {
             #[inline(always)]
             fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
                 $crate::syscall(id, arg0, arg1, arg2)
+            }
+
+            #[inline(always)]
+            fn current_thread_context() -> *const Self::Context {
+                CURRENT_THREAD_CONTEXT.load(core::sync::atomic::Ordering::Relaxed)
+            }
+
+            #[inline(always)]
+
+            fn set_current_thread_context(context: *const Self::Context) {
+                CURRENT_THREAD_CONTEXT
+                    .store(context as *mut _, core::sync::atomic::Ordering::Relaxed);
             }
         }
     };

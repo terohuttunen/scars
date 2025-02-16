@@ -6,10 +6,6 @@ use scars_khal::*;
 
 global_asm!(include_str!("trap.S"));
 
-unsafe extern "C" {
-    unsafe static CURRENT_THREAD_CONTEXT: AtomicPtr<RISCVTrapFrame>;
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct RISCVTrapFrame {
@@ -225,6 +221,9 @@ fn abort() -> ! {
     }
 }
 
+#[unsafe(no_mangle)]
+static CURRENT_THREAD_CONTEXT: AtomicPtr<RISCVTrapFrame> = AtomicPtr::new(core::ptr::null_mut());
+
 impl FlowController for RISCV32 {
     type StackAlignment = A16;
     type Context = RISCVTrapFrame;
@@ -261,5 +260,13 @@ impl FlowController for RISCV32 {
             );
         }
         rval
+    }
+
+    fn current_thread_context() -> *const Self::Context {
+        unsafe { &*CURRENT_THREAD_CONTEXT.load(Ordering::SeqCst) }
+    }
+
+    fn set_current_thread_context(context: *const Self::Context) {
+        CURRENT_THREAD_CONTEXT.store(context as *mut _, Ordering::SeqCst);
     }
 }

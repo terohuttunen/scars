@@ -5,7 +5,7 @@ extern crate std;
 use core::cell::{Cell, UnsafeCell};
 use core::mem::MaybeUninit;
 use core::ptr::{NonNull, addr_of_mut};
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use scars_khal::*;
 
 pub mod pac {
@@ -205,6 +205,9 @@ pub enum VirtualTrap {
     // Interrupt {}
 }
 
+#[unsafe(no_mangle)]
+static CURRENT_THREAD_CONTEXT: AtomicPtr<VirtualContext> = AtomicPtr::new(core::ptr::null_mut());
+
 impl FlowController for Simulator {
     type StackAlignment = A16;
     type Context = VirtualContext;
@@ -225,6 +228,8 @@ impl FlowController for Simulator {
                 core::ptr::null_mut(),
             );
         }
+
+        CURRENT_THREAD_CONTEXT.store(context, Ordering::SeqCst);
 
         unsafe { &*context }.resume();
         loop {
@@ -275,10 +280,18 @@ impl FlowController for Simulator {
             unreachable!()
         }
     }
+
+    fn current_thread_context() -> *const VirtualContext {
+        unsafe { &*CURRENT_THREAD_CONTEXT.load(Ordering::SeqCst) }
+    }
+
+    fn set_current_thread_context(context: *const VirtualContext) {
+        CURRENT_THREAD_CONTEXT.store(context as *mut _, Ordering::SeqCst);
+    }
 }
 
 fn current_thread_context() -> &'static VirtualContext {
-    Simulator::current_thread_context()
+    unsafe { &*Simulator::current_thread_context() }
 }
 
 // Wrapper for thread main that suspends the thead until it is

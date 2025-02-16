@@ -2,11 +2,6 @@
 pub mod callbacks;
 pub use aligned::*;
 pub use callbacks::KernelCallbacks;
-use core::sync::atomic::AtomicPtr;
-
-unsafe extern "C" {
-    pub unsafe static CURRENT_TASK_CONTEXT: AtomicPtr<*const ()>;
-}
 
 unsafe extern "Rust" {
     pub unsafe fn start_kernel() -> !;
@@ -101,6 +96,10 @@ pub trait FlowController {
     fn idle();
 
     fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize;
+
+    fn current_thread_context() -> *const Self::Context;
+
+    fn set_current_thread_context(context: *const Self::Context);
 }
 
 pub trait HardwareAbstractionLayer:

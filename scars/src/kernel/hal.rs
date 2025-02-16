@@ -181,3 +181,15 @@ pub fn idle() {
 pub(crate) fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
     <kernel_hal::HAL as FlowController>::syscall(id, arg0, arg1, arg2)
 }
+
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) fn current_thread_context() -> *const Context {
+    <kernel_hal::HAL as FlowController>::current_thread_context()
+}
+
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) fn set_current_thread_context(context: *const Context) {
+    <kernel_hal::HAL as FlowController>::set_current_thread_context(context)
+}

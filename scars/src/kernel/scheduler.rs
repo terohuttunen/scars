@@ -7,7 +7,7 @@ use crate::kernel::{
     atomic_queue::AtomicQueue,
     hal::{
         Context, disable_alarm_interrupt, disable_interrupts, enable_alarm_interrupt,
-        enable_interrupts, set_alarm, start_first_thread,
+        enable_interrupts, set_alarm, set_current_thread_context, start_first_thread,
     },
     handle_runtime_error,
     interrupt::{RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold},
@@ -30,6 +30,8 @@ use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use scars_khal::{ContextInfo, FlowController};
+
+use super::hal::current_thread_context;
 
 pub struct ExecStateTag {}
 
@@ -118,9 +120,6 @@ static PENDING_RESCHEDULE_KIND: AtomicRescheduleKind =
 static SCHEDULER: SyncUnsafeCell<MaybeUninit<LockedRefCell<Scheduler, PreemptLock>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-#[unsafe(no_mangle)]
-static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
-
 pub struct Scheduler {
     // When thread execution state is one of Ready, Blocked, or Suspended, it is in
     // one of the three queues/list. Threads in Created or Started state are not yet in
@@ -170,13 +169,6 @@ impl Scheduler {
 
     fn borrow_mut(pkey: PreemptLockKey<'_>) -> RefMut<'_, Scheduler> {
         unsafe { (&*SCHEDULER.get()).assume_init_ref().borrow_mut(pkey) }
-    }
-
-    pub(crate) fn current_thread_context() -> *mut Context {
-        unsafe { &*(&*SCHEDULER.get()).assume_init_ref().as_ptr() }
-            .current_thread
-            .context
-            .as_ptr() as *mut _
     }
 
     pub(crate) fn current_execution_context() -> ExecutionContext {
@@ -661,7 +653,7 @@ impl Scheduler {
             tracing::system_idle();
         }
 
-        CURRENT_THREAD_CONTEXT.store(new.context.as_ptr() as *mut _, Ordering::Relaxed);
+        set_current_thread_context(new.context.as_ptr());
         let old = core::mem::replace(&mut self.current_thread, new);
 
         tracing::thread_exec_end(old.as_thread_ref());
@@ -941,11 +933,6 @@ impl Scheduler {
     ) -> impl Iterator<Item = ThreadInfo> {
         self.threads().map(move |thread| thread.get_info(pkey))
     }
-}
-
-#[unsafe(no_mangle)]
-pub fn _private_current_thread_context() -> *mut () {
-    Scheduler::current_thread_context() as *mut ()
 }
 
 pub fn print_threads() {
