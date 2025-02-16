@@ -6,8 +6,8 @@ use scars_khal::*;
 
 global_asm!(include_str!("trap.S"));
 
-extern "C" {
-    static CURRENT_THREAD_CONTEXT: AtomicPtr<RISCVTrapFrame>;
+unsafe extern "C" {
+    unsafe static CURRENT_THREAD_CONTEXT: AtomicPtr<RISCVTrapFrame>;
 }
 
 #[repr(C)]
@@ -60,18 +60,19 @@ impl ContextInfo for RISCVTrapFrame {
         mstatus.set_bit(7, true);
         // Set machine previous privilege bits to stay in machine mode
         mstatus.set_bits(11..13, riscv::register::mstatus::MPP::Machine as usize);
-
-        (*context).gp_regs = [0; 29];
-        (*context).gp_regs[0] = abort as usize;
-        (*context).gp_regs[1] = stack_ptr as usize;
-        (*context).gp_regs[7] = argument.map(|a| a as usize).unwrap_or(0);
-        (*context).pc = main_fn as usize;
-        (*context).mstatus = mstatus;
-        (*context).interrupt_threshold = 0;
+        unsafe {
+            (*context).gp_regs = [0; 29];
+            (*context).gp_regs[0] = abort as usize;
+            (*context).gp_regs[1] = stack_ptr as usize;
+            (*context).gp_regs[7] = argument.map(|a| a as usize).unwrap_or(0);
+            (*context).pc = main_fn as usize;
+            (*context).mstatus = mstatus;
+            (*context).interrupt_threshold = 0;
+        }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 // 'a not 'static because we might have context in stack from nested interrupt
 extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) {
     let is_async: bool = (mcause >> 31) & 1 == 1;
@@ -100,6 +101,7 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
                         context.gp_regs[14], // a7
                         context.gp_regs[7],  // a0
                         context.gp_regs[8],  // a1
+                        context.gp_regs[9],  // a2
                     )
                 };
                 context.gp_regs[10] = rval;
@@ -207,8 +209,8 @@ impl FaultInfo<RISCVTrapFrame> for RISCFault {
     }
 }
 
-extern "C" {
-    fn _start_first_thread(idle_context: *mut ()) -> !;
+unsafe extern "C" {
+    unsafe fn _start_first_thread(idle_context: *mut ()) -> !;
 }
 
 pub struct RISCV32 {}

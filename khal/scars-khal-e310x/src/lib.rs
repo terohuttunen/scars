@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(panic_info_message)]
 use const_env::from_env;
 use core::arch::global_asm;
 use riscv::register::mstatus;
@@ -22,14 +21,16 @@ impl HardwareAbstractionLayer for E310x {
     const NAME: &'static str = "e310x (RISCV32)";
 
     unsafe fn init(hal: *mut Self) {
-        let e310x::Peripherals { PLIC, CLINT, .. } = e310x::Peripherals::steal();
-        *hal = E310x {
-            clint: CLINT,
-            plic: PLIC,
-        };
+        unsafe {
+            let e310x::Peripherals { PLIC, CLINT, .. } = e310x::Peripherals::steal();
+            *hal = E310x {
+                clint: CLINT,
+                plic: PLIC,
+            };
 
-        // Enable external interrupts in PLIC
-        riscv::register::mie::set_mext();
+            // Enable external interrupts in PLIC
+            riscv::register::mie::set_mext();
+        }
     }
 }
 
@@ -151,14 +152,14 @@ impl InterruptController for E310x {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn _save_interrupt_threshold(context: &mut <E310x as FlowController>::Context) {
     let plic = unsafe { &*e310x::PLIC::ptr() };
     let threshold = plic.threshold.read().bits();
     context.interrupt_threshold = threshold as usize;
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn _restore_interrupt_threshold(context: &mut <E310x as FlowController>::Context) {
     let plic = unsafe { &mut *(e310x::PLIC::ptr() as *mut e310x::plic::RegisterBlock) };
     plic.threshold
@@ -222,6 +223,7 @@ impl AlarmClockController for E310x {
 impl FlowController for E310x {
     type Context = <RISCV32 as FlowController>::Context;
     type Fault = <RISCV32 as FlowController>::Fault;
+    type StackAlignment = <RISCV32 as FlowController>::StackAlignment;
 
     fn start_first_thread(idle_context: *mut Self::Context) -> ! {
         RISCV32::start_first_thread(idle_context)
@@ -246,7 +248,7 @@ impl FlowController for E310x {
 
 unsafe impl Sync for E310x {}
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn init() {
     unsafe {
         start_kernel();
