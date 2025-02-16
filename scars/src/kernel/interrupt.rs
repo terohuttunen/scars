@@ -36,7 +36,7 @@ use core::ptr::{NonNull, addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use core::task::Poll;
 
-use super::atomic_list::{AtomicNode, AtomicQueue, impl_atomic_linked};
+use super::atomic_queue::{AtomicNode, AtomicQueue, impl_atomic_linked};
 use super::list::LinkedListNode;
 
 use static_cell::ConstStaticCell;

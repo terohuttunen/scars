@@ -186,10 +186,10 @@ where
 
 macro_rules! impl_atomic_linked {
     ($node_name:ident, $t:ty, $n:ty) => {
-        impl $crate::kernel::atomic_list::AtomicQueueNode<$n> for $t {
+        impl $crate::kernel::atomic_queue::AtomicQueueNode<$n> for $t {
             fn get_node<'item>(
                 &'item self,
-            ) -> &'item $crate::kernel::atomic_list::AtomicNode<Self, $n> {
+            ) -> &'item $crate::kernel::atomic_queue::AtomicNode<Self, $n> {
                 &self.$node_name
             }
 

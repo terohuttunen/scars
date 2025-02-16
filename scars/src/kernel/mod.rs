@@ -19,7 +19,7 @@ use scars_khal::{ContextInfo, FlowController};
 pub(crate) use scheduler::Scheduler;
 pub(crate) use stack::Stack;
 pub mod abort;
-pub mod atomic_list;
+pub mod atomic_queue;
 pub(crate) mod hal;
 pub mod list;
 pub mod syscall;

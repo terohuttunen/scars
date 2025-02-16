@@ -5,7 +5,7 @@ use crate::events::{EXECUTOR_WAKEUP_EVENT, wait_events_until};
 use crate::kernel::interrupt::InterruptRef;
 use crate::kernel::list::LinkedList;
 use crate::kernel::waiter::WaitQueueTag;
-use crate::kernel::{Scheduler, atomic_list::AtomicQueue, scheduler::ExecutionContext};
+use crate::kernel::{Scheduler, atomic_queue::AtomicQueue, scheduler::ExecutionContext};
 use crate::thread::ThreadRef;
 use crate::time::{Duration, Instant};
 use crate::tls::LocalStorage;

@@ -1,5 +1,5 @@
 use super::LocalExecutor;
-use crate::kernel::atomic_list::*;
+use crate::kernel::atomic_queue::*;
 use crate::kernel::list::{LinkedListTag, Node, impl_linked};
 use crate::kernel::waiter::{Suspendable, WaitQueueTag};
 use crate::time::Instant;

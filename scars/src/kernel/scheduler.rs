@@ -4,7 +4,7 @@ use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, impl_linked
 use crate::kernel::tracing;
 use crate::kernel::{
     RuntimeError, Stack, ThreadPriority,
-    atomic_list::AtomicQueue,
+    atomic_queue::AtomicQueue,
     hal::{
         Context, disable_alarm_interrupt, disable_interrupts, enable_alarm_interrupt,
         enable_interrupts, set_alarm, start_first_thread,
