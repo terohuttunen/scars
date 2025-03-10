@@ -28,7 +28,8 @@ as well as pthreads based simulator are implemented. FPU support is planned.
 ## Threads
 The entry thread is defined with `entry` attribute for a function. There can be only
 one entry thread. Threads can never exit.
-```rust
+```ignore
+#![feature(impl_trait_in_assoc_type)]
 #[scars::entry(name = "main", priority = 1, stack_size = 2048)]
 fn main() {
     loop {}
@@ -37,14 +38,18 @@ fn main() {
 Other threads are defined with a the `thread` attribute macro, which statically
 allocates the thread state, including the thread stack. The thread is created by calling
 the thread function, and started with the `start` method.
-```rust
+```ignore
+#![feature(impl_trait_in_assoc_type)]
+use scars::sync::channel::{Sender, make_channel};
+use scars::prelude::*;
+
 const THREAD_PRIO: Priority = Priority::thread(2);
 const THREAD_STACK_SIZE: usize = 1024;
 const CEILING_PRIO: Priority = THREAD_PRIO;
 const CHANNEL_CAPACITY: usize = 1;
 
 #[scars::thread(name = "thread", priority = THREAD_PRIO, stack_size = THREAD_STACK_SIZE)]
-fn thread(sender: Sender<u32, CEILING_PRIO>) {
+fn thread(sender: Sender<u32, CHANNEL_CAPACITY, CEILING_PRIO>) -> ! {
     let mut counter: u32 = 0;
     loop {
         sender.send(counter);
@@ -72,7 +77,7 @@ and can run even when higher priority threads hold locks.
 
 To run custom code in the idle thread, the user can define the idle thread hook with
 the `idle_thread_hook` attribute:
-```rust
+```ignore
 #[scars::idle_thread_hook]
 fn idle_thread_hook() {
     // do something when idle
@@ -85,15 +90,18 @@ acquire a `CeilingLock` from the idle thread will result in a runtime error.
 ## Interrupt Handlers
 Interrupt handlers are created similarly to threads with `interrupt_handler` attribute
 macro.
-```rust
+```ignore
+#![feature(impl_trait_in_assoc_type)]
 use scars::khal::{Interrupt, Peripherals, pac::EXTI};
-use scars::sync::channel::Sender;
+use scars::sync::channel::{Sender, make_channel};
+use scars::prelude::*;
+
 const INTERRUPT_PRIO: Priority = Priority::interrupt(2);
 const CEILING_PRIO: Priority = INTERRUPT_PRIO;
 const CHANNEL_CAPACITY: usize = 10;
 
 #[scars::interrupt_handler(interrupt = Interrupt::EXTI0, priority = INTERRUPT_PRIO)]
-fn exti0_handler(sender: Sender<u32, CEILING_PRIO>, mut counter: u32, exti: EXTI) {
+fn exti0_handler(sender: Sender<u32, CHANNEL_CAPACITY, CEILING_PRIO>, mut counter: u32, exti: EXTI) {
     // Interrupt handler closure captures `sender` and `counter`
     counter += 1;
     // Must use non-blocking `try_send` in interrupt
@@ -165,16 +173,16 @@ simulation has not yet been implemented.
 ### khal-e310x
 Configuration in .cargo/config.toml is for QEMU.  
 
-```
+```text
 $ cargo test --release --package=scars --features="khal-e310x" --target=riscv32imac-unknown-none-elf
 ```
 
 ### khal-sim
-```
+```text
 $ cargo test --release --package=scars --features="khal-sim" --target=x86_64-unknown-linux-gnu
 ```
 
 ### stm32f4
-```
+```text
 $ cargo test --release --package=scars --features=khal-stm32f4 --target=thumbv7em-none-eabihf
 ```

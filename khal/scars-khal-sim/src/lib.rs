@@ -8,6 +8,9 @@ use core::ptr::{NonNull, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use scars_khal::*;
 
+const SYSCALL_SIGNAL: libc::c_int = libc::SIGUSR1;
+const ALARM_SIGNAL: libc::c_int = libc::SIGALRM;
+
 pub mod pac {
     pub enum Interrupt {
         UART1,
@@ -217,16 +220,19 @@ impl FlowController for Simulator {
         let mut wait_set = MaybeUninit::uninit();
         let mut sig = MaybeUninit::uninit();
         // Only the currently active RTOS thread should receive the virtual
-        // trap signal SIGUSR1 and alarm signal SIGALRM.
+        // trap signal SYSCALL_SIGNAL and ALARM_SIGNAL.
         unsafe {
             libc::sigemptyset(wait_set.as_mut_ptr());
-            libc::sigaddset(wait_set.as_mut_ptr(), libc::SIGUSR1);
-            libc::sigaddset(wait_set.as_mut_ptr(), libc::SIGALRM);
+            libc::sigaddset(wait_set.as_mut_ptr(), SYSCALL_SIGNAL);
+            libc::sigaddset(wait_set.as_mut_ptr(), ALARM_SIGNAL);
             libc::pthread_sigmask(
-                libc::SIG_BLOCK,
+                libc::SIG_SETMASK,
                 wait_set.as_mut_ptr(),
                 core::ptr::null_mut(),
             );
+
+            libc::sigemptyset(wait_set.as_mut_ptr());
+            libc::sigaddset(wait_set.as_mut_ptr(), SYSCALL_SIGNAL);
         }
 
         CURRENT_THREAD_CONTEXT.store(context, Ordering::SeqCst);
@@ -265,15 +271,18 @@ impl FlowController for Simulator {
             args: [arg0, arg1, arg2],
             rval: 0,
         };
+
         let context = current_thread_context();
+
         if unsafe {
-            libc::pthread_sigqueue(context.thread_id, libc::SIGUSR1, libc::sigval {
+            libc::pthread_sigqueue(context.thread_id, SYSCALL_SIGNAL, libc::sigval {
                 sival_ptr: &mut trap as *mut VirtualTrap as *mut std::ffi::c_void,
             })
         } != 0
         {
             panic!("");
         }
+
         if let VirtualTrap::Syscall { rval, .. } = trap {
             rval
         } else {
@@ -307,13 +316,12 @@ extern "C" fn thread_main_wrapper(arg: *mut libc::c_void) -> *mut libc::c_void {
     unsafe {
         let mut set = MaybeUninit::uninit();
         libc::sigemptyset(set.as_mut_ptr());
-        libc::sigaddset(set.as_mut_ptr(), libc::SIGUSR1);
-        libc::sigaddset(set.as_mut_ptr(), libc::SIGALRM);
+        libc::sigaddset(set.as_mut_ptr(), SYSCALL_SIGNAL);
+        libc::sigaddset(set.as_mut_ptr(), ALARM_SIGNAL);
         libc::pthread_sigmask(libc::SIG_UNBLOCK, set.as_mut_ptr(), core::ptr::null_mut());
     }
 
     let main_fn: fn(Option<NonNull<u8>>) = unsafe { core::mem::transmute(context.main_fn) };
-
     main_fn(context.argument);
 
     core::ptr::null_mut()
@@ -332,12 +340,12 @@ extern "C" fn trap_signal_handler(
 
     match sig {
         // Virtual software interrupt signals
-        libc::SIGUSR1 => {
+        SYSCALL_SIGNAL => {
             let trap = unsafe { &mut *((*info).si_value().sival_ptr as *mut VirtualTrap) };
             VirtualInterruptController::handle_trap(trap);
         }
         // Virtual timer interrupt signals
-        libc::SIGALRM | libc::SIGUSR2 => {
+        ALARM_SIGNAL => {
             VirtualTimer::handle_alarm();
         }
         _ => panic!("Unhandled exception"),
@@ -383,32 +391,28 @@ impl VirtualInterruptController {
     pub fn new() -> VirtualInterruptController {
         let mut interrupt_sigmask = MaybeUninit::uninit();
         unsafe {
-            // TBD: any other signals?
             if libc::sigemptyset(interrupt_sigmask.as_mut_ptr()) != 0
-                || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), libc::SIGUSR1) != 0
-                || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), libc::SIGUSR2) != 0
-                || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), libc::SIGALRM) != 0
+                || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), SYSCALL_SIGNAL) != 0
+                || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), ALARM_SIGNAL) != 0
             {
                 panic!("");
             }
 
-            // Additional signals to mask for SIGUSR1
-            // TBD: should be interrupt_sigmask without SIGUSR1,
-            // maybe SIGUSR1 in it doesn't do harm?
-            let mut mask = MaybeUninit::uninit();
-            if libc::sigemptyset(mask.as_mut_ptr()) != 0
-                || libc::sigaddset(mask.as_mut_ptr(), libc::SIGALRM) != 0
+            // Additional signals to mask for syscalls
+            let mut syscall_mask = MaybeUninit::uninit();
+            if libc::sigemptyset(syscall_mask.as_mut_ptr()) != 0
+                || libc::sigaddset(syscall_mask.as_mut_ptr(), ALARM_SIGNAL) != 0
             {
                 panic!("");
             }
 
             let sigaction = libc::sigaction {
                 sa_sigaction: trap_signal_handler as libc::sighandler_t,
-                sa_mask: mask.assume_init(),
+                sa_mask: syscall_mask.assume_init(),
                 sa_flags: libc::SA_SIGINFO,
                 sa_restorer: None,
             };
-            if libc::sigaction(libc::SIGUSR1, &sigaction, std::ptr::null_mut()) != 0 {
+            if libc::sigaction(SYSCALL_SIGNAL, &sigaction, std::ptr::null_mut()) != 0 {
                 panic!("Failed to set trap signal handler");
             }
         }
@@ -534,7 +538,7 @@ impl InterruptController for Simulator {
     fn restore(&self, restore_state: bool) {
         // Only re-enable interrupts if they were enabled before the critical section.
         if restore_state {
-            INTERRUPTS_ENABLED.swap(true, Ordering::SeqCst);
+            INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
             unsafe {
                 libc::pthread_sigmask(
                     libc::SIG_UNBLOCK,
@@ -555,12 +559,14 @@ impl VirtualTimer {
         let mut timer_id = MaybeUninit::uninit();
 
         unsafe {
+            // Block syscalls while processing the alarm signal
             let mut mask = MaybeUninit::uninit();
             if libc::sigemptyset(mask.as_mut_ptr()) != 0
-                || libc::sigaddset(mask.as_mut_ptr(), libc::SIGUSR1) != 0
+                || libc::sigaddset(mask.as_mut_ptr(), SYSCALL_SIGNAL) != 0
             {
                 panic!("");
             }
+
             let sigaction = libc::sigaction {
                 sa_sigaction: trap_signal_handler as libc::sighandler_t,
                 sa_mask: mask.assume_init(),
@@ -568,7 +574,7 @@ impl VirtualTimer {
                 sa_restorer: None,
             };
 
-            if libc::sigaction(libc::SIGUSR2, &sigaction, std::ptr::null_mut()) != 0 {
+            if libc::sigaction(ALARM_SIGNAL, &sigaction, std::ptr::null_mut()) != 0 {
                 panic!("");
             }
 
@@ -576,7 +582,7 @@ impl VirtualTimer {
 
             let mut sevp: libc::sigevent = MaybeUninit::zeroed().assume_init();
             sevp.sigev_notify = libc::SIGEV_SIGNAL;
-            sevp.sigev_signo = libc::SIGUSR2;
+            sevp.sigev_signo = ALARM_SIGNAL;
             sevp.sigev_value.sival_ptr =
                 addr_of_mut!(ALARM_TRAP) as *const VirtualTrap as *mut libc::c_void;
             if libc::timer_create(libc::CLOCK_MONOTONIC, &mut sevp, timer_id.as_mut_ptr()) != 0 {
@@ -624,20 +630,38 @@ impl AlarmClockController for Simulator {
     }
 
     fn set_wakeup(&self, at: u64) {
-        let new_value = libc::itimerspec {
-            it_value: VirtualTimer::ticks_to_timespec(at),
-            it_interval: libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            },
+        let new_value = if at == u64::MAX {
+            libc::itimerspec {
+                it_value: libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+                it_interval: libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            }
+        } else {
+            libc::itimerspec {
+                it_value: VirtualTimer::ticks_to_timespec(at),
+                it_interval: libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            }
         };
-        let mut old_value = core::mem::MaybeUninit::uninit();
+
+        let mut time = core::mem::MaybeUninit::uninit();
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) } != 0 {
+            panic!("Error: failed to read monotonic clock");
+        }
+
         if unsafe {
             libc::timer_settime(
                 self.timer.timer_id,
                 libc::TIMER_ABSTIME,
                 &new_value,
-                old_value.as_mut_ptr(),
+                core::ptr::null_mut(),
             )
         } != 0
         {

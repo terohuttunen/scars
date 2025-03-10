@@ -14,6 +14,8 @@ macro_rules! make_channel {
     }};
 }
 
+pub use make_channel;
+
 pub struct FIFO<T, const CAPACITY: usize> {
     // Where new data can be written (unless full)
     head: usize,
