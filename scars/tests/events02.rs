@@ -8,7 +8,6 @@
 use scars::events::{REQUIRE_ALL_EVENTS, wait_events};
 use scars::prelude::*;
 use scars::sync::channel::Sender;
-use scars::sync::{Condvar, Mutex};
 use scars::thread::ThreadRef;
 use scars::time::Duration;
 use scars_test;

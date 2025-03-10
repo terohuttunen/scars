@@ -423,7 +423,7 @@ mod test {
     #[test_case]
     fn test_linked_list_1() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let mut a = pin!(Foo {
+        let a = pin!(Foo {
             anode: Node::new(),
             bnode: Node::new(),
         });
@@ -440,11 +440,11 @@ mod test {
     #[test_case]
     fn test_linked_list_2() {
         let mut list = LinkedList::<Foo, Tag0>::new();
-        let mut a = pin!(Foo {
+        let a = pin!(Foo {
             anode: Node::new(),
             bnode: Node::new(),
         });
-        let mut b = pin!(Foo {
+        let b = pin!(Foo {
             anode: Node::new(),
             bnode: Node::new(),
         });

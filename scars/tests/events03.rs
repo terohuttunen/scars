@@ -7,7 +7,7 @@
 #![feature(impl_trait_in_assoc_type)]
 use scars::events::wait_events_until;
 use scars::prelude::*;
-use scars::sync::{Condvar, Mutex, channel::Sender};
+use scars::sync::channel::Sender;
 use scars::thread_suspend;
 use scars::time::Duration;
 use scars_test;

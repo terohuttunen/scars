@@ -6,11 +6,10 @@
 #![reexport_test_harness_main = "test_main"]
 #![feature(impl_trait_in_assoc_type)]
 use scars::events::wait_events;
+use scars::prelude::*;
 use scars::sync::channel::Sender;
-use scars::sync::{Condvar, Mutex};
 use scars::thread::ThreadRef;
 use scars::time::Duration;
-use scars::{prelude::*, thread};
 use scars_test;
 
 scars_test::integration_test!();
