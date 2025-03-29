@@ -143,7 +143,7 @@ unsafe fn _private_kernel_syscall_handler(
             }
             SYSCALL_ID_DELAY_UNTIL => {
                 let time = (u64::from(arg0 as u32) << 32) + u64::from(arg1 as u32);
-                Scheduler::delay_task_until(time);
+                Scheduler::delay_thread_until(time);
             }
             SYSCALL_ID_RUNTIME_ERROR => {
                 let location = &*(arg1 as *const ::core::panic::Location<'static>);
@@ -154,12 +154,12 @@ unsafe fn _private_kernel_syscall_handler(
             }
             SYSCALL_ID_START_THREAD => {
                 let thread: &'static mut RawThread = &mut *(arg0 as *mut RawThread);
-                Scheduler::start_thread_isr(Pin::static_mut(thread));
+                Scheduler::start_thread(Pin::static_mut(thread));
             }
             SYSCALL_ID_SUSPEND => {
                 let maybe_thread =
                     NonNull::new(arg0 as *mut RawThread).map(|p| Pin::new_unchecked(p.as_ref()));
-                Scheduler::suspend_thread_isr(maybe_thread);
+                Scheduler::suspend_thread(maybe_thread);
             }
             SYSCALL_ID_POLL_INTERRUPT_EXECUTOR => {
                 let interrupt = &*(arg0 as *const RawInterruptHandler);

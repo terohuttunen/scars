@@ -10,11 +10,7 @@ const INTERRUPT_BIT: i16 = 1 << (i16::BITS - 2);
 pub const INVALID_PRIORITY: i16 = -1;
 
 const fn maxu8(left: u8, right: u8) -> u8 {
-    if left > right {
-        left
-    } else {
-        right
-    }
+    if left > right { left } else { right }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ConstParamTy)]
@@ -255,6 +251,14 @@ impl PriorityStatus {
             PriorityStatus::Interrupt((value & !INTERRUPT_BIT) as InterruptPriority)
         } else {
             PriorityStatus::Thread(value as ThreadPriority)
+        }
+    }
+
+    pub fn unwrap_or_default(self, default: Priority) -> Priority {
+        match self {
+            PriorityStatus::Invalid => default,
+            PriorityStatus::Thread(p) => Priority::Thread(p),
+            PriorityStatus::Interrupt(p) => Priority::Interrupt(p),
         }
     }
 }
