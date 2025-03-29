@@ -8,8 +8,14 @@ use core::ptr::{NonNull, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use scars_khal::*;
 
+// Sent to the current thread on syscall
 const SYSCALL_SIGNAL: libc::c_int = libc::SIGUSR1;
+
+// Sent to the current thread on timer expiration
 const ALARM_SIGNAL: libc::c_int = libc::SIGALRM;
+
+// The clock that the simulator uses for RTOS time and timeouts
+const SIMULATOR_CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
 
 pub mod pac {
     pub enum Interrupt {
@@ -218,7 +224,7 @@ impl FlowController for Simulator {
 
     fn start_first_thread(context: *mut Self::Context) -> ! {
         let mut wait_set = MaybeUninit::uninit();
-        let mut sig = MaybeUninit::uninit();
+
         // Only the currently active RTOS thread should receive the virtual
         // trap signal SYSCALL_SIGNAL and ALARM_SIGNAL.
         unsafe {
@@ -226,18 +232,17 @@ impl FlowController for Simulator {
             libc::sigaddset(wait_set.as_mut_ptr(), SYSCALL_SIGNAL);
             libc::sigaddset(wait_set.as_mut_ptr(), ALARM_SIGNAL);
             libc::pthread_sigmask(
-                libc::SIG_SETMASK,
+                libc::SIG_BLOCK,
                 wait_set.as_mut_ptr(),
                 core::ptr::null_mut(),
             );
-
-            libc::sigemptyset(wait_set.as_mut_ptr());
-            libc::sigaddset(wait_set.as_mut_ptr(), SYSCALL_SIGNAL);
         }
 
         CURRENT_THREAD_CONTEXT.store(context, Ordering::SeqCst);
 
         unsafe { &*context }.resume();
+
+        let mut sig = MaybeUninit::uninit();
         loop {
             // Signals SIGUSR1 and SIGALRM, which the RTOS threads use for traps and alarm
             // clock are blocked from this thread, and should always be handled by the
@@ -391,6 +396,7 @@ impl VirtualInterruptController {
     pub fn new() -> VirtualInterruptController {
         let mut interrupt_sigmask = MaybeUninit::uninit();
         unsafe {
+            // Signals to mask for interrupts
             if libc::sigemptyset(interrupt_sigmask.as_mut_ptr()) != 0
                 || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), SYSCALL_SIGNAL) != 0
                 || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), ALARM_SIGNAL) != 0
@@ -550,21 +556,68 @@ impl InterruptController for Simulator {
     }
 }
 
+extern "C" fn timer_thread(arg: *mut libc::c_void) -> *mut libc::c_void {
+    let timer = unsafe { &*(arg as *const VirtualTimer) };
+
+    unsafe {
+        libc::pthread_mutex_lock(timer.wait_lock.get());
+
+        loop {
+            if let Some(time) = (*timer.wait_until.get()) {
+                let mut now = core::mem::MaybeUninit::uninit();
+                if libc::clock_gettime(SIMULATOR_CLOCK, now.as_mut_ptr()) != 0 {
+                    panic!("Error: failed to read the clock");
+                }
+
+                let now_ticks = VirtualTimer::timespec_to_ticks(now.assume_init());
+                let time_ticks = VirtualTimer::timespec_to_ticks(time);
+                if now_ticks >= time_ticks {
+                    // Timeout is in the past
+                    (*timer.wait_until.get()) = None;
+                    let context = CURRENT_THREAD_CONTEXT.load(Ordering::SeqCst);
+                    libc::pthread_sigqueue((*context).thread_id, ALARM_SIGNAL, libc::sigval {
+                        sival_ptr: core::ptr::null_mut(),
+                    });
+                    continue;
+                }
+
+                if libc::pthread_cond_timedwait(
+                    timer.wait.get(),
+                    timer.wait_lock.get(),
+                    &time as *const _,
+                ) == libc::ETIMEDOUT
+                {
+                    // Timer expired
+                    (*timer.wait_until.get()) = None;
+                    let context = CURRENT_THREAD_CONTEXT.load(Ordering::SeqCst);
+                    libc::pthread_sigqueue((*context).thread_id, ALARM_SIGNAL, libc::sigval {
+                        sival_ptr: core::ptr::null_mut(),
+                    });
+                }
+            } else {
+                // Wait until a new timeout is set
+                libc::pthread_cond_wait(timer.wait.get(), timer.wait_lock.get());
+            }
+        }
+    }
+}
+
 pub struct VirtualTimer {
-    timer_id: libc::timer_t,
+    wait: UnsafeCell<libc::pthread_cond_t>,
+    wait_lock: UnsafeCell<libc::pthread_mutex_t>,
+    wait_until: UnsafeCell<Option<libc::timespec>>,
+    thread_id: libc::pthread_t,
 }
 
 impl VirtualTimer {
-    pub fn new() -> VirtualTimer {
-        let mut timer_id = MaybeUninit::uninit();
-
+    pub fn init(timer_ptr: *mut Self) {
         unsafe {
             // Block syscalls while processing the alarm signal
             let mut mask = MaybeUninit::uninit();
             if libc::sigemptyset(mask.as_mut_ptr()) != 0
                 || libc::sigaddset(mask.as_mut_ptr(), SYSCALL_SIGNAL) != 0
             {
-                panic!("");
+                panic!("Error: failed to set alarm signal mask");
             }
 
             let sigaction = libc::sigaction {
@@ -575,23 +628,24 @@ impl VirtualTimer {
             };
 
             if libc::sigaction(ALARM_SIGNAL, &sigaction, std::ptr::null_mut()) != 0 {
-                panic!("");
+                panic!("Error: failed to set alarm signal handler");
             }
 
-            static mut ALARM_TRAP: VirtualTrap = VirtualTrap::Alarm;
+            let mut cond_attr = MaybeUninit::uninit();
+            libc::pthread_condattr_init(cond_attr.as_mut_ptr());
+            libc::pthread_condattr_setclock(cond_attr.as_mut_ptr(), SIMULATOR_CLOCK);
+            libc::pthread_cond_init((*timer_ptr).wait.get(), cond_attr.as_ptr());
+            (*timer_ptr).wait_lock = UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER);
+            (*timer_ptr).wait_until = UnsafeCell::new(None);
 
-            let mut sevp: libc::sigevent = MaybeUninit::zeroed().assume_init();
-            sevp.sigev_notify = libc::SIGEV_SIGNAL;
-            sevp.sigev_signo = ALARM_SIGNAL;
-            sevp.sigev_value.sival_ptr =
-                addr_of_mut!(ALARM_TRAP) as *const VirtualTrap as *mut libc::c_void;
-            if libc::timer_create(libc::CLOCK_MONOTONIC, &mut sevp, timer_id.as_mut_ptr()) != 0 {
-                panic!("Failed to create timer");
-            }
-        }
-
-        VirtualTimer {
-            timer_id: unsafe { timer_id.assume_init() },
+            let mut attr = MaybeUninit::uninit();
+            libc::pthread_attr_init(attr.as_mut_ptr());
+            libc::pthread_create(
+                &raw mut (*timer_ptr).thread_id,
+                attr.as_ptr(),
+                timer_thread,
+                timer_ptr as *mut libc::c_void,
+            );
         }
     }
 
@@ -621,8 +675,8 @@ impl AlarmClockController for Simulator {
 
     fn clock_ticks(&self) -> u64 {
         let mut time = core::mem::MaybeUninit::uninit();
-        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) } != 0 {
-            panic!("Error: failed to read monotonic clock");
+        if unsafe { libc::clock_gettime(SIMULATOR_CLOCK, time.as_mut_ptr()) } != 0 {
+            panic!("Error: failed to read the clock");
         }
 
         let time = unsafe { time.assume_init() };
@@ -630,42 +684,17 @@ impl AlarmClockController for Simulator {
     }
 
     fn set_wakeup(&self, at: u64) {
-        let new_value = if at == u64::MAX {
-            libc::itimerspec {
-                it_value: libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: 0,
-                },
-                it_interval: libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: 0,
-                },
-            }
-        } else {
-            libc::itimerspec {
-                it_value: VirtualTimer::ticks_to_timespec(at),
-                it_interval: libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: 0,
-                },
-            }
-        };
+        unsafe {
+            libc::pthread_mutex_lock(self.timer.wait_lock.get());
 
-        let mut time = core::mem::MaybeUninit::uninit();
-        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) } != 0 {
-            panic!("Error: failed to read monotonic clock");
-        }
+            if at == u64::MAX {
+                (*self.timer.wait_until.get()) = None;
+            } else {
+                (*self.timer.wait_until.get()) = Some(VirtualTimer::ticks_to_timespec(at));
+            };
 
-        if unsafe {
-            libc::timer_settime(
-                self.timer.timer_id,
-                libc::TIMER_ABSTIME,
-                &new_value,
-                core::ptr::null_mut(),
-            )
-        } != 0
-        {
-            panic!("");
+            libc::pthread_cond_signal(self.timer.wait.get());
+            libc::pthread_mutex_unlock(self.timer.wait_lock.get());
         }
     }
 
@@ -707,10 +736,8 @@ impl HardwareAbstractionLayer for Simulator {
 
     unsafe fn init(hal: *mut Self) {
         unsafe {
-            *hal = Simulator {
-                timer: VirtualTimer::new(),
-                interrupt_controller: VirtualInterruptController::new(),
-            }
+            VirtualTimer::init(&raw mut (*hal).timer);
+            (*hal).interrupt_controller = VirtualInterruptController::new();
         }
     }
 }
