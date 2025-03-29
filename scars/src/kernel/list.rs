@@ -113,6 +113,19 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         None
     }
 
+    pub fn pop_front_if<'item, P: FnOnce(&T) -> bool>(
+        &mut self,
+        predicate: P,
+    ) -> Option<Pin<&'item T>> {
+        if let Some(head) = self.head() {
+            if predicate(&*head) {
+                return self.pop_front();
+            }
+        }
+
+        None
+    }
+
     pub fn cursor_front(&self) -> Cursor<'_, T, N> {
         Cursor {
             current: self.head,
