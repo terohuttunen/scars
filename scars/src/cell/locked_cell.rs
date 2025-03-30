@@ -1,7 +1,12 @@
-use crate::sync::{NestingLock, Once};
-use core::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut, UnsafeCell};
+pub use super::{BorrowError, BorrowMutError};
+pub use crate::cell::pincell::{PinRef, PinRefMut};
+pub use crate::cell::refcell::{BorrowFlag, BorrowRef};
+use crate::sync::{NestingLock, NoLock, Once};
+use core::cell::{Cell, UnsafeCell};
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
 
 #[repr(transparent)]
 pub struct LockedCell<T: ?Sized, L: NestingLock> {
@@ -114,37 +119,57 @@ impl<T, L: NestingLock, const N: usize> LockedCell<[T; N], L> {
 
 pub struct LockedRefCell<T: ?Sized, L: NestingLock> {
     _phantom: PhantomData<L>,
-    value: RefCell<T>,
+    borrow: Cell<BorrowFlag>,
+    value: UnsafeCell<T>,
 }
 
 impl<T, L: NestingLock> LockedRefCell<T, L> {
     pub const fn new(value: T) -> LockedRefCell<T, L> {
         LockedRefCell {
             _phantom: PhantomData,
-            value: RefCell::new(value),
+            borrow: Cell::new(0),
+            value: UnsafeCell::new(value),
         }
     }
 
     #[inline]
-    pub fn replace<'key>(&self, _key: L::Key<'key>, t: T) -> T {
-        self.value.replace(t)
+    pub fn replace<'key, 'a: 'key>(&'a self, key: L::Key<'key>, t: T) -> T {
+        let mut dest = self.borrow_mut(key);
+        core::mem::replace(&mut dest, t)
     }
 
     #[inline]
-    pub fn replace_with<'key, F: FnOnce(&mut T) -> T>(&self, _key: L::Key<'key>, f: F) -> T {
-        self.value.replace_with(f)
+    pub fn replace_with<'key, 'a: 'key, F: FnOnce(&mut T) -> T>(
+        &'a self,
+        key: L::Key<'key>,
+        f: F,
+    ) -> T {
+        let mut dest = self.borrow_mut(key);
+        let replacement = f(&mut dest);
+        core::mem::replace(&mut dest, replacement)
     }
 
     #[inline]
-    pub fn swap<'key>(&self, _key: L::Key<'key>, other: &Self) {
-        self.value.swap(&other.value)
+    pub fn swap<'key, 'a: 'key, 'b: 'key>(&'a self, key: L::Key<'key>, other: &'b Self) {
+        if self.as_ptr() == other.as_ptr() {
+            return;
+        }
+
+        let mut dest = self.borrow_mut(key);
+        let mut other = other.borrow_mut(key);
+        core::mem::swap(&mut dest, &mut other);
     }
 }
 
 impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
     #[inline]
     pub fn borrow<'key, 'a: 'key>(&'a self, _key: L::Key<'key>) -> Ref<'key, T> {
-        self.value.borrow()
+        let reference = unsafe { &*self.value.get() };
+        let borrow_ref = BorrowRef::new_immutable(&self.borrow);
+        Ref {
+            reference,
+            borrow_ref,
+        }
     }
 
     #[inline]
@@ -152,12 +177,26 @@ impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
         &'a self,
         _key: L::Key<'key>,
     ) -> Result<Ref<'key, T>, BorrowError> {
-        self.value.try_borrow()
+        if self.borrow.get() < 0 {
+            return Err(BorrowError);
+        }
+
+        let reference = unsafe { &*self.value.get() };
+        let borrow_ref = BorrowRef::new_immutable(&self.borrow);
+        Ok(Ref {
+            reference,
+            borrow_ref,
+        })
     }
 
     #[inline]
     pub fn borrow_mut<'key, 'a: 'key>(&'a self, _key: L::Key<'key>) -> RefMut<'key, T> {
-        self.value.borrow_mut()
+        let reference = unsafe { &mut *self.value.get() };
+        let borrow_ref = BorrowRef::new_mutable(&self.borrow);
+        RefMut {
+            reference,
+            borrow_ref,
+        }
     }
 
     #[inline]
@@ -165,12 +204,21 @@ impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
         &'a self,
         _key: L::Key<'key>,
     ) -> Result<RefMut<'key, T>, BorrowMutError> {
-        self.value.try_borrow_mut()
+        if self.borrow.get() != 0 {
+            return Err(BorrowMutError);
+        }
+
+        let reference = unsafe { &mut *self.value.get() };
+        let borrow_ref = BorrowRef::new_mutable(&self.borrow);
+        Ok(RefMut {
+            reference,
+            borrow_ref,
+        })
     }
 
     #[inline]
     pub fn as_ptr(&self) -> *mut T {
-        self.value.as_ptr()
+        self.value.get()
     }
 
     #[inline]
@@ -180,8 +228,8 @@ impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
 }
 
 impl<T: Default, L: NestingLock> LockedRefCell<T, L> {
-    pub fn take<'key>(&self, _key: L::Key<'key>) -> T {
-        self.value.replace(Default::default())
+    pub fn take<'key, 'a: 'key>(&'a self, key: L::Key<'key>) -> T {
+        self.replace(key, Default::default())
     }
 }
 
@@ -204,6 +252,63 @@ impl<T: Default, L: NestingLock> Default for LockedRefCell<T, L> {
 impl<T, L: NestingLock> From<T> for LockedRefCell<T, L> {
     fn from(t: T) -> LockedRefCell<T, L> {
         LockedRefCell::new(t)
+    }
+}
+
+pub struct Ref<'a, T: ?Sized> {
+    reference: &'a T,
+    borrow_ref: BorrowRef<'a>,
+}
+
+impl<'a, T: ?Sized> Ref<'a, T> {
+    pub fn as_ref(&self) -> &T {
+        self.reference
+    }
+}
+
+impl<'a, T: ?Sized> Deref for Ref<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.reference
+    }
+}
+
+impl<'a, T: ?Sized> Clone for Ref<'a, T> {
+    fn clone(&self) -> Ref<'a, T> {
+        Ref {
+            reference: self.reference,
+            borrow_ref: BorrowRef::new_immutable(self.borrow_ref.0),
+        }
+    }
+}
+
+pub struct RefMut<'a, T: ?Sized> {
+    reference: &'a mut T,
+    borrow_ref: BorrowRef<'a>,
+}
+
+impl<'a, T: ?Sized> RefMut<'a, T> {
+    pub fn as_ref(&self) -> &T {
+        self.reference
+    }
+
+    pub fn as_mut(&mut self) -> &mut T {
+        self.reference
+    }
+}
+
+impl<'a, T: ?Sized> Deref for RefMut<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.reference
+    }
+}
+
+impl<'a, T: ?Sized> DerefMut for RefMut<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.reference
     }
 }
 
@@ -281,5 +386,93 @@ impl<T, L: NestingLock> LockedOnceCell<T, L> {
         } else {
             None
         }
+    }
+}
+
+pub struct LockedPinRefCell<T: ?Sized, L: NestingLock> {
+    _phantom: PhantomData<L>,
+    borrow: Cell<BorrowFlag>,
+    value: UnsafeCell<T>,
+}
+
+impl<T, L: NestingLock> LockedPinRefCell<T, L> {
+    pub const fn new(value: T) -> LockedPinRefCell<T, L> {
+        LockedPinRefCell {
+            _phantom: PhantomData,
+            borrow: Cell::new(0),
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    #[inline]
+    pub fn borrow<'key, 'a: 'key>(self: Pin<&'a Self>, _key: L::Key<'key>) -> PinRef<'key, T> {
+        let reference = unsafe { Pin::map_unchecked(self, |s| &*s.value.get()) };
+        let borrow_ref = BorrowRef::new_immutable(&self.get_ref().borrow);
+
+        PinRef {
+            reference,
+            borrow_ref,
+        }
+    }
+
+    #[inline]
+    pub fn borrow_mut<'key, 'a: 'key>(
+        self: Pin<&'a Self>,
+        _key: L::Key<'key>,
+    ) -> PinRefMut<'key, T> {
+        let reference = unsafe { Pin::new_unchecked(&mut *self.value.get()) };
+        let _borrow_ref = BorrowRef::new_mutable(&self.get_ref().borrow);
+
+        PinRefMut {
+            reference,
+            _borrow_ref,
+        }
+    }
+
+    pub fn try_borrow_mut<'key, 'a: 'key>(
+        self: Pin<&'a Self>,
+        _key: L::Key<'key>,
+    ) -> Result<PinRefMut<'key, T>, BorrowMutError> {
+        if self.borrow.get() != 0 {
+            return Err(BorrowMutError);
+        }
+
+        let reference = unsafe { Pin::new_unchecked(&mut *self.value.get()) };
+        let _borrow_ref = BorrowRef::new_mutable(&self.get_ref().borrow);
+
+        Ok(PinRefMut {
+            reference,
+            _borrow_ref,
+        })
+    }
+
+    pub fn as_ptr(&self) -> *mut T {
+        self.value.get()
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        self.value.get_mut()
+    }
+}
+
+unsafe impl<T: ?Sized, L: NestingLock> Send for LockedPinRefCell<T, L>
+where
+    T: Send,
+    L: Send,
+{
+}
+
+unsafe impl<T: ?Sized, L: NestingLock> Sync for LockedPinRefCell<T, L> where L: Sync {}
+
+impl<T: Default, L: NestingLock> Default for LockedPinRefCell<T, L> {
+    #[inline]
+    fn default() -> LockedPinRefCell<T, L> {
+        LockedPinRefCell::new(Default::default())
+    }
+}
+
+impl<T, L: NestingLock> From<T> for LockedPinRefCell<T, L> {
+    fn from(t: T) -> LockedPinRefCell<T, L> {
+        LockedPinRefCell::new(t)
     }
 }
