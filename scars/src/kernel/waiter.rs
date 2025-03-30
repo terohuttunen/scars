@@ -1,5 +1,5 @@
 use crate::Priority;
-use crate::cell::LockedRefCell;
+use crate::cell::{LockedPinRefCell, PinRefCell};
 use crate::in_interrupt;
 use crate::kernel::atomic_queue::{AtomicNode, impl_atomic_linked};
 use crate::kernel::interrupt::RawInterruptHandler;
@@ -10,7 +10,7 @@ use crate::syscall;
 use crate::task::task::RawTask;
 use crate::thread::RawThread;
 use crate::time::Instant;
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::sync::atomic::AtomicPtr;
@@ -139,13 +139,13 @@ impl_linked!(sleep_queue_link, Suspendable, SleepQueueTag);
 impl_atomic_linked!(pending_schedule_link, Suspendable, ExecStateTag);
 
 pub struct WaitQueue<const CEILING: Priority> {
-    queue: LockedRefCell<LinkedList<Suspendable, WaitQueueTag>, CeilingLock<CEILING>>,
+    queue: LockedPinRefCell<LinkedList<Suspendable, WaitQueueTag>, CeilingLock<CEILING>>,
 }
 
 impl<const CEILING: Priority> WaitQueue<CEILING> {
     pub const fn new() -> WaitQueue<CEILING> {
         WaitQueue {
-            queue: LockedRefCell::new(LinkedList::new()),
+            queue: LockedPinRefCell::new(LinkedList::new()),
         }
     }
 
@@ -157,10 +157,13 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
         let mut waiter_queued: bool = false;
         poll_fn(|cx| {
             CeilingLock::with(|ckey| {
-                let mut queue = self.queue.borrow_mut(ckey);
+                let mut queue = Pin::static_ref(&self.queue).borrow_mut(ckey);
                 let task = unsafe { &*(cx.waker().data() as *const RawTask) };
+
                 if !waiter_queued {
-                    queue.push_back(unsafe { Pin::new_unchecked(&task.waiter) });
+                    queue
+                        .as_mut()
+                        .push_back(unsafe { Pin::new_unchecked(&task.waiter) });
                     waiter_queued = true;
                     core::task::Poll::Pending
                 } else {
@@ -180,7 +183,9 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
     #[inline(never)]
     pub fn notify_one(&self) {
         CeilingLock::with(|ckey| {
-            if let Some(waiter) = self.queue.borrow_mut(ckey).pop_front() {
+            let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(ckey);
+
+            if let Some(waiter) = queue.as_mut().pop_front() {
                 waiter.notify()
             }
         })
@@ -188,8 +193,9 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
 
     pub fn notify_all(&self) {
         CeilingLock::with(|ckey| {
-            let mut queue = self.queue.borrow_mut(ckey);
-            while let Some(waiter) = queue.pop_front() {
+            let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(ckey);
+
+            while let Some(waiter) = queue.as_mut().pop_front() {
                 waiter.notify();
             }
         });
@@ -197,13 +203,13 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
 }
 
 pub struct AsyncWaiterQueue {
-    queue: RefCell<LinkedList<Suspendable, WaitQueueTag>>,
+    queue: PinRefCell<LinkedList<Suspendable, WaitQueueTag>>,
 }
 
 impl AsyncWaiterQueue {
     pub const fn new() -> AsyncWaiterQueue {
         AsyncWaiterQueue {
-            queue: RefCell::new(LinkedList::new()),
+            queue: PinRefCell::new(LinkedList::new()),
         }
     }
 
@@ -211,10 +217,14 @@ impl AsyncWaiterQueue {
         let mut waiter_queued: bool = false;
         poll_fn(|cx| {
             let task = unsafe { &*(cx.waker().data() as *const RawTask) };
+
             if !waiter_queued {
-                self.queue
-                    .borrow_mut()
+                let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut();
+
+                queue
+                    .as_mut()
                     .push_back(unsafe { Pin::new_unchecked(&task.waiter) });
+
                 waiter_queued = true;
                 core::task::Poll::Pending
             } else {
@@ -236,7 +246,9 @@ impl AsyncWaiterQueue {
             crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
         }
 
-        if let Some(waiter) = self.queue.borrow_mut().pop_front() {
+        let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut();
+
+        if let Some(waiter) = queue.as_mut().pop_front() {
             waiter.notify()
         }
     }
@@ -247,7 +259,9 @@ impl AsyncWaiterQueue {
             crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
         }
 
-        while let Some(waiter) = self.queue.borrow_mut().pop_front() {
+        let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut();
+
+        while let Some(waiter) = queue.as_mut().pop_front() {
             waiter.notify();
         }
     }

@@ -49,8 +49,10 @@ impl PreemptLock {
                 crate::runtime_error!(RuntimeError::InterruptHandlerViolation)
             }
             ExecutionContext::Thread(current_thread) => {
-                let previous_state =
-                    PREEMPT_LOCK.swap(current_thread as *const _ as *mut (), Ordering::Acquire);
+                let previous_state = PREEMPT_LOCK.swap(
+                    current_thread.get_ref() as *const _ as *mut (),
+                    Ordering::Acquire,
+                );
                 PreemptLockRestoreState::Thread(previous_state as *const _)
             }
         }
@@ -63,7 +65,7 @@ impl PreemptLock {
                 // lower priority interrupt.
                 match PREEMPT_LOCK.compare_exchange(
                     core::ptr::null_mut(),
-                    current_interrupt as *const _ as *mut (),
+                    current_interrupt.get_ref() as *const _ as *mut (),
                     Ordering::Acquire,
                     Ordering::Relaxed,
                 ) {
@@ -74,7 +76,7 @@ impl PreemptLock {
                         ))
                     }
                     Err(previous_state) => {
-                        if previous_state == current_interrupt as *const _ as *mut () {
+                        if previous_state == current_interrupt.get_ref() as *const _ as *mut () {
                             // Previous state was not null, but it points to the current interrupt context,
                             // therefore the lock was taken earlier in the current interrupt handler.
                             Ok(PreemptLockRestoreState::Interrupt(
@@ -88,8 +90,10 @@ impl PreemptLock {
                 }
             }
             ExecutionContext::Thread(current_thread) => {
-                let previous_state =
-                    PREEMPT_LOCK.swap(current_thread as *const _ as *mut (), Ordering::Acquire);
+                let previous_state = PREEMPT_LOCK.swap(
+                    current_thread.get_ref() as *const _ as *mut (),
+                    Ordering::Acquire,
+                );
                 Ok(PreemptLockRestoreState::Thread(previous_state as *const _))
             }
         }

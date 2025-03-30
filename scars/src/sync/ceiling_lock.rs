@@ -54,7 +54,7 @@ impl RawCeilingLock {
 
     unsafe fn acquire_scoped_lock_in_interrupt(
         self: Pin<&Self>,
-        current_interrupt: &'static RawInterruptHandler,
+        current_interrupt: Pin<&'static RawInterruptHandler>,
     ) {
         // Ceiling check: If locking interrupt has priority higher than the
         // mutex ceiling, then it violates the priority ceiling protocol.
@@ -62,20 +62,25 @@ impl RawCeilingLock {
             runtime_error!(RuntimeError::CeilingPriorityViolation);
         }
 
-        if current_interrupt as *const _ as *const () == self.owner.load(Ordering::Relaxed) {
+        if current_interrupt.as_ptr() as *const () == self.owner.load(Ordering::Relaxed) {
             runtime_error!(RuntimeError::RecursiveLock);
         }
 
         unsafe { current_interrupt.acquire_lock(self) };
     }
 
-    unsafe fn acquire_scoped_lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
+    unsafe fn acquire_scoped_lock_in_thread(
+        self: Pin<&Self>,
+        current_thread: Pin<&'static RawThread>,
+    ) {
         PreemptLock::with(|pkey| {
             if current_thread.thread_id == IDLE_THREAD_ID {
                 runtime_error!(RuntimeError::IdleThreadCeilingLock);
             }
 
-            if current_thread as *const _ as *const () == self.owner.load(Ordering::Relaxed) {
+            if current_thread.get_ref() as *const _ as *const ()
+                == self.owner.load(Ordering::Relaxed)
+            {
                 runtime_error!(RuntimeError::RecursiveLock);
             }
 
@@ -112,14 +117,17 @@ impl RawCeilingLock {
 
     unsafe fn release_scoped_lock_in_interrupt(
         self: Pin<&Self>,
-        current_interrupt: &'static RawInterruptHandler,
+        current_interrupt: Pin<&'static RawInterruptHandler>,
     ) {
         unsafe {
             current_interrupt.release_lock(self);
         }
     }
 
-    unsafe fn release_scoped_lock_in_thread(self: Pin<&Self>, current_thread: &'static RawThread) {
+    unsafe fn release_scoped_lock_in_thread(
+        self: Pin<&Self>,
+        current_thread: Pin<&'static RawThread>,
+    ) {
         let owner = self.owner.load(Ordering::Relaxed);
 
         // If lock has not been acquired by any thread. Most likely
@@ -129,7 +137,7 @@ impl RawCeilingLock {
             return;
         }
 
-        if owner != current_thread as *const _ as *mut () {
+        if owner != current_thread.get_ref() as *const _ as *mut () {
             runtime_error!(RuntimeError::LockOwnerViolation);
         }
 

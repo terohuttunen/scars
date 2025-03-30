@@ -154,8 +154,8 @@ impl RawInterruptHandler {
     }
 
     /// SAFETY: Caller must guarantee that the lock is free, and that it will be released.
-    pub(crate) unsafe fn acquire_lock(&self, lock: Pin<&RawCeilingLock>) {
-        let locks = unsafe { &mut *self.owned_locks.get() };
+    pub(crate) unsafe fn acquire_lock(self: Pin<&Self>, lock: Pin<&RawCeilingLock>) {
+        let locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
         locks.insert_after(lock, |list_lock| {
             list_lock.ceiling_priority > lock.ceiling_priority
         });
@@ -165,7 +165,7 @@ impl RawInterruptHandler {
 
     /// SAFETY: Caller must guarantee that lock has been acquired by the interrupt handler
     pub(crate) unsafe fn release_lock(&self, lock: Pin<&RawCeilingLock>) {
-        let locks = unsafe { &mut *self.owned_locks.get() };
+        let locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
         unsafe {
             locks.remove(lock);
         }
@@ -248,8 +248,8 @@ impl RawInterruptHandler {
     }
 
     fn update_owned_lock_priority(&self) {
-        let locks = unsafe { &mut *self.owned_locks.get() };
-        let lock_priority = if let Some(head) = locks.head() {
+        let locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
+        let lock_priority = if let Some(head) = locks.as_ref().head() {
             PriorityStatus::from(head.ceiling_priority)
         } else {
             PriorityStatus::invalid()

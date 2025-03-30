@@ -1,6 +1,7 @@
 pub mod task;
 pub mod task_pool;
 use crate::Priority;
+use crate::cell::{PinRefCell, RefCell};
 use crate::events::{EXECUTOR_WAKEUP_EVENT, wait_events_until};
 use crate::kernel::interrupt::InterruptRef;
 use crate::kernel::list::LinkedList;
@@ -9,7 +10,6 @@ use crate::kernel::{Scheduler, atomic_queue::AtomicQueue, scheduler::ExecutionCo
 use crate::thread::ThreadRef;
 use crate::time::{Duration, Instant};
 use crate::tls::LocalStorage;
-use core::cell::RefCell;
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
@@ -108,11 +108,11 @@ pub enum PollKind {
 
 struct RawInterruptExecutor {
     interrupt: InterruptRef,
-    ready_queue: RefCell<LinkedList<RawTask, TaskReadyListTag>>,
-    sleep_queue: RefCell<LinkedList<RawTask, WaitQueueTag>>,
+    ready_queue: PinRefCell<LinkedList<RawTask, TaskReadyListTag>>,
+    sleep_queue: PinRefCell<LinkedList<RawTask, WaitQueueTag>>,
 
     /// Tasks waiting for the interrupt to occur
-    wfi_queue: RefCell<LinkedList<RawTask, WaitQueueTag>>,
+    wfi_queue: PinRefCell<LinkedList<RawTask, WaitQueueTag>>,
 
     pending_ready_queue: AtomicQueue<RawTask, TaskReadyListTag>,
 }
@@ -121,9 +121,9 @@ impl RawInterruptExecutor {
     pub fn new(interrupt: InterruptRef) -> RawInterruptExecutor {
         RawInterruptExecutor {
             interrupt,
-            ready_queue: RefCell::new(LinkedList::new()),
-            sleep_queue: RefCell::new(LinkedList::new()),
-            wfi_queue: RefCell::new(LinkedList::new()),
+            ready_queue: PinRefCell::new(LinkedList::new()),
+            sleep_queue: PinRefCell::new(LinkedList::new()),
+            wfi_queue: PinRefCell::new(LinkedList::new()),
             pending_ready_queue: AtomicQueue::new(),
         }
     }
@@ -147,9 +147,9 @@ impl RawInterruptExecutor {
         self.poll_ready_tasks();
 
         // Put interrupt handler to kernel wakeup queue if there are sleeping tasks
-        let deadline_opt = self
-            .sleep_queue
+        let deadline_opt = Pin::static_ref(&self.sleep_queue)
             .borrow()
+            .as_ref()
             .head()
             .map(|task| task.wakeup_time);
 
@@ -159,7 +159,11 @@ impl RawInterruptExecutor {
     }
 
     fn poll_ready_tasks(&'static self) {
-        while let Some(ready_task) = self.ready_queue.borrow_mut().pop_front() {
+        while let Some(ready_task) = Pin::static_ref(&self.ready_queue)
+            .borrow_mut()
+            .as_mut()
+            .pop_front()
+        {
             ready_task.poll();
         }
     }
@@ -206,33 +210,43 @@ impl RawInterruptExecutor {
 
     fn task_sleep_until(&'static self, mut task: Pin<&mut RawTask>, deadline: Instant) {
         task.as_mut().set_wakeup_time(deadline);
-        self.sleep_queue
+        Pin::static_ref(&self.sleep_queue)
             .borrow_mut()
+            .as_mut()
             .insert_after(task.into_ref(), |queue_task| {
                 queue_task.wakeup_time <= deadline
             });
     }
 
     pub(crate) fn task_wait_for_interrupt(&'static self, task: Pin<&mut RawTask>) {
-        self.wfi_queue.borrow_mut().push_back(task.into_ref());
+        Pin::static_ref(&self.wfi_queue)
+            .borrow_mut()
+            .as_mut()
+            .push_back(task.into_ref());
     }
 
     pub fn resume_pending_tasks(&'static self) {
         while let Some(pending_ready_task) = self.pending_ready_queue.pop_front() {
-            self.ready_queue.borrow_mut().push_back(pending_ready_task);
+            Pin::static_ref(&self.ready_queue)
+                .borrow_mut()
+                .as_mut()
+                .push_back(pending_ready_task);
         }
     }
 
     fn resume_sleeping_tasks(&'static self) {
         // Resume sleeping tasks that should be woken up
         let now = Instant::now();
-        let mut sleep_queue = self.sleep_queue.borrow_mut();
+        let mut sleep_queue = Pin::static_ref(&self.sleep_queue).borrow_mut();
         loop {
-            let head_wakeup_time_opt = sleep_queue.head().map(|task| task.wakeup_time);
+            let head_wakeup_time_opt = sleep_queue.as_ref().head().map(|task| task.wakeup_time);
             if let Some(head_wakeup_time) = head_wakeup_time_opt {
                 if head_wakeup_time <= now {
-                    let task = sleep_queue.pop_front().unwrap();
-                    self.ready_queue.borrow_mut().push_back(task);
+                    let task = sleep_queue.as_mut().pop_front().unwrap();
+                    Pin::static_ref(&self.ready_queue)
+                        .borrow_mut()
+                        .as_mut()
+                        .push_back(task);
                 } else {
                     break;
                 }
@@ -244,9 +258,12 @@ impl RawInterruptExecutor {
 
     fn resume_wfi_tasks(&'static self) {
         // Resume tasks waiting for the interrupt to occur
+        let mut wfi_queue = Pin::static_ref(&self.wfi_queue).borrow_mut();
+        let mut ready_queue = Pin::static_ref(&self.ready_queue).borrow_mut();
+
         loop {
-            if let Some(task) = self.wfi_queue.borrow_mut().pop_front() {
-                self.ready_queue.borrow_mut().push_back(task);
+            if let Some(task) = wfi_queue.as_mut().pop_front() {
+                ready_queue.as_mut().push_back(task);
             } else {
                 break;
             }
@@ -255,7 +272,10 @@ impl RawInterruptExecutor {
 
     fn spawn(&'static self, task_handle: &RawTaskHandle) {
         let task_to_spawn = task_handle.as_ref();
-        self.ready_queue.borrow_mut().push_back(task_to_spawn);
+        Pin::static_ref(&self.ready_queue)
+            .borrow_mut()
+            .as_mut()
+            .push_back(task_to_spawn);
     }
 
     fn priority(&self) -> Priority {
@@ -310,8 +330,8 @@ impl InterruptExecutor {
 
 struct RawThreadExecutor {
     thread: ThreadRef,
-    ready_queue: RefCell<LinkedList<RawTask, TaskReadyListTag>>,
-    sleep_queue: RefCell<LinkedList<RawTask, WaitQueueTag>>,
+    ready_queue: PinRefCell<LinkedList<RawTask, TaskReadyListTag>>,
+    sleep_queue: PinRefCell<LinkedList<RawTask, WaitQueueTag>>,
     pending_ready_queue: AtomicQueue<RawTask, TaskReadyListTag>,
 }
 
@@ -319,29 +339,35 @@ impl RawThreadExecutor {
     pub const fn new(thread: ThreadRef) -> RawThreadExecutor {
         RawThreadExecutor {
             thread,
-            ready_queue: RefCell::new(LinkedList::new()),
-            sleep_queue: RefCell::new(LinkedList::new()),
+            ready_queue: PinRefCell::new(LinkedList::new()),
+            sleep_queue: PinRefCell::new(LinkedList::new()),
             pending_ready_queue: AtomicQueue::new(),
         }
     }
 
     fn spawn(&'static self, task_handle: &RawTaskHandle) {
         let task_to_spawn = task_handle.as_ref();
-        self.ready_queue.borrow_mut().push_back(task_to_spawn);
+        Pin::static_ref(&self.ready_queue)
+            .borrow_mut()
+            .as_mut()
+            .push_back(task_to_spawn);
     }
 
     fn block_on(&'static self, task_handle: &RawTaskHandle) -> bool {
         let block_on_task = task_handle.as_ref();
-        self.ready_queue
+        Pin::static_ref(&self.ready_queue)
             .borrow_mut()
+            .as_mut()
             .push_back(block_on_task.as_ref());
 
         loop {
             self.resume_sleeping_tasks();
             self.resume_pending_tasks(false);
 
+            let mut ready_queue = Pin::static_ref(&self.ready_queue).borrow_mut();
+
             // Poll ready tasks
-            while let Some(ready_task) = self.ready_queue.borrow_mut().pop_front() {
+            while let Some(ready_task) = ready_queue.as_mut().pop_front() {
                 if ready_task.poll() {
                     if &*ready_task as *const _ == &*block_on_task as *const _ {
                         return true;
@@ -349,9 +375,9 @@ impl RawThreadExecutor {
                 }
             }
 
-            let deadline_opt = self
-                .sleep_queue
+            let deadline_opt = Pin::static_ref(&self.sleep_queue)
                 .borrow()
+                .as_ref()
                 .head()
                 .map(|task| task.wakeup_time);
             let _ = wait_events_until(EXECUTOR_WAKEUP_EVENT, deadline_opt);
@@ -369,10 +395,11 @@ impl RawThreadExecutor {
     }
 
     // Safe to call only from the local thread
-    fn task_sleep_until(&self, mut task: Pin<&mut RawTask>, deadline: Instant) {
+    fn task_sleep_until(&'static self, mut task: Pin<&mut RawTask>, deadline: Instant) {
         task.as_mut().set_wakeup_time(deadline);
-        self.sleep_queue
+        Pin::static_ref(&self.sleep_queue)
             .borrow_mut()
+            .as_mut()
             .insert_after(task.into_ref(), |queue_task| {
                 queue_task.wakeup_time <= deadline
             });
@@ -381,8 +408,10 @@ impl RawThreadExecutor {
     // Safe to call only from the local thread
     fn resume_pending_tasks(&'static self, notify_executor: bool) {
         let mut task_became_ready: bool = false;
+        let mut ready_queue = Pin::static_ref(&self.ready_queue).borrow_mut();
+
         while let Some(pending_ready_task) = self.pending_ready_queue.pop_front() {
-            self.ready_queue.borrow_mut().push_back(pending_ready_task);
+            ready_queue.as_mut().push_back(pending_ready_task);
             task_became_ready = true;
         }
 
@@ -392,13 +421,16 @@ impl RawThreadExecutor {
     }
 
     fn resume_sleeping_tasks(&'static self) {
+        let mut ready_queue = Pin::static_ref(&self.ready_queue).borrow_mut();
+        let mut sleep_queue = Pin::static_ref(&self.sleep_queue).borrow_mut();
+
         // Resume sleeping tasks that should be woken up
         loop {
             let now = Instant::now();
-            if let Some(head) = self.sleep_queue.borrow().head() {
+            if let Some(head) = sleep_queue.as_ref().head() {
                 if head.wakeup_time <= now {
-                    let task = self.sleep_queue.borrow_mut().pop_front().unwrap();
-                    self.ready_queue.borrow_mut().push_back(task);
+                    let task = sleep_queue.as_mut().pop_front().unwrap();
+                    ready_queue.as_mut().push_back(task);
                 } else {
                     break;
                 }
@@ -447,7 +479,7 @@ impl ThreadExecutor {
         self.raw.resume_task(task);
     }
 
-    pub(crate) fn task_sleep_until(&self, task: Pin<&mut RawTask>, deadline: Instant) {
+    pub(crate) fn task_sleep_until(&'static self, task: Pin<&mut RawTask>, deadline: Instant) {
         self.raw.task_sleep_until(task, deadline);
     }
 

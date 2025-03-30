@@ -1,4 +1,4 @@
-use crate::cell::{LockedCell, LockedRefCell};
+use crate::cell::{LockedCell, LockedPinRefCell, LockedRefCell};
 use crate::events::{
     REQUIRE_ALL_EVENTS, SCHEDULER_NOTIFY_EVENT, SCHEDULER_WAKEUP_EVENT, WaitEventsUntilError,
 };
@@ -119,7 +119,7 @@ pub struct RawThread {
     // ceiling priority order so that list head is always one of the highest priority
     // locks. List of scoped locks must be maintained because in Rust programming model
     // nested lock guards may be dropped in any order.
-    pub(crate) scoped_locks: LockedRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
+    pub(crate) scoped_locks: LockedPinRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
 
     // Thread state that tells in which queue the thread currently is
     //  Stopped: Not in any queue
@@ -157,7 +157,7 @@ impl RawThread {
             )),
             main_fn,
             stack: MaybeUninit::uninit(),
-            scoped_locks: LockedRefCell::new(LinkedList::new()),
+            scoped_locks: LockedPinRefCell::new(LinkedList::new()),
             exec_queue_link: Node::new(),
             suspendable: Suspendable::new(),
             waited_events_mask: AtomicU32::new(0),
@@ -207,8 +207,15 @@ impl RawThread {
         ThreadRef::new(self.get_ref())
     }
 
+    // Pin projection of scoped_locks list
+    pub(crate) fn scoped_locks(
+        self: Pin<&Self>,
+    ) -> Pin<&LockedPinRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>> {
+        unsafe { Pin::map_unchecked(self, |s| &s.scoped_locks) }
+    }
+
     pub(crate) unsafe fn acquire_scoped_lock<'key>(
-        &'static self,
+        self: Pin<&'static Self>,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
@@ -217,7 +224,7 @@ impl RawThread {
                 lock.owner
                     .compare_exchange(
                         core::ptr::null_mut(),
-                        self as *const _ as *mut (),
+                        self.get_ref() as *const _ as *mut (),
                         Ordering::AcqRel,
                         Ordering::Relaxed,
                     )
@@ -225,8 +232,9 @@ impl RawThread {
                         panic!("Lock already owned. The scheduler should have prevented this.")
                     });
                 let ceiling_priority = lock.ceiling_priority;
-                self.scoped_locks
+                self.scoped_locks()
                     .borrow_mut(pkey)
+                    .as_mut()
                     .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
 
                 self.update_owned_lock_priority(pkey);
@@ -239,16 +247,16 @@ impl RawThread {
     }
 
     pub(crate) unsafe fn release_scoped_lock<'key>(
-        &'static self,
+        self: Pin<&'static Self>,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
         let owner = lock.owner.load(Ordering::Relaxed);
         if !owner.is_null() {
-            if owner == self as *const _ as *mut () {
+            if owner == self.get_ref() as *const _ as *mut () {
                 unsafe {
                     // SAFETY: The lock is owned by the thread, and the lock is being released.
-                    self.scoped_locks.borrow_mut(pkey).remove(lock);
+                    self.scoped_locks().borrow_mut(pkey).as_mut().remove(lock);
                 }
                 lock.owner.store(core::ptr::null_mut(), Ordering::Release);
 
@@ -306,7 +314,7 @@ impl RawThread {
         }
     }
 
-    pub(crate) fn set_nesting_lock_priority(&self, new_priority: PriorityStatus) {
+    pub(crate) fn set_nesting_lock_priority(self: Pin<&Self>, new_priority: PriorityStatus) {
         loop {
             let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
             let new_priorities = (new_priority, current_priorities.1);
@@ -326,8 +334,8 @@ impl RawThread {
         PreemptLock::with(|pl| Scheduler::cond_reschedule(pl));
     }
 
-    fn update_owned_lock_priority<'key>(&self, pkey: PreemptLockKey<'key>) {
-        let new_priority = if let Some(head) = self.scoped_locks.borrow(pkey).head() {
+    fn update_owned_lock_priority<'key>(self: Pin<&Self>, pkey: PreemptLockKey<'key>) {
+        let new_priority = if let Some(head) = self.scoped_locks().borrow(pkey).as_ref().head() {
             PriorityStatus::from(head.ceiling_priority)
         } else {
             PriorityStatus::invalid()
@@ -472,6 +480,10 @@ impl_linked!(exec_queue_link, RawThread, ExecStateTag);
 pub struct ThreadRef(NonNull<RawThread>);
 
 impl ThreadRef {
+    fn new_from_pin(thread: Pin<&'static RawThread>) -> ThreadRef {
+        ThreadRef(NonNull::from(thread.get_ref()))
+    }
+
     fn new(thread: &'static RawThread) -> ThreadRef {
         ThreadRef(NonNull::from(thread))
     }
@@ -498,7 +510,7 @@ impl ThreadRef {
 
     pub unsafe fn current() -> ThreadRef {
         match Scheduler::current_execution_context() {
-            crate::ExecutionContext::Thread(ctx) => ThreadRef::new(ctx),
+            crate::ExecutionContext::Thread(ctx) => ThreadRef::new_from_pin(ctx),
             crate::ExecutionContext::Interrupt(_) => panic!("No current thread"),
         }
     }
