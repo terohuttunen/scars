@@ -1,11 +1,9 @@
-use crate::cell::LockedRefCell;
-use core::cell::{Cell, Ref, RefMut};
+use core::cell::Cell;
 use core::marker::PhantomData;
 use core::marker::PhantomPinned;
-use core::ops::Deref;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub trait LinkedListTag: 'static {}
 
@@ -58,9 +56,7 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         let node_ptr = item.get_node_ptr();
 
         // Take ownership of the node
-        node.owned
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .expect("Item pushed into a list cannot be a member of a list");
+        node.take_ownership(self.as_mut());
 
         // Adjust old head links
         if let Some(head) = self.as_ref().head() {
@@ -85,9 +81,7 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         let node_ptr = item.get_node_ptr();
 
         // Take ownership of the node
-        node.owned
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .expect("Item pushed into a list cannot be a member of a list");
+        node.take_ownership(self.as_mut());
 
         // Adjust old tail links
         if let Some(tail) = self.as_ref().tail() {
@@ -118,11 +112,13 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
                 next_node.prev.set(None);
                 self.as_mut().replace_head(Some(next_node.as_ptr()));
             } else {
-                self.replace_tail(None);
+                self.as_mut().replace_tail(None);
             }
             head_node.next.set(None);
             head_node.prev.set(None);
-            head_node.owned.store(false, Ordering::Relaxed);
+
+            head_node.release_ownership(self);
+
             return Some(head);
         }
 
@@ -175,12 +171,8 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         }
     }
 
-    /// Safety: The caller must guarantee that the item is in the list.
-    pub unsafe fn remove<'item>(mut self: Pin<&mut Self>, item: Pin<&'item T>) {
+    pub fn remove<'item>(mut self: Pin<&mut Self>, item: Pin<&'item T>) {
         let node = item.get_node();
-        node.owned
-            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
-            .expect("Cannot remove item that is not in a list");
 
         if let Some(prev_node) = node.prev_node() {
             prev_node.next.set(node.next.get());
@@ -191,19 +183,19 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         if let Some(next_link) = node.next_node() {
             next_link.prev.set(node.prev.get());
         } else {
-            self.replace_tail(node.prev.get());
+            self.as_mut().replace_tail(node.prev.get());
         }
 
         node.next.set(None);
         node.prev.set(None);
+
+        node.release_ownership(self);
     }
 }
 
 pub(crate) struct Node<T: LinkedListNode<N>, N: LinkedListTag> {
-    /// True if the node is in a list.
-    // Note: The owning list is not stored in the node
-    // so that the owning LinkedList does not have to be pinned.
-    pub(crate) owned: AtomicBool,
+    /// Owning list. Null if the node is not in a list.
+    pub(crate) owner: AtomicPtr<LinkedList<T, N>>,
     pub(crate) next: Cell<Option<NonNull<Node<T, N>>>>,
     pub(crate) prev: Cell<Option<NonNull<Node<T, N>>>>,
     _pin: PhantomPinned,
@@ -214,7 +206,7 @@ pub(crate) struct Node<T: LinkedListNode<N>, N: LinkedListTag> {
 impl<T: LinkedListNode<N>, N: LinkedListTag> Node<T, N> {
     pub const fn new() -> Node<T, N> {
         Node {
-            owned: AtomicBool::new(false),
+            owner: AtomicPtr::new(core::ptr::null_mut()),
             next: Cell::new(None),
             prev: Cell::new(None),
             _pin: PhantomPinned,
@@ -238,11 +230,45 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> Node<T, N> {
     }
 
     pub fn in_list(&self) -> bool {
-        self.owned.load(Ordering::Relaxed)
+        self.owner.load(Ordering::Relaxed) != core::ptr::null_mut()
     }
 
     fn as_ptr(&self) -> NonNull<Node<T, N>> {
         unsafe { NonNull::new_unchecked(self as *const Node<T, N> as *mut Node<T, N>) }
+    }
+
+    fn take_ownership(&self, list: Pin<&mut LinkedList<T, N>>) {
+        self.owner
+            .compare_exchange(
+                core::ptr::null_mut(),
+                unsafe { list.get_unchecked_mut() },
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .expect("Cannot acquire a node that is already in a list");
+    }
+
+    fn try_take_ownership(&self, list: Pin<&mut LinkedList<T, N>>) -> Result<(), ()> {
+        self.owner
+            .compare_exchange(
+                core::ptr::null_mut(),
+                unsafe { list.get_unchecked_mut() },
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
+    fn release_ownership(&self, list: Pin<&mut LinkedList<T, N>>) {
+        self.owner
+            .compare_exchange(
+                unsafe { list.get_unchecked_mut() },
+                core::ptr::null_mut(),
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .expect("Cannot release a node that is not in the list");
     }
 }
 
@@ -355,12 +381,13 @@ impl<'list, T: LinkedListNode<N>, N: LinkedListTag> CursorMut<'list, T, N> {
 
                 match maybe_prev {
                     Some(prev_ptr) => {
+                        item.get_node().take_ownership(self.list.as_mut());
+
                         let prev_node = unsafe { prev_ptr.as_ref() };
                         prev_node.next.set(Some(node_link_ptr));
                         item.get_node().prev.set(Some(prev_ptr));
                         item.get_node().next.set(Some(current_ptr));
                         current_node.prev.set(Some(node_link_ptr));
-                        current_node.owned.store(true, Ordering::Relaxed);
                     }
                     None => {
                         self.list.as_mut().push_front(item);
@@ -374,8 +401,8 @@ impl<'list, T: LinkedListNode<N>, N: LinkedListTag> CursorMut<'list, T, N> {
         }
     }
 
-    pub fn insert_after<'item>(&mut self, node: Pin<&'item T>) {
-        let node_ptr = node.get_node_ptr();
+    pub fn insert_after<'item>(&mut self, item: Pin<&'item T>) {
+        let node_ptr = item.get_node_ptr();
         match self.current {
             Some(current_ptr) => {
                 let current_node = unsafe { current_ptr.as_ref() };
@@ -383,19 +410,20 @@ impl<'list, T: LinkedListNode<N>, N: LinkedListTag> CursorMut<'list, T, N> {
 
                 match maybe_next {
                     Some(next_ptr) => {
+                        item.get_node().take_ownership(self.list.as_mut());
+
                         let next_node = unsafe { next_ptr.as_ref() };
                         next_node.prev.set(Some(node_ptr));
-                        node.get_node().prev.set(Some(current_ptr));
-                        node.get_node().next.set(Some(next_ptr));
+                        item.get_node().prev.set(Some(current_ptr));
+                        item.get_node().next.set(Some(next_ptr));
                         current_node.next.set(Some(node_ptr));
-                        current_node.owned.store(true, Ordering::Relaxed);
                     }
                     None => {
-                        self.list.as_mut().push_back(node);
+                        self.list.as_mut().push_back(item);
                     }
                 }
             }
-            None => self.list.as_mut().push_front(node),
+            None => self.list.as_mut().push_front(item),
         }
     }
 
@@ -527,7 +555,7 @@ mod test {
         list.as_mut().push_back(b.as_ref());
         list.as_mut().push_back(c.as_ref());
 
-        unsafe { list.as_mut().remove(c.as_ref()) };
+        list.as_mut().remove(c.as_ref());
         let maybe_a = list.as_mut().pop_front();
         assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_b = list.pop_front();
@@ -553,7 +581,11 @@ mod test {
         list.as_mut().push_back(b.as_ref());
         list.as_mut().push_back(c.as_ref());
 
-        unsafe { list.as_mut().remove(a.as_ref()) };
+        assert!(super::LinkedListNode::<Tag0>::in_list(a.as_ref().get_ref()));
+        list.as_mut().remove(a.as_ref());
+        assert!(!super::LinkedListNode::<Tag0>::in_list(
+            a.as_ref().get_ref()
+        ));
         let maybe_b = list.as_mut().pop_front();
         assert!(&*maybe_b.unwrap() as *const Foo == &*b as *const Foo);
         let maybe_c = list.pop_front();
@@ -561,7 +593,7 @@ mod test {
     }
 
     #[test_case]
-    fn test_linked_list_5() {
+    fn test_linked_list_6() {
         let mut list = pin!(LinkedList::<Foo, Tag0>::new());
         let a = pin!(Foo {
             anode: Node::new(),
@@ -579,7 +611,7 @@ mod test {
         list.as_mut().push_back(b.as_ref());
         list.as_mut().push_back(c.as_ref());
 
-        unsafe { list.as_mut().remove(b.as_ref()) };
+        list.as_mut().remove(b.as_ref());
         let maybe_a = list.as_mut().pop_front();
         assert!(&*maybe_a.unwrap() as *const Foo == &*a as *const Foo);
         let maybe_c = list.pop_front();
@@ -587,7 +619,7 @@ mod test {
     }
 
     #[test_case]
-    fn test_linked_list_5() {
+    fn test_linked_list_7() {
         let mut list = pin!(LinkedList::<Foo, Tag0>::new());
         let a = pin!(Foo {
             anode: Node::new(),
@@ -596,7 +628,7 @@ mod test {
 
         list.as_mut().push_back(a.as_ref());
 
-        unsafe { list.as_mut().remove(a.as_ref()) };
+        list.as_mut().remove(a.as_ref());
         assert!(list.as_mut().pop_front().is_none());
     }
 }

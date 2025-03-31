@@ -166,9 +166,7 @@ impl RawInterruptHandler {
     /// SAFETY: Caller must guarantee that lock has been acquired by the interrupt handler
     pub(crate) unsafe fn release_lock(&self, lock: Pin<&RawCeilingLock>) {
         let locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
-        unsafe {
-            locks.remove(lock);
-        }
+        locks.remove(lock);
 
         self.update_owned_lock_priority();
     }

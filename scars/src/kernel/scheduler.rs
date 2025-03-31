@@ -88,7 +88,7 @@ impl RawScheduler {
     }
 }
 
-// Pin projections
+// Pin projections from Pin<&RawScheduler> to pinned fields
 impl RawScheduler {
     fn ready_queue(self: Pin<&Self>) -> Pin<&LinkedList<RawThread, ExecStateTag>> {
         unsafe { self.map_unchecked(|s| &s.ready_queue) }
@@ -231,11 +231,8 @@ impl RawScheduler {
         match thread.state.get(pkey) {
             ThreadExecutionState::Blocked => {
                 thread.set_wakeup_event();
-                unsafe {
-                    // SAFETY: The thread state is Blocked, so it is safe to assume that the
-                    // thread is in the blocked list.
-                    self.as_mut().blocked_list_mut().remove(thread);
-                }
+
+                self.as_mut().blocked_list_mut().remove(thread);
                 self.insert_to_ready_queue(pkey, thread);
             }
             _ => (),
@@ -332,14 +329,9 @@ impl RawScheduler {
         interrupt: &'static RawInterruptHandler,
     ) {
         if interrupt.suspendable.in_sleep_queue() {
-            unsafe {
-                // SAFETY: The call above checks that the interrupt is in the sleep queue.
-                // There is only one LinkedList<Suspendable, SleepQueueTag> in the system,
-                // so it must be the scheduler's sleep queue.
-                self.as_mut()
-                    .sleep_queue_mut()
-                    .remove(Pin::static_ref(&interrupt.suspendable));
-            }
+            self.as_mut()
+                .sleep_queue_mut()
+                .remove(Pin::static_ref(&interrupt.suspendable));
         }
         let deadline = interrupt.suspendable.deadline();
         self.as_mut()
@@ -359,13 +351,8 @@ impl RawScheduler {
         // Asynchronous tasks associated with the interrupt can block, and be resumed.
 
         if interrupt.suspendable.in_sleep_queue() {
-            unsafe {
-                // SAFETY: The call above checks that the interrupt is in the sleep queue.
-                // There is only one LinkedList<Suspendable, SleepQueueTag> in the system,
-                // so it must be the scheduler's sleep queue.
-                self.sleep_queue_mut()
-                    .remove(Pin::static_ref(&interrupt.suspendable));
-            }
+            self.sleep_queue_mut()
+                .remove(Pin::static_ref(&interrupt.suspendable));
         }
 
         interrupt.set_pending_executor_poll();
@@ -390,27 +377,14 @@ impl RawScheduler {
                 // Remove from sleep queue if blocking operation has deadline
                 let suspendable = thread.suspendable_ref();
                 if suspendable.in_sleep_queue() {
-                    unsafe {
-                        // SAFETY: The call above checks that the thread is in the sleep queue.
-                        // There is only one LinkedList<Suspendable, SleepQueueTag> in the system,
-                        // so it must be the scheduler's sleep queue.
-                        self.as_mut().sleep_queue_mut().remove(suspendable);
-                    }
+                    self.as_mut().sleep_queue_mut().remove(suspendable);
                 }
-                unsafe {
-                    // SAFETY: The thread is in the Blocked state, so it is safe to assume that the
-                    // thread is in the blocked list.
-                    self.as_mut().blocked_list_mut().remove(thread);
-                }
+                self.as_mut().blocked_list_mut().remove(thread);
                 self.as_mut().insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Suspended => {
                 thread.set_resume_event();
-                unsafe {
-                    // SAFETY: The thread is in the Suspended state, so it is safe to assume that the
-                    // thread is in the suspended list.
-                    self.as_mut().suspended_list_mut().remove(thread);
-                }
+                self.as_mut().suspended_list_mut().remove(thread);
                 self.as_mut().insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Created => {
@@ -461,11 +435,7 @@ impl RawScheduler {
 
         match thread.state.get(pkey) {
             ThreadExecutionState::Ready => {
-                unsafe {
-                    // SAFETY: The thread is in the Ready state, so it is safe to assume that the
-                    // thread is in the ready queue.
-                    self.as_mut().ready_queue_mut().remove(thread);
-                }
+                self.as_mut().ready_queue_mut().remove(thread);
                 self.insert_to_suspended_list(pkey, thread);
             }
             ThreadExecutionState::Running => {
