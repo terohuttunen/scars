@@ -255,7 +255,6 @@ impl RawThread {
         if !owner.is_null() {
             if owner == self.get_ref() as *const _ as *mut () {
                 self.scoped_locks().borrow_mut(pkey).as_mut().remove(lock);
-
                 lock.owner.store(core::ptr::null_mut(), Ordering::Release);
 
                 self.update_owned_lock_priority(pkey);

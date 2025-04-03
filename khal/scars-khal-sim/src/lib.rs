@@ -7,6 +7,7 @@ use core::mem::MaybeUninit;
 use core::ptr::{NonNull, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use scars_khal::*;
+use unrecoverable_error::*;
 
 // Sent to the current thread on syscall
 const SYSCALL_SIGNAL: libc::c_int = libc::SIGUSR1;
@@ -39,7 +40,7 @@ static mut __EXTERNAL_INTERRUPTS: [InterruptVector; MAX_INTERRUPT + 1] = [Interr
     locals_ptr: core::ptr::null(),
 }; MAX_INTERRUPT + 1];
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum FaultKind {
     Unknown = 255,
 }
@@ -61,6 +62,8 @@ impl FaultKind {
     }
 }
 
+#[derive(Debug, UnrecoverableError)]
+#[unrecoverable_error("Simulator fault: {kind:?}")]
 pub struct Fault {
     kind: FaultKind,
 }
@@ -71,6 +74,7 @@ impl Fault {
     }
 }
 
+/*
 impl FaultInfo<VirtualContext> for Fault {
     fn code(&self) -> usize {
         self.kind as usize
@@ -88,6 +92,7 @@ impl FaultInfo<VirtualContext> for Fault {
         unimplemented!()
     }
 }
+    */
 
 pub struct VirtualContext {
     // Access to `interrupts_enabled`, `resumed` and `suspension` is protected with the `suspension_lock` mutex.
@@ -678,7 +683,6 @@ impl AlarmClockController for Simulator {
         if unsafe { libc::clock_gettime(SIMULATOR_CLOCK, time.as_mut_ptr()) } != 0 {
             panic!("Error: failed to read the clock");
         }
-
         let time = unsafe { time.assume_init() };
         VirtualTimer::timespec_to_ticks(time)
     }

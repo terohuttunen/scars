@@ -24,6 +24,7 @@ scars-khal-sim = { version = "0.1.0", path = "../khal/scars-khal-sim", optional 
 scars-test = { version = "0.1.0", path = "../scars-test" }
 aligned = "0.4.2"
 pin-project = "1.1.7"
+unrecoverable-error = { version = "0.1.0", path="../unrecoverable-error" }
 
 
 [dev-dependencies]

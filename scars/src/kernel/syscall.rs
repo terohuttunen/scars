@@ -17,7 +17,8 @@ use core::cell::SyncUnsafeCell;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
-use scars_khal::FlowController;
+use scars_khal::{FlowController, UnrecoverableError};
+use core::marker::PhantomData;
 
 pub const SYSCALL_ID_YIELD: usize = 1;
 pub const SYSCALL_ID_WAIT: usize = 2;
@@ -95,14 +96,16 @@ pub fn poll_interrupt_executor(interrupt: &RawInterruptHandler) {
     );
 }
 
-pub fn runtime_error(
-    error: RuntimeError,
-    location: &'static ::core::panic::Location<'static>,
-) -> ! {
+struct UnrecoverableErrorWrapper<'a> {
+    error: &'a dyn UnrecoverableError,
+}
+
+pub fn runtime_error(error: &dyn UnrecoverableError) -> ! {
+    let wrapper = UnrecoverableErrorWrapper { error };
     let _ = syscall(
         SYSCALL_ID_RUNTIME_ERROR,
-        error as usize,
-        location as *const ::core::panic::Location<'static> as usize,
+        &wrapper as *const _ as usize,
+        0,
         0,
     );
     unreachable!();
@@ -146,11 +149,8 @@ unsafe fn _private_kernel_syscall_handler(
                 Scheduler::delay_thread_until(time);
             }
             SYSCALL_ID_RUNTIME_ERROR => {
-                let location = &*(arg1 as *const ::core::panic::Location<'static>);
-                crate::kernel::exception::handle_runtime_error(
-                    RuntimeError::from_id(arg0),
-                    location,
-                );
+                let wrapper = &*(arg0 as *const UnrecoverableErrorWrapper);
+                crate::kernel::exception::handle_runtime_error(wrapper.error);
             }
             SYSCALL_ID_START_THREAD => {
                 let thread: &'static mut RawThread = &mut *(arg0 as *mut RawThread);

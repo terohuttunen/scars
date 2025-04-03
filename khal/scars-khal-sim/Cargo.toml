@@ -15,4 +15,4 @@ test = false
 bit_field = "0.10.2"
 libc = { version = "1.0.0-alpha.1", path = "../../../libc" }
 scars-khal = { version = "0.1.0", path = "../../scars-khal" }
-
+unrecoverable-error = { path = "../../unrecoverable-error" }

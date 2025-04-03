@@ -14,6 +14,7 @@ use crate::kernel::{
     priority::{AnyPriority, Priority, PriorityStatus},
     syscall,
     waiter::{SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag},
+    exception::{handle_kernel_error, KernelError},
 };
 use crate::printkln;
 use crate::sync::{
@@ -460,8 +461,9 @@ impl RawScheduler {
                 self.insert_to_suspended_list(pkey, previous);
             }
             ThreadExecutionState::Blocked => {
-                // A blocked thread cannot be suspended
-                panic!("Cannot suspend blocked thread");
+                // A blocked thread holds its locks and prevents tasks below its priority
+                // from running until it releases the locks, even when suspended.
+                self.insert_to_suspended_list(pkey, thread);
             }
             ThreadExecutionState::Suspended => {
                 // Thread is already suspended
@@ -479,10 +481,11 @@ impl RawScheduler {
 
     fn check_stack_overflow(&self) {
         if !unsafe { self.current_thread.stack.assume_init_ref() }.is_alive() {
-            panic!(
-                "Stack overflow detected from canary in thread {:?}",
-                self.current_thread.name
-            );
+            let error = KernelError::StackOverflow {
+                thread_name: self.current_thread.name,
+                stack_size: unsafe { self.current_thread.stack.assume_init_ref().size() },
+            };
+            handle_kernel_error(&error);
         }
     }
 

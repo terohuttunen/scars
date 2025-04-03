@@ -1,0 +1,15 @@
+[package]
+name = "unrecoverable-error"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+defmt = { version = "0.3.10", optional = true }
+unrecoverable-error-macros = { version = "0.1.0", path = "../unrecoverable-error-macros", features = ["defmt"] }
+
+[features]
+default = ["defmt", "error_code", "debug", "display"]
+defmt = ["dep:defmt"]
+error_code = []
+debug = []
+display = []

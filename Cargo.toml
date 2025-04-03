@@ -11,7 +11,9 @@ members = [
     "scars-macros",
     "examples/stm32f4/interrupt",
     "examples/stm32f4/tasking",
-    "examples/sim/hello"]
+    "examples/sim/hello",
+    "unrecoverable-error",
+    "unrecoverable-error-macros"]
 resolver = "2"
 
 [profile.dev]

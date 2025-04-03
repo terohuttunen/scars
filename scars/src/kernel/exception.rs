@@ -2,107 +2,103 @@ use crate::abort;
 use crate::kernel::hal::{Context, Fault};
 use crate::printkln;
 use core::panic::{Location, PanicInfo};
-use scars_khal::{FaultInfo, FlowController};
+use scars_khal::FlowController;
+use unrecoverable_error::UnrecoverableError;
 
 #[macro_export]
 macro_rules! runtime_error {
     ($kind:expr) => {{
         use $crate::kernel::exception::RuntimeError;
-        $crate::kernel::syscall::runtime_error($kind, ::core::panic::Location::caller());
+        $crate::kernel::syscall::runtime_error(&$kind);
     }};
 }
 
-pub enum Exception<'a> {
-    Panic(&'a PanicInfo<'a>),
-    Fault(&'a Fault),
-    RuntimeError(&'a RuntimeError),
+pub struct Exception {
 }
 
-#[derive(Debug)]
-#[repr(usize)]
+#[derive(Debug, UnrecoverableError)]
+pub enum RtosError<'a> {
+    /// Internal kernel error
+    #[unrecoverable_error("Kernel error: {0}")]
+    Kernel(&'a KernelError),
+
+    /// Hardware error from kernel HAL
+    #[unrecoverable_error("Hardware error: {0}")]
+    Hardware(&'a Fault),
+
+    /// Runtime error
+    #[unrecoverable_error("Runtime error: {0}")]
+    RuntimeError(&'a dyn UnrecoverableError),
+
+    /// Panic from Rust runtime
+    #[unrecoverable_error("Panic: {0}")]
+    Panic(&'a PanicInfo<'a>),
+}
+
+#[derive(Debug, UnrecoverableError)]
+pub enum KernelError {
+    /// Stack overflow
+    #[unrecoverable_error("Stack overflow in thread {thread_name} with stack size {stack_size}")]
+    StackOverflow {
+        thread_name: &'static str,
+        stack_size: usize,
+    },
+}
+
+/// Runtime errors are errors that can happen at runtime, and are not
+/// related to the kernel or hardware. They are caused by incorrect usage
+/// of the kernel API by the application.
+#[derive(Debug, UnrecoverableError)]
 pub enum RuntimeError {
     /// Idle task may not suspend, because it has to be always ready to run.
     /// Some task must always be able to run if others are suspended.
-    IdleTaskSuspend = 1, // TODO: is this even needed any more?
+    IdleTaskSuspend,
 
     /// Attempt to access mutex from a task with higher than mutex ceiling
     /// priority.
-    CeilingPriorityViolation = 2,
+    CeilingPriorityViolation,
 
     /// Attempt to release lock from different task than from where it was
     /// acquired.
-    LockOwnerViolation = 3,
+    LockOwnerViolation,
 
     /// Tasks should never terminate
-    TaskTerminated = 4,
+    TaskTerminated,
 
     /// Locks cannot be locked recursively
-    RecursiveLock = 5,
+    RecursiveLock,
 
     /// Forbidden operation in interrupt handler
-    InterruptHandlerViolation = 6,
+    InterruptHandlerViolation,
 
-    BlockingForbidden = 7,
+    BlockingForbidden,
 
     /// Attempt to use ceiling locking in idle task
-    IdleThreadCeilingLock = 8,
-
-    Unknown,
+    IdleThreadCeilingLock,
 }
 
-impl RuntimeError {
-    pub fn from_id(id: usize) -> RuntimeError {
-        match id {
-            1 => RuntimeError::IdleTaskSuspend,
-            2 => RuntimeError::CeilingPriorityViolation,
-            3 => RuntimeError::LockOwnerViolation,
-            4 => RuntimeError::TaskTerminated,
-            5 => RuntimeError::RecursiveLock,
-            6 => RuntimeError::InterruptHandlerViolation,
-            7 => RuntimeError::IdleThreadCeilingLock,
-            _ => RuntimeError::Unknown,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            RuntimeError::IdleTaskSuspend => "IdleTaskSuspend",
-            RuntimeError::CeilingPriorityViolation => "CeilingPriorityViolation",
-            RuntimeError::LockOwnerViolation => "MutexOwnerViolation",
-            RuntimeError::TaskTerminated => "TaskTerminated",
-            RuntimeError::RecursiveLock => "RecursiveMutex",
-            RuntimeError::InterruptHandlerViolation => "InterruptHandlerViolation",
-            RuntimeError::BlockingForbidden => "BlockingForbidden",
-            RuntimeError::IdleThreadCeilingLock => "IdleTaskCeilingLock",
-            RuntimeError::Unknown => "Unknown",
-        }
-    }
-}
-
-pub fn handle_runtime_error(error: RuntimeError, location: &Location<'static>) -> ! {
+pub fn handle_runtime_error(error: &dyn UnrecoverableError) -> ! {
     #[cfg(not(feature = "khal-sim"))]
     unsafe {
         _user_exception_handler(Exception::RuntimeError(&error))
     };
-    printkln!("Runtime error: {} at {}", error.as_str(), location);
+    let error = RtosError::RuntimeError(error);
+    handle_rtos_error(&error);
+}
+
+pub fn handle_kernel_error(error: &KernelError) -> ! {
+    let error = RtosError::Kernel(error);
+    handle_rtos_error(&error);
+}
+
+pub fn handle_rtos_error(error: &RtosError) -> ! {
+    printkln!("RTOS error: {}", error);
     abort()
 }
 
 #[unsafe(no_mangle)]
-pub unsafe fn _private_hardware_exception_handler(fault: *const u8) -> ! {
-    let fault = unsafe { &*(fault as *const Fault) };
-
-    #[cfg(not(feature = "khal-sim"))]
-    unsafe {
-        _user_exception_handler(Exception::Fault(fault))
-    };
-
-    printkln!(
-        "Unrecoverable fault: {} at 0x{:x?}",
-        fault.name(),
-        fault.address(),
-    );
-    printkln!("{:?}", fault.context());
+pub unsafe fn _private_hardware_exception_handler(error: &dyn UnrecoverableError) -> ! {
+    printkln!("Unrecoverable error:\n{}", error);
     abort()
 }
 

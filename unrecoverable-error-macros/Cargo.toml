@@ -1,0 +1,18 @@
+[package]
+name = "unrecoverable-error-macros"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+regex = "1.11.1"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
+
+[features]
+default = ["defmt"]
+defmt = []
+
+[lib]
+proc-macro = true
