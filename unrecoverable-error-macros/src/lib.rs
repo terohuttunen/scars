@@ -1,8 +1,137 @@
+//! Procedural macros for the `unrecoverable-error` crate.
+//!
+//! This crate provides procedural macros for the `unrecoverable-error` crate:
+//! - `#[derive(UnrecoverableError)]`: Derives the `UnrecoverableError` trait with custom formatting
+//! - `#[unrecoverable_error_handler]`: Marks a function as the error handler
+//! - `unrecoverable_error!`: Macro for raising unrecoverable errors
+//!
+//! # Custom Error Formatting
+//!
+//! The derive macro supports custom formatting for both structs and enums:
+//!
+//! ```rust
+//! use unrecoverable_error::UnrecoverableError;
+//!
+//! #[derive(Debug, UnrecoverableError)]
+//! #[unrecoverable_error("Invalid configuration: {field} = {value}")]
+//! struct ConfigError<'a> {
+//!     field: &'a str,
+//!     value: &'a str,
+//! }
+//!
+//! #[derive(Debug, UnrecoverableError)]
+//! enum MyError<'a> {
+//!     #[unrecoverable_error("Invalid input: {value}")]
+//!     InvalidInput { value: &'a str },
+//!     #[unrecoverable_error("Timeout after {ms}ms")]
+//!     Timeout { ms: u32 },
+//!     #[unrecoverable_error("Connection failed: {reason}")]
+//!     ConnectionFailed { reason: &'a str },
+//! }
+//! ```
+//!
+//! The format strings support both `{}` and `{:?}` for field values:
+//!
+//! ```rust
+//! use unrecoverable_error::UnrecoverableError;
+//!
+//! #[derive(Debug, UnrecoverableError)]
+//! enum DebugError {
+//!     #[unrecoverable_error("Debug value: {value:?}")]
+//!     Debug { value: Vec<u8> },
+//! }
+//! ```
+
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use syn::parse_macro_input;
 
+/// Derives the `UnrecoverableError` trait for a type with custom formatting.
+///
+/// This macro can be used on structs and enums to implement the `UnrecoverableError` trait.
+/// It requires that the type already implements `Debug` and `Display`.
+///
+/// # Custom Formatting
+///
+/// You can customize the error message using the `#[unrecoverable_error]` attribute:
+///
+/// ```rust
+/// use unrecoverable_error::UnrecoverableError;
+///
+/// #[derive(Debug, UnrecoverableError)]
+/// #[unrecoverable_error("Invalid configuration: {field} = {value}")]
+/// struct ConfigError<'a> {
+///     field: &'a str,
+///     value: &'a str,
+/// }
+/// ```
+///
+/// For enums, you can customize each variant:
+///
+/// ```rust
+/// use unrecoverable_error::UnrecoverableError;
+///
+/// #[derive(Debug, UnrecoverableError)]
+/// enum MyError<'a> {
+///     #[unrecoverable_error("Invalid input: {value}")]
+///     InvalidInput { value: &'a str },
+///     #[unrecoverable_error("Timeout after {ms}ms")]
+///     Timeout { ms: u32 },
+/// }
+/// ```
+///
+/// The format strings support both `{}` and `{:?}` for field values:
+///
+/// ```rust
+/// use unrecoverable_error::UnrecoverableError;
+///
+/// #[derive(Debug, UnrecoverableError)]
+/// enum DebugError {
+///     #[unrecoverable_error("Debug value: {value:?}")]
+///     Debug { value: Vec<u8> },
+/// }
+/// ```
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```rust
+/// use unrecoverable_error::UnrecoverableError;
+///
+/// #[derive(Debug, UnrecoverableError)]
+/// struct MyError;
+/// ```
+///
+/// With custom formatting:
+///
+/// ```rust
+/// use unrecoverable_error::UnrecoverableError;
+///
+/// #[derive(Debug, UnrecoverableError)]
+/// #[unrecoverable_error("Error in {module}: {message}")]
+/// struct ModuleError<'a> {
+///     module: &'a str,
+///     message: &'a str,
+/// }
+/// ```
+///
+/// Enum with custom formatting:
+///
+/// ```rust
+/// use unrecoverable_error::UnrecoverableError;
+///
+/// #[derive(Debug, UnrecoverableError)]
+/// enum NetworkError<'a> {
+///     #[unrecoverable_error("Connection failed to {host}:{port}")]
+///     ConnectionFailed { host: &'a str, port: u16 },
+///     #[unrecoverable_error("Timeout after {ms}ms")]
+///     Timeout { ms: u32 },
+///     #[unrecoverable_error("Invalid response: {status:?}")]
+///     InvalidResponse { status: Vec<u8> },
+/// }
+/// ```
 #[proc_macro_derive(UnrecoverableError, attributes(unrecoverable_error))]
 pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
@@ -198,4 +327,91 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+/// Marks a function as the unrecoverable error handler.
+///
+/// This attribute macro marks a function as the handler for unrecoverable errors.
+/// The function must have the signature `fn(&UnrecoverableErrorInfo) -> !`.
+///
+/// # Examples
+///
+/// Using the fully qualified path:
+///
+/// ```rust
+/// use unrecoverable_error::{UnrecoverableError, UnrecoverableErrorInfo};
+///
+/// #[unrecoverable_error_handler]
+/// fn my_handler(info: &UnrecoverableErrorInfo) -> ! {
+///     if let Some(location) = info.location {
+///         // Log error with location
+///     }
+///     // Terminate the program
+///     core::process::exit(1);
+/// }
+/// ```
+///
+/// Using the type directly:
+///
+/// ```rust
+/// use unrecoverable_error::UnrecoverableError;
+///
+/// #[unrecoverable_error_handler]
+/// fn my_handler(info: &::unrecoverable_error::UnrecoverableErrorInfo) -> ! {
+///     if let Some(location) = info.location {
+///         // Log error with location
+///     }
+///     // Terminate the program
+///     core::process::exit(1);
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn unrecoverable_error_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemFn);
+    let fn_block = &input.block;
+    let fn_attrs = &input.attrs;
+    let fn_vis = &input.vis;
+    let fn_sig = &input.sig;
+    let fn_ident = &input.sig.ident;
+
+    quote! {
+        #(#fn_attrs)*
+        #[unsafe(export_name = "_unrecoverable_error_handler")]
+        #fn_vis #fn_sig {
+            const _: () = {
+                let _: fn(&::unrecoverable_error::UnrecoverableErrorInfo) -> ! = #fn_ident;
+            };
+            #fn_block
+        }
+    }
+    .into()
+}
+
+/// Raises an unrecoverable error.
+///
+/// This macro takes an expression that evaluates to an `UnrecoverableError`
+/// and calls the error handler with it.
+///
+/// # Examples
+///
+/// ```rust
+/// use unrecoverable_error::{UnrecoverableError, unrecoverable_error};
+///
+/// #[derive(Debug, UnrecoverableError)]
+/// #[unrecoverable_error("My error occurred")]
+/// struct MyError;
+///
+/// // This will call the error handler
+/// unrecoverable_error!(MyError);
+/// ```
+#[proc_macro]
+pub fn unrecoverable_error(input: TokenStream) -> TokenStream {
+    let error = parse_macro_input!(input as syn::Expr);
+
+    quote! {
+        unsafe {
+            unrecoverable_error::handle_unrecoverable_error(&#error)
+        }
+    }
+    .into()
 }
