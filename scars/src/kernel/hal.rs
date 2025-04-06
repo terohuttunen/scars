@@ -26,106 +26,89 @@ pub(crate) const TICK_FREQ_HZ: u64 = <kernel_hal::HAL as AlarmClockController>::
 
 pub(crate) type StackAlignment = <kernel_hal::HAL as FlowController>::StackAlignment;
 
-pub struct Hal {
-    hal: SyncUnsafeCell<MaybeUninit<kernel_hal::HAL>>,
-}
-
-impl Hal {
-    fn get(&self) -> *mut MaybeUninit<kernel_hal::HAL> {
-        self.hal.get()
-    }
-
-    fn instance() -> &'static kernel_hal::HAL {
-        unsafe { (&*HAL.get()).assume_init_ref() }
-    }
-}
-
-static HAL: Hal = Hal {
-    hal: SyncUnsafeCell::new(MaybeUninit::uninit()),
-};
-
 pub(crate) fn init_hal() {
     unsafe {
-        kernel_hal::HAL::init((&mut *HAL.get()).as_mut_ptr());
+        kernel_hal::HAL::init(kernel_hal::HAL::instance() as *const _ as *mut _);
     }
 }
+
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn clock_ticks() -> u64 {
-    Hal::instance().clock_ticks()
+    <kernel_hal::HAL as AlarmClockController>::clock_ticks()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn set_alarm(at: Option<u64>) {
-    Hal::instance().set_wakeup(at)
+    <kernel_hal::HAL as AlarmClockController>::set_wakeup(at)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn get_interrupt_priority(interrupt_number: u16) -> u8 {
-    Hal::instance().get_interrupt_priority(interrupt_number)
+    <kernel_hal::HAL as InterruptController>::get_interrupt_priority(interrupt_number)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn set_interrupt_priority(interrupt_number: u16, prio: InterruptPriority) -> InterruptPriority {
-    Hal::instance().set_interrupt_priority(interrupt_number, prio)
+    <kernel_hal::HAL as InterruptController>::set_interrupt_priority(interrupt_number, prio)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn claim_interrupt() -> <kernel_hal::HAL as InterruptController>::InterruptClaim {
-    Hal::instance().claim_interrupt()
+    <kernel_hal::HAL as InterruptController>::claim_interrupt()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn complete_interrupt(claim: <kernel_hal::HAL as InterruptController>::InterruptClaim) {
-    Hal::instance().complete_interrupt(claim)
+    <kernel_hal::HAL as InterruptController>::complete_interrupt(claim)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn enable_interrupt(interrupt_number: u16) {
-    Hal::instance().enable_interrupt(interrupt_number)
+    <kernel_hal::HAL as InterruptController>::enable_interrupt(interrupt_number)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn disable_interrupt(interrupt_number: u16) {
-    Hal::instance().disable_interrupt(interrupt_number)
+    <kernel_hal::HAL as InterruptController>::disable_interrupt(interrupt_number)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn get_interrupt_threshold() -> u8 {
-    Hal::instance().get_interrupt_threshold()
+    <kernel_hal::HAL as InterruptController>::get_interrupt_threshold()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn set_interrupt_threshold(threshold: u8) {
-    Hal::instance().set_interrupt_threshold(threshold);
+    <kernel_hal::HAL as InterruptController>::set_interrupt_threshold(threshold);
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn interrupt_status() -> bool {
-    Hal::instance().interrupt_status()
+    <kernel_hal::HAL as InterruptController>::interrupt_status()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn acquire() -> bool {
-    Hal::instance().acquire()
+    <kernel_hal::HAL as InterruptController>::acquire()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn restore(restore_state: bool) {
-    Hal::instance().restore(restore_state)
+    <kernel_hal::HAL as InterruptController>::restore(restore_state)
 }
 
 #[allow(dead_code)]

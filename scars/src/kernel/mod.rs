@@ -14,7 +14,7 @@ pub(crate) use exception::{RuntimeError, handle_runtime_error};
 pub(crate) use priority::{
     AnyPriority, AtomicPriority, InterruptPriority, Priority, ThreadPriority,
 };
-use scars_khal::{ContextInfo, FlowController};
+use scars_khal::{ContextInfo, FlowController, HardwareAbstractionLayer};
 //pub use scheduler::print_threads;
 pub(crate) use scheduler::Scheduler;
 pub(crate) use stack::Stack;

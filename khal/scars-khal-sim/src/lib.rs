@@ -2,7 +2,7 @@
 #![feature(linkage)]
 extern crate libc;
 extern crate std;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::{Cell, UnsafeCell, SyncUnsafeCell};
 use core::mem::MaybeUninit;
 use core::ptr::{NonNull, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
@@ -17,6 +17,11 @@ const ALARM_SIGNAL: libc::c_int = libc::SIGALRM;
 
 // The clock that the simulator uses for RTOS time and timeouts
 const SIMULATOR_CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
+
+pub type HAL = Simulator;
+
+// Static HAL instance using SyncUnsafeCell directly
+static HAL: SyncUnsafeCell<MaybeUninit<Simulator>> = SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub mod pac {
     pub enum Interrupt {
@@ -457,57 +462,57 @@ impl InterruptController for Simulator {
     const MAX_INTERRUPT_NUMBER: usize = 0;
     type InterruptClaim = InterruptClaim;
 
-    fn get_interrupt_priority(&self, interrupt_number: u16) -> u8 {
-        self.interrupt_controller.priority[interrupt_number as usize].load(Ordering::SeqCst)
+    fn get_interrupt_priority(interrupt_number: u16) -> u8 {
+        Self::instance().interrupt_controller.priority[interrupt_number as usize].load(Ordering::SeqCst)
     }
 
-    fn set_interrupt_priority(&self, interrupt_number: u16, prio: u8) -> u8 {
-        self.interrupt_controller.priority[interrupt_number as usize].swap(prio, Ordering::SeqCst)
-    }
-
-    #[inline(always)]
-    fn get_interrupt_threshold(&self) -> u8 {
-        self.interrupt_controller.threshold.load(Ordering::SeqCst)
+    fn set_interrupt_priority(interrupt_number: u16, prio: u8) -> u8 {
+        Self::instance().interrupt_controller.priority[interrupt_number as usize].swap(prio, Ordering::SeqCst)
     }
 
     #[inline(always)]
-    fn set_interrupt_threshold(&self, threshold: u8) {
-        self.interrupt_controller
+    fn get_interrupt_threshold() -> u8 {
+        Self::instance().interrupt_controller.threshold.load(Ordering::SeqCst)
+    }
+
+    #[inline(always)]
+    fn set_interrupt_threshold(threshold: u8) {
+        Self::instance().interrupt_controller
             .threshold
             .store(threshold, Ordering::SeqCst)
         // TODO: if threshold was decreased, pending interrupts might
         // become executable, if they are enabled.
     }
 
-    fn claim_interrupt(&self) -> InterruptClaim {
+    fn claim_interrupt() -> InterruptClaim {
         unimplemented!()
     }
 
-    fn complete_interrupt(&self, _claim: InterruptClaim) {
+    fn complete_interrupt(claim: InterruptClaim) {
         unimplemented!()
     }
 
-    fn enable_interrupt(&self, interrupt_number: u16) {
-        self.interrupt_controller.enable[interrupt_number as usize].store(true, Ordering::SeqCst);
+    fn enable_interrupt(interrupt_number: u16) {
+        Self::instance().interrupt_controller.enable[interrupt_number as usize].store(true, Ordering::SeqCst);
         // TODO: if interrupt is pending, it must be executed
     }
 
-    fn disable_interrupt(&self, interrupt_number: u16) {
-        self.interrupt_controller.enable[interrupt_number as usize].store(false, Ordering::SeqCst);
+    fn disable_interrupt(interrupt_number: u16) {
+        Self::instance().interrupt_controller.enable[interrupt_number as usize].store(false, Ordering::SeqCst);
     }
 
     #[inline(always)]
-    fn interrupt_status(&self) -> bool {
+    fn interrupt_status() -> bool {
         INTERRUPTS_ENABLED.load(Ordering::SeqCst)
     }
 
-    fn acquire(&self) -> bool {
+    fn acquire() -> bool {
         let old_state = INTERRUPTS_ENABLED.swap(false, Ordering::SeqCst);
         if old_state {
             unsafe {
                 libc::pthread_sigmask(
                     libc::SIG_BLOCK,
-                    &self.interrupt_controller.interrupt_sigmask,
+                    &Self::instance().interrupt_controller.interrupt_sigmask,
                     core::ptr::null_mut(),
                 );
             }
@@ -515,14 +520,14 @@ impl InterruptController for Simulator {
         old_state
     }
 
-    fn restore(&self, restore_state: bool) {
+    fn restore(restore_state: bool) {
         // Only re-enable interrupts if they were enabled before the critical section.
         if restore_state {
             INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
             unsafe {
                 libc::pthread_sigmask(
                     libc::SIG_UNBLOCK,
-                    &self.interrupt_controller.interrupt_sigmask,
+                    &Self::instance().interrupt_controller.interrupt_sigmask,
                     core::ptr::null_mut(),
                 );
             }
@@ -642,7 +647,7 @@ impl VirtualTimer {
 impl AlarmClockController for Simulator {
     const TICK_FREQ_HZ: u64 = TIMER_FREQ_HZ;
 
-    fn clock_ticks(&self) -> u64 {
+    fn clock_ticks() -> u64 {
         let mut time = core::mem::MaybeUninit::uninit();
         unsafe {
             if libc::clock_gettime(SIMULATOR_CLOCK, time.as_mut_ptr()) != 0 {
@@ -653,14 +658,14 @@ impl AlarmClockController for Simulator {
         VirtualTimer::timespec_to_ticks(time)
     }
 
-    fn set_wakeup(&self, at: Option<u64>) {
+    fn set_wakeup(at: Option<u64>) {
         unsafe {
-            libc::pthread_mutex_lock(self.timer.wait_lock.get());
+            libc::pthread_mutex_lock(Self::instance().timer.wait_lock.get());
 
-            (*self.timer.wait_until.get()) = at.map(|ticks| VirtualTimer::ticks_to_timespec(ticks) );
+            (*Self::instance().timer.wait_until.get()) = at.map(|ticks| VirtualTimer::ticks_to_timespec(ticks) );
 
-            libc::pthread_cond_signal(self.timer.wait.get());
-            libc::pthread_mutex_unlock(self.timer.wait_lock.get());
+            libc::pthread_cond_signal(Self::instance().timer.wait.get());
+            libc::pthread_mutex_unlock(Self::instance().timer.wait_lock.get());
         }
     }
 }
@@ -678,8 +683,6 @@ fn _scars_idle_thread_hook() {
     Simulator::on_idle();
 }
 
-pub type HAL = Simulator;
-
 pub struct Simulator {
     timer: VirtualTimer,
     interrupt_controller: VirtualInterruptController,
@@ -689,6 +692,10 @@ unsafe impl Sync for Simulator {}
 
 impl HardwareAbstractionLayer for Simulator {
     const NAME: &'static str = "Simulator";
+
+    fn instance() -> &'static Self {
+        unsafe { (&*HAL.get()).assume_init_ref() }
+    }
 
     unsafe fn init(hal: *mut Self) {
         unsafe {

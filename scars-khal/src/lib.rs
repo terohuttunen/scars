@@ -188,43 +188,43 @@
 //!     const MAX_INTERRUPT_NUMBER: usize = 32;
 //!     type InterruptClaim = InterruptClaim;
 //! 
-//!     fn get_interrupt_priority(&self, interrupt_number: u16) -> u8 {
+//!     fn get_interrupt_priority(interrupt_number: u16) -> u8 {
 //!         0
 //!     }
 //! 
-//!     fn set_interrupt_priority(&self, interrupt_number: u16, prio: u8) -> u8 {
+//!     fn set_interrupt_priority(interrupt_number: u16, prio: u8) -> u8 {
 //!         0
 //!     }
 //! 
-//!     fn claim_interrupt(&self) -> Self::InterruptClaim {
+//!     fn claim_interrupt() -> Self::InterruptClaim {
 //!         InterruptClaim { interrupt_number: 0 }
 //!     }
 //! 
-//!     fn complete_interrupt(&self, claim: Self::InterruptClaim) {
+//!     fn complete_interrupt(claim: Self::InterruptClaim) {
 //!     }
 //! 
-//!     fn enable_interrupt(&self, interrupt_number: u16) {
+//!     fn enable_interrupt(interrupt_number: u16) {
 //!     }
 //! 
-//!     fn disable_interrupt(&self, interrupt_number: u16) {
+//!     fn disable_interrupt(interrupt_number: u16) {
 //!     }
 //! 
-//!     fn get_interrupt_threshold(&self) -> u8 {
+//!     fn get_interrupt_threshold() -> u8 {
 //!         0
 //!     }
 //! 
-//!     fn set_interrupt_threshold(&self, threshold: u8) {
+//!     fn set_interrupt_threshold(threshold: u8) {
 //!     }
 //! 
-//!     fn interrupt_status(&self) -> bool {
+//!     fn interrupt_status() -> bool {
 //!         false
 //!     }
 //! 
-//!     fn acquire(&self) -> bool {
+//!     fn acquire() -> bool {
 //!         false
 //!     }
 //! 
-//!     fn restore(&self, restore_state: bool) {
+//!     fn restore(restore_state: bool) {
 //!     }
 //! }
 //! 
@@ -232,11 +232,11 @@
 //! impl AlarmClockController for MyHardware {
 //!     const TICK_FREQ_HZ: u64 = 1_000_000;
 //! 
-//!     fn clock_ticks(&self) -> u64 {
+//!     fn clock_ticks() -> u64 {
 //!         0
 //!     }
 //! 
-//!     fn set_wakeup(&self, at: Option<u64>) {
+//!     fn set_wakeup(at: Option<u64>) {
 //!     }
 //! }
 //! 
@@ -357,7 +357,7 @@ pub trait InterruptController: Sync {
     /// # Returns
     /// 
     /// The priority level of the interrupt as a `u8`, where higher values indicate higher priority.
-    fn get_interrupt_priority(&self, interrupt_number: u16) -> u8;
+    fn get_interrupt_priority(interrupt_number: u16) -> u8;
 
     /// Sets the priority level for the specified interrupt.
     /// 
@@ -369,7 +369,7 @@ pub trait InterruptController: Sync {
     /// # Returns
     /// 
     /// The previous priority level of the interrupt as a `u8`.
-    fn set_interrupt_priority(&self, interrupt_number: u16, prio: u8) -> u8;
+    fn set_interrupt_priority(interrupt_number: u16, prio: u8) -> u8;
 
     /// Claims the highest priority pending interrupt.
     /// 
@@ -386,28 +386,28 @@ pub trait InterruptController: Sync {
     /// ```
     /// 
     /// The claim object contains the interrupt number of the claimed interrupt.
-    fn claim_interrupt(&self) -> Self::InterruptClaim;
+    fn claim_interrupt() -> Self::InterruptClaim;
 
     /// Completes the interrupt handling for the specified claim.
     /// 
     /// # Arguments
     /// 
     /// * `claim` - The claim object returned by [`claim_interrupt`].
-    fn complete_interrupt(&self, claim: Self::InterruptClaim);
+    fn complete_interrupt(claim: Self::InterruptClaim);
 
     /// Enables the specified interrupt.
     /// 
     /// # Arguments
     /// 
     /// * `interrupt_number` - The interrupt number to enable.
-    fn enable_interrupt(&self, interrupt_number: u16);
+    fn enable_interrupt(interrupt_number: u16);
 
     /// Disables the specified interrupt.
     /// 
     /// # Arguments
     /// 
     /// * `interrupt_number` - The interrupt number to disable.
-    fn disable_interrupt(&self, interrupt_number: u16);
+    fn disable_interrupt(interrupt_number: u16);
 
     /// Returns the current interrupt priority threshold.
     /// 
@@ -418,7 +418,7 @@ pub trait InterruptController: Sync {
     /// # Returns
     /// 
     /// The current interrupt priority threshold as a `u8`.
-    fn get_interrupt_threshold(&self) -> u8;
+    fn get_interrupt_threshold() -> u8;
 
     /// Sets the interrupt priority threshold.
     /// 
@@ -429,14 +429,14 @@ pub trait InterruptController: Sync {
     /// # Arguments
     /// 
     /// * `threshold` - The new interrupt priority threshold as a `u8`.
-    fn set_interrupt_threshold(&self, threshold: u8);
+    fn set_interrupt_threshold(threshold: u8);
 
     /// Returns the current interrupt status.
     /// 
     /// # Returns
     /// 
     /// `true` if interrupts are currently enabled, `false` otherwise.
-    fn interrupt_status(&self) -> bool;
+    fn interrupt_status() -> bool;
 
     /// Acquires the interrupt lock.
     /// 
@@ -446,7 +446,7 @@ pub trait InterruptController: Sync {
     /// # Returns   
     /// 
     /// The previous interrupt status before acquiring the lock.
-    fn acquire(&self) -> bool;
+    fn acquire() -> bool;
 
     /// Restores the interrupt lock to the previous state.
     /// 
@@ -456,7 +456,7 @@ pub trait InterruptController: Sync {
     /// # Arguments
     /// 
     /// * `restore_state` - The previous interrupt status to restore.
-    fn restore(&self, restore_state: bool);
+    fn restore(restore_state: bool);
 }
 
 pub type Ticks = u64;
@@ -466,12 +466,12 @@ pub trait AlarmClockController: Sync {
     const TICK_FREQ_HZ: Ticks;
 
     /// Monotonously growing tick counter since some earlier epoch
-    fn clock_ticks(&self) -> Ticks;
+    fn clock_ticks() -> Ticks;
 
     /// Set the wakeup time for the alarm clock.
     ///
     /// If `at` is `None`, the wakeup is disabled.
-    fn set_wakeup(&self, at: Option<Ticks>);
+    fn set_wakeup(at: Option<Ticks>);
 }
 
 pub trait ContextInfo {
@@ -589,6 +589,9 @@ pub trait HardwareAbstractionLayer:
     AlarmClockController + InterruptController + FlowController + Sync
 {
     const NAME: &'static str;
+
+    /// Get a reference to the global instance of this HAL
+    fn instance() -> &'static Self;
 
     unsafe fn init(hal: *mut Self)
     where

@@ -1,8 +1,11 @@
 #![no_std]
 #![feature(ptr_sub_ptr)]
+#![feature(sync_unsafe_cell)]
 pub mod peripherals;
 use core::arch::global_asm;
 use core::cell::RefCell;
+use core::cell::SyncUnsafeCell;
+use core::mem::MaybeUninit;
 use cortex_m_rt::entry;
 use critical_section::Mutex;
 pub use peripherals::Peripherals;
@@ -23,6 +26,9 @@ pub use stm32f4xx_hal::{
 
 const NVIC_PRIO_MAX: u8 = 2u8.pow(pac::NVIC_PRIO_BITS as u32) - 1;
 const NVIC_PRIO_SHIFT: u8 = 8 - pac::NVIC_PRIO_BITS;
+
+// Static HAL instance
+static HAL: SyncUnsafeCell<MaybeUninit<STM32F4>> = SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub struct STM32F4 {
     nvic: Mutex<RefCell<cortex_m::peripheral::NVIC>>,
@@ -73,6 +79,10 @@ impl STM32F4 {
 impl HardwareAbstractionLayer for STM32F4 {
     const NAME: &'static str = "STM32F4";
 
+    fn instance() -> &'static Self {
+        unsafe { (&*HAL.get()).assume_init_ref() }
+    }
+
     unsafe fn init(hal: *mut Self) {
         let pac::Peripherals {
             TIM2, TIM5, RCC, ..
@@ -107,7 +117,7 @@ impl HardwareAbstractionLayer for STM32F4 {
             };
 
             (*hal).setup_clock();
-            (*hal).set_interrupt_priority(pac::Interrupt::TIM2 as u16, 0);
+            Self::set_interrupt_priority(pac::Interrupt::TIM2 as u16, 0);
         }
     }
 }
@@ -129,17 +139,17 @@ impl InterruptController for STM32F4 {
     const MAX_INTERRUPT_NUMBER: usize = pac::Interrupt::DMA2D as usize;
     type InterruptClaim = InterruptClaim;
 
-    fn get_interrupt_priority(&self, interrupt_number: u16) -> u8 {
+    fn get_interrupt_priority(interrupt_number: u16) -> u8 {
         let interrupt: pac::Interrupt = unsafe { core::mem::transmute(interrupt_number) };
         NVIC_PRIO_MAX - (pac::NVIC::get_priority(interrupt) >> NVIC_PRIO_SHIFT)
     }
 
-    fn set_interrupt_priority(&self, interrupt_number: u16, prio: u8) -> u8 {
+    fn set_interrupt_priority(interrupt_number: u16, prio: u8) -> u8 {
         let cortex_prio = NVIC_PRIO_MAX - prio;
         let interrupt: pac::Interrupt = unsafe { core::mem::transmute(interrupt_number) };
-        let old_prio = self.get_interrupt_priority(interrupt_number);
+        let old_prio = Self::get_interrupt_priority(interrupt_number);
         critical_section::with(|cs| unsafe {
-            self.nvic
+            Self::instance().nvic
                 .borrow(cs)
                 .borrow_mut()
                 .set_priority(interrupt, cortex_prio);
@@ -148,47 +158,47 @@ impl InterruptController for STM32F4 {
     }
 
     //#[inline(always)]
-    fn get_interrupt_threshold(&self) -> u8 {
+    fn get_interrupt_threshold() -> u8 {
         NVIC_PRIO_MAX - (cortex_m::register::basepri::read() >> NVIC_PRIO_SHIFT)
     }
 
     //#[inline(always)]
-    fn set_interrupt_threshold(&self, threshold: u8) {
+    fn set_interrupt_threshold(threshold: u8) {
         unsafe {
             cortex_m::register::basepri::write((NVIC_PRIO_MAX - threshold) << NVIC_PRIO_SHIFT);
         }
     }
 
-    fn claim_interrupt(&self) -> Self::InterruptClaim {
-        let icsr = self.scb.icsr.read();
+    fn claim_interrupt() -> Self::InterruptClaim {
+        let icsr = Self::instance().scb.icsr.read();
         let interrupt_number = icsr as u8 - 16;
         InterruptClaim { interrupt_number }
     }
 
-    fn complete_interrupt(&self, claim: Self::InterruptClaim) {
+    fn complete_interrupt(claim: Self::InterruptClaim) {
         let interrupt: pac::Interrupt =
             unsafe { core::mem::transmute(claim.interrupt_number as u16) };
         pac::NVIC::unpend(interrupt);
     }
 
-    fn enable_interrupt(&self, interrupt_number: u16) {
+    fn enable_interrupt(interrupt_number: u16) {
         let interrupt: pac::Interrupt = unsafe { core::mem::transmute(interrupt_number) };
         unsafe { pac::NVIC::unmask(interrupt) };
     }
 
-    fn disable_interrupt(&self, interrupt_number: u16) {
+    fn disable_interrupt(interrupt_number: u16) {
         let interrupt: pac::Interrupt = unsafe { core::mem::transmute(interrupt_number) };
         pac::NVIC::mask(interrupt);
     }
 
     #[inline(always)]
-    fn interrupt_status(&self) -> bool {
+    fn interrupt_status() -> bool {
         let primask = cortex_m::register::primask::read();
         primask.is_active()
     }
 
     #[inline(always)]
-    fn acquire(&self) -> bool {
+    fn acquire() -> bool {
         let primask = cortex_m::register::primask::read();
         let restore_state = primask.is_active();
         cortex_m::interrupt::disable();
@@ -196,7 +206,7 @@ impl InterruptController for STM32F4 {
     }
 
     #[inline(always)]
-    fn restore(&self, restore_state: bool) {
+    fn restore(restore_state: bool) {
         // Only re-enable interrupts if they were enabled before the critical section.
         if restore_state {
             unsafe { cortex_m::interrupt::enable() }
@@ -208,14 +218,14 @@ impl AlarmClockController for STM32F4 {
     const TICK_FREQ_HZ: u64 = TIMER_FREQ_HZ;
 
     #[inline(always)]
-    fn clock_ticks(&self) -> u64 {
-        let restore_state = self.acquire();
+    fn clock_ticks() -> u64 {
+        let restore_state = Self::acquire();
         loop {
-            let high = self.tim5.cnt.read().bits();
-            let low = self.tim2.cnt.read().bits();
-            let new_high = self.tim5.cnt.read().bits();
+            let high = Self::instance().tim5.cnt.read().bits();
+            let low = Self::instance().tim2.cnt.read().bits();
+            let new_high = Self::instance().tim5.cnt.read().bits();
             if new_high == high {
-                self.restore(restore_state);
+                Self::restore(restore_state);
                 return ((high as u64) << 32) + low as u64;
             }
             // There was an overflow in tim2, re-read
@@ -223,28 +233,28 @@ impl AlarmClockController for STM32F4 {
     }
 
     #[inline(always)]
-    fn set_wakeup(&self, at: Option<u64>) {
+    fn set_wakeup(at: Option<u64>) {
         let at = at.unwrap_or(u64::MAX);
-        let restore_state = self.acquire();
+        let restore_state = Self::acquire();
         let compare_high = (at >> 32) as u32;
         let compare_low = (at & 0xffff_ffff) as u32;
 
-        self.tim2.ccr1().write(|w| w.bits(compare_low));
-        self.tim5.ccr1().write(|w| w.bits(compare_high));
+        Self::instance().tim2.ccr1().write(|w| w.bits(compare_low));
+        Self::instance().tim5.ccr1().write(|w| w.bits(compare_high));
 
-        let low_cnt = self.tim2.cnt.read().bits();
-        let high_cnt = self.tim5.cnt.read().bits();
-        if high_cnt == compare_high && self.tim2.cnt.read().bits() > compare_low {
+        let low_cnt = Self::instance().tim2.cnt.read().bits();
+        let high_cnt = Self::instance().tim5.cnt.read().bits();
+        if high_cnt == compare_high && Self::instance().tim2.cnt.read().bits() > compare_low {
             // If there was no overflow in tim5, but tim2 cnt is greater than compare_low,
             // trigger interrupt.
-            self.tim2.egr.write(|w| w.cc1g().set_bit());
+            Self::instance().tim2.egr.write(|w| w.cc1g().set_bit());
         } else if high_cnt > compare_high {
             // If there was overflow of low count to high count in tim5,
             // or if tim5 cnt was already greater than compare_high,
             // trigger interrupt.
-            self.tim2.egr.write(|w| w.cc1g().set_bit());
+            Self::instance().tim2.egr.write(|w| w.cc1g().set_bit());
         }
-        self.restore(restore_state);
+        Self::restore(restore_state);
     }
 }
 
