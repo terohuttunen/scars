@@ -3,7 +3,7 @@ use crate::kernel::hal::{Context, Fault};
 use crate::printkln;
 use core::panic::{Location, PanicInfo};
 use scars_khal::FlowController;
-use unrecoverable_error::UnrecoverableError;
+use unrecoverable_error::{UnrecoverableError, unrecoverable_error_handler, UnrecoverableErrorInfo};
 
 #[macro_export]
 macro_rules! runtime_error {
@@ -11,9 +11,6 @@ macro_rules! runtime_error {
         use $crate::kernel::exception::RuntimeError;
         $crate::kernel::syscall::runtime_error(&$kind);
     }};
-}
-
-pub struct Exception {
 }
 
 #[derive(Debug, UnrecoverableError)]
@@ -78,10 +75,6 @@ pub enum RuntimeError {
 }
 
 pub fn handle_runtime_error(error: &dyn UnrecoverableError) -> ! {
-    #[cfg(not(feature = "khal-sim"))]
-    unsafe {
-        _user_exception_handler(Exception::RuntimeError(&error))
-    };
     let error = RtosError::RuntimeError(error);
     handle_rtos_error(&error);
 }
@@ -91,22 +84,29 @@ pub fn handle_kernel_error(error: &KernelError) -> ! {
     handle_rtos_error(&error);
 }
 
-pub fn handle_rtos_error(error: &RtosError) -> ! {
-    printkln!("RTOS error: {}", error);
-    abort()
-}
-
 #[unsafe(no_mangle)]
-pub unsafe fn _private_hardware_exception_handler(error: &dyn UnrecoverableError) -> ! {
-    printkln!("Unrecoverable error:\n{}", error);
-    abort()
+pub unsafe fn _private_hardware_exception_handler(error: &Fault) -> ! {
+    let error = RtosError::Hardware(error);
+    handle_rtos_error(&error);
 }
 
+pub fn handle_rtos_error(error: &RtosError) -> ! {
+    crate::kernel::hal::error(error)
+}
+
+/*
 #[unsafe(no_mangle)]
 fn _scars_default_user_exception_handler(_exception: Exception) {}
 
 unsafe extern "Rust" {
     fn _user_exception_handler(exception: Exception);
+}
+    */
+
+#[unrecoverable_error_handler]
+fn handle_unrecoverable_error(error: &UnrecoverableErrorInfo) -> ! {
+    let error = RtosError::RuntimeError(error.error);
+    handle_rtos_error(&error)
 }
 
 #[cfg(not(feature = "khal-sim"))]

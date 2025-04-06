@@ -28,7 +28,7 @@ unrecoverable-error = { version = "0.1.0", path="../unrecoverable-error" }
 
 
 [dev-dependencies]
-scars-test = { version = "0.1.0", path = "../scars-test", features = ["panic"] }
+scars-test = { version = "0.1.0", path = "../scars-test" }
 
 [target.'cfg(target_arch = "riscv32")'.dev-dependencies]
 semihosting = { version = "0.1.4", features = ["stdio"] }
@@ -42,6 +42,6 @@ semihosting = { version = "0.1.4" }
 default = ["relative-delay"]
 tracing = []
 relative-delay = []
-khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "scars-test/exit"]
-khal-sim = ["dep:scars-khal-sim", "scars-test/std", "scars-test/exit"]
-khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt", "scars-test/exit"]
+khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting"]
+khal-sim = ["dep:scars-khal-sim", "scars-test/std"]
+khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt"]

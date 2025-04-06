@@ -222,23 +222,31 @@ impl AlarmClockController for E310x {
 
 impl FlowController for E310x {
     type Context = <RISCV32 as FlowController>::Context;
-    type Fault = <RISCV32 as FlowController>::Fault;
+    type HardwareError = <RISCV32 as FlowController>::HardwareError;
     type StackAlignment = <RISCV32 as FlowController>::StackAlignment;
 
     fn start_first_thread(idle_context: *mut Self::Context) -> ! {
         RISCV32::start_first_thread(idle_context)
     }
 
-    fn abort() -> ! {
-        RISCV32::abort()
+    fn on_abort() -> ! {
+        RISCV32::on_abort()
     }
 
-    fn breakpoint() {
-        RISCV32::breakpoint();
+    fn on_exit(exit_code: i32) -> ! {
+        RISCV32::on_exit(exit_code)
     }
 
-    fn idle() {
-        RISCV32::idle();
+    fn on_error(error: &dyn UnrecoverableError) -> ! {
+        RISCV32::on_error(error)
+    }
+
+    fn on_breakpoint() {
+        RISCV32::on_breakpoint();
+    }
+
+    fn on_idle() {
+        RISCV32::on_idle();
     }
 
     fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {

@@ -89,5 +89,4 @@ pub fn yield_fifo() {
     assert_eq!(receiver.recv(), 0);
     assert_eq!(receiver.recv(), 0);
     assert_eq!(receiver.recv(), 0);
-    scars_test::test_succeed();
 }

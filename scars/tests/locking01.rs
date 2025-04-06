@@ -81,6 +81,4 @@ pub fn ceiling_lock_section_preempt() {
     assert_eq!(receiver.recv(), 2);
     assert_eq!(receiver.recv(), 1);
     assert_eq!(receiver.recv(), 0);
-
-    scars_test::test_succeed();
 }

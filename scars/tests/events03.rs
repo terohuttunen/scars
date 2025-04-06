@@ -44,6 +44,4 @@ pub fn block_waiting_event() {
     thread0(sender).start();
 
     assert_eq!(receiver.recv(), 0);
-
-    scars_test::test_succeed();
 }

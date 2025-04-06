@@ -2,7 +2,7 @@
 pub mod callbacks;
 pub use aligned::*;
 pub use callbacks::KernelCallbacks;
-pub use unrecoverable_error::*;
+pub use unrecoverable_error::UnrecoverableError;
 
 unsafe extern "Rust" {
     pub unsafe fn start_kernel() -> !;
@@ -60,18 +60,6 @@ pub trait AlarmClockController {
     fn disable_wakeup(&self);
 }
 
-/*
-pub trait FaultInfo<Context> {
-    fn code(&self) -> usize;
-
-    fn name(&self) -> &'static str;
-
-    fn address(&self) -> usize;
-
-    fn context(&self) -> &Context;
-}
-    */
-
 pub trait ContextInfo {
     fn stack_top_ptr(&self) -> *const u8;
 
@@ -88,15 +76,19 @@ pub trait ContextInfo {
 pub trait FlowController {
     type StackAlignment: Alignment;
     type Context: ContextInfo;
-    type Fault: UnrecoverableError;
+    type HardwareError: UnrecoverableError;
 
     fn start_first_thread(idle_context: *mut Self::Context) -> !;
 
-    fn abort() -> !;
+    fn on_abort() -> !;
 
-    fn breakpoint();
+    fn on_exit(exit_code: i32) -> !;
 
-    fn idle();
+    fn on_error(error: &dyn UnrecoverableError) -> !;
+
+    fn on_breakpoint();
+
+    fn on_idle();
 
     fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize;
 

@@ -41,58 +41,38 @@ static mut __EXTERNAL_INTERRUPTS: [InterruptVector; MAX_INTERRUPT + 1] = [Interr
 }; MAX_INTERRUPT + 1];
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
-pub enum FaultKind {
+pub enum SimulatorErrorKind {
     Unknown = 255,
 }
 
-impl TryFrom<usize> for FaultKind {
+impl TryFrom<usize> for SimulatorErrorKind {
     type Error = ();
-    fn try_from(value: usize) -> Result<FaultKind, ()> {
+    fn try_from(value: usize) -> Result<SimulatorErrorKind, ()> {
         match value {
             _ => Err(()),
         }
     }
 }
 
-impl FaultKind {
+impl SimulatorErrorKind {
     pub fn name(&self) -> &'static str {
         match self {
-            FaultKind::Unknown => "Unknown",
+            SimulatorErrorKind::Unknown => "Unknown",
         }
     }
 }
 
 #[derive(Debug, UnrecoverableError)]
-#[unrecoverable_error("Simulator fault: {kind:?}")]
-pub struct Fault {
-    kind: FaultKind,
+#[unrecoverable_error("Simulator error: {kind:?}")]
+pub struct SimulatorError {
+    kind: SimulatorErrorKind,
 }
 
-impl Fault {
-    pub fn new(kind: FaultKind) -> Fault {
-        Fault { kind }
+impl SimulatorError {
+    pub fn new(kind: SimulatorErrorKind) -> SimulatorError {
+        SimulatorError { kind }
     }
 }
-
-/*
-impl FaultInfo<VirtualContext> for Fault {
-    fn code(&self) -> usize {
-        self.kind as usize
-    }
-
-    fn name(&self) -> &'static str {
-        self.kind.name()
-    }
-
-    fn address(&self) -> usize {
-        unimplemented!()
-    }
-
-    fn context(&self) -> &VirtualContext {
-        unimplemented!()
-    }
-}
-    */
 
 pub struct VirtualContext {
     // Access to `interrupts_enabled`, `resumed` and `suspension` is protected with the `suspension_lock` mutex.
@@ -225,7 +205,7 @@ static CURRENT_THREAD_CONTEXT: AtomicPtr<VirtualContext> = AtomicPtr::new(core::
 impl FlowController for Simulator {
     type StackAlignment = A16;
     type Context = VirtualContext;
-    type Fault = Fault;
+    type HardwareError = SimulatorError;
 
     fn start_first_thread(context: *mut Self::Context) -> ! {
         let mut wait_set = MaybeUninit::uninit();
@@ -258,18 +238,32 @@ impl FlowController for Simulator {
         }
     }
 
-    fn abort() -> ! {
+    fn on_abort() -> ! {
+        unsafe {
+            libc::abort();
+        }
+    }
+
+    fn on_exit(exit_code: i32) -> ! {
+        unsafe {
+            libc::exit(exit_code);
+        }
+    }
+
+    fn on_error(error: &dyn UnrecoverableError) -> ! {
+        println!("{}", error);
+
         unsafe {
             libc::exit(1);
         }
     }
 
-    fn breakpoint() {
+    fn on_breakpoint() {
         unimplemented!()
     }
 
     #[inline(always)]
-    fn idle() {
+    fn on_idle() {
         unsafe {
             libc::sched_yield();
         }
@@ -723,7 +717,7 @@ fn main() {
 #[unsafe(no_mangle)]
 #[linkage = "weak"]
 fn _scars_idle_thread_hook() {
-    Simulator::idle();
+    Simulator::on_idle();
 }
 
 pub type HAL = Simulator;

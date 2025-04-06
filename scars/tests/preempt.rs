@@ -104,5 +104,4 @@ pub fn high_priority_thread_preempts_low_priority() {
     assert_eq!(receiver.recv(), Event::Thread1End);
     assert_eq!(receiver.recv(), Event::Thread0End);
     assert_eq!(receiver.recv(), Event::IdleEnd);
-    scars_test::test_succeed();
 }

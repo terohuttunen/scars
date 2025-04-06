@@ -4,6 +4,10 @@ use core::sync::atomic::AtomicPtr;
 use cortex_m::register::basepri;
 use cortex_m_rt::exception;
 use scars_khal::*;
+use unrecoverable_error::*;
+pub use rtt_target::rprint as print;
+pub use rtt_target::rprintln as println;
+use rtt_target::rtt_init_print;
 
 #[unsafe(no_mangle)]
 pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
@@ -107,7 +111,7 @@ impl ContextInfo for Context {
             (*frame_ptr).set_r2(0);
             (*frame_ptr).set_r3(0);
             (*frame_ptr).set_r12(0);
-            (*frame_ptr).set_lr(abort as u32);
+            (*frame_ptr).set_lr(on_abort as u32);
             (*frame_ptr).set_pc(main_fn as u32);
             // TODO: disable FPU at thread startup because not pushing FPU context
             (*frame_ptr).set_xpsr(0x01000000);
@@ -124,32 +128,11 @@ pub enum FaultKind {
     UsageFault = 6,
 }
 
+#[derive(PartialEq, Eq, Copy, Clone, Debug, UnrecoverableError)]
+#[unrecoverable_error("Cortex-M fault: {kind:?}")]
 pub struct Fault {
     kind: FaultKind,
     frame: *const Context,
-}
-
-impl FaultInfo<Context> for Fault {
-    fn code(&self) -> usize {
-        self.kind as usize
-    }
-
-    fn name(&self) -> &'static str {
-        match self.kind {
-            FaultKind::HardFault => "HardFault",
-            FaultKind::MemManage => "MemManage",
-            FaultKind::BusFault => "BusFault",
-            FaultKind::UsageFault => "UsageFault",
-        }
-    }
-
-    fn address(&self) -> usize {
-        0
-    }
-
-    fn context(&self) -> &Context {
-        unsafe { &*self.frame }
-    }
 }
 
 pub fn start_first_thread(idle_context: *mut Context) -> ! {
@@ -194,17 +177,35 @@ pub fn start_first_thread(idle_context: *mut Context) -> ! {
     }
 }
 
-pub fn abort() -> ! {
+pub fn on_abort() -> ! {
+    #[cfg(feature = "semihosting")]
+    semihosting::process::abort();
+
+    #[cfg(not(feature = "semihosting"))]
+    on_exit(1)
+}
+
+pub fn on_exit(exit_code: i32) -> ! {
+    #[cfg(feature = "semihosting")]
+    semihosting::process::exit(exit_code);
+
+    #[cfg(not(feature = "semihosting"))]
     loop {
         cortex_m::asm::wfi();
     }
 }
 
-pub fn breakpoint() {
+pub fn on_error(error: &dyn UnrecoverableError) -> ! {
+    println!("{}", error);
+
+    on_exit(1);
+}
+
+pub fn on_breakpoint() {
     cortex_m::asm::bkpt()
 }
 
-pub fn idle() {
+pub fn on_idle() {
     cortex_m::asm::wfi();
 }
 
@@ -229,7 +230,7 @@ macro_rules! impl_flow_controller {
         impl FlowController for $struct_name {
             type StackAlignment = scars_khal::A8;
             type Context = $crate::Context;
-            type Fault = $crate::Fault;
+            type HardwareError = $crate::Fault;
 
             #[inline(always)]
             fn start_first_thread(idle_context: *mut Self::Context) -> ! {
@@ -237,18 +238,28 @@ macro_rules! impl_flow_controller {
             }
 
             #[inline(always)]
-            fn abort() -> ! {
-                $crate::abort()
+            fn on_abort() -> ! {
+                $crate::on_abort()
             }
 
             #[inline(always)]
-            fn breakpoint() {
-                $crate::breakpoint()
+            fn on_exit(exit_code: i32) -> ! {
+                $crate::on_exit(exit_code)
             }
 
             #[inline(always)]
-            fn idle() {
-                $crate::idle();
+            fn on_error(error: &dyn UnrecoverableError) -> ! {
+                $crate::on_error(error)
+            }
+
+            #[inline(always)]
+            fn on_breakpoint() {
+                $crate::on_breakpoint()
+            }
+
+            #[inline(always)]
+            fn on_idle() {
+                $crate::on_idle();
             }
 
             #[inline(always)]

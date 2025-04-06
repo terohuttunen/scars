@@ -41,8 +41,6 @@ pub fn ceiling_lock_owned_preempt() {
     assert_eq!(receiver.recv(), 2);
     assert_eq!(receiver.recv(), 1);
     assert_eq!(receiver.recv(), 0);
-
-    scars_test::test_succeed();
 }
 
 #[scars::thread(name = "low", priority = LOW_PRIORITY, stack_size = STACK_SIZE)]

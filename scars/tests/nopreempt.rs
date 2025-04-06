@@ -133,5 +133,4 @@ pub fn low_priority_thread_does_not_preempt_high_priority() {
     assert_eq!(receiver.recv(), Event::Thread0PreemptAttemptByThread1); // <- Did not occur before thread0 work ended
     assert_eq!(receiver.recv(), Event::Thread1End);
     assert_eq!(receiver.recv(), Event::IdleEnd);
-    scars_test::test_succeed();
 }

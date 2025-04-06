@@ -2,7 +2,7 @@ use crate::kernel::priority::InterruptPriority;
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use scars_khal::*;
-
+use unrecoverable_error::UnrecoverableError;
 #[cfg(feature = "khal-e310x")]
 pub use scars_khal_e310x as kernel_hal;
 #[cfg(feature = "khal-sim")]
@@ -13,7 +13,7 @@ pub use scars_khal_stm32f4 as kernel_hal;
 pub use kernel_hal::pac;
 
 pub type Context = <kernel_hal::HAL as FlowController>::Context;
-pub type Fault = <kernel_hal::HAL as FlowController>::Fault;
+pub type Fault = <kernel_hal::HAL as FlowController>::HardwareError;
 
 #[allow(dead_code)]
 pub const MAX_INTERRUPT_NUMBER: usize =
@@ -160,20 +160,27 @@ pub(crate) fn start_first_thread(idle_context: *mut Context) -> ! {
 
 #[allow(dead_code)]
 #[inline(always)]
-pub fn abort() -> ! {
-    <kernel_hal::HAL as FlowController>::abort()
+#[unsafe(export_name = "exit_scars")]
+pub fn exit(exit_code: i32) -> ! {
+    <kernel_hal::HAL as FlowController>::on_exit(exit_code)
+}
+
+#[allow(dead_code)]
+#[inline(always)]
+pub fn error(error: &dyn UnrecoverableError) -> ! {
+    <kernel_hal::HAL as FlowController>::on_error(error)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn breakpoint() {
-    <kernel_hal::HAL as FlowController>::breakpoint()
+    <kernel_hal::HAL as FlowController>::on_breakpoint()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn idle() {
-    <kernel_hal::HAL as FlowController>::idle()
+    <kernel_hal::HAL as FlowController>::on_idle()
 }
 
 #[allow(dead_code)]

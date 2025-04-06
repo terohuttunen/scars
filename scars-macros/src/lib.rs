@@ -77,7 +77,7 @@ impl ToTokens for ItemFn {
 
 #[derive(Debug, FromMeta)]
 struct ThreadArgs {
-    #[darling(with = "preserve_str_literal", map = "Some")]
+    #[darling(with = preserve_str_literal, map = "Some")]
     name: Option<syn::Expr>,
     priority: syn::Expr,
     stack_size: syn::Expr,
@@ -235,7 +235,7 @@ pub fn thread(args: TokenStream, item: TokenStream) -> TokenStream {
 
 #[derive(Debug, FromMeta)]
 struct EntryArgs {
-    #[darling(with = "preserve_str_literal", map = "Some")]
+    #[darling(with = preserve_str_literal, map = "Some")]
     name: Option<syn::Expr>,
     priority: Option<syn::Expr>,
     stack_size: syn::Expr,

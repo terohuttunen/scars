@@ -3,6 +3,7 @@ use bit_field::BitField;
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicPtr, Ordering};
 use scars_khal::*;
+use unrecoverable_error::UnrecoverableError;
 
 global_asm!(include_str!("trap.S"));
 
@@ -58,7 +59,7 @@ impl ContextInfo for RISCVTrapFrame {
         mstatus.set_bits(11..13, riscv::register::mstatus::MPP::Machine as usize);
         unsafe {
             (*context).gp_regs = [0; 29];
-            (*context).gp_regs[0] = abort as usize;
+            (*context).gp_regs[0] = on_abort as usize;
             (*context).gp_regs[1] = stack_ptr as usize;
             (*context).gp_regs[7] = argument.map(|a| a as usize).unwrap_or(0);
             (*context).pc = main_fn as usize;
@@ -82,7 +83,7 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
             // Machine external interrupt
             // SAFETY: Called from interrupt handler with interrupts disabled
             11 => unsafe { RISCV32::kernel_interrupt_handler() },
-            _ => RISCV32::abort(),
+            _ => RISCV32::on_exit(1),
         }
     } else {
         // Exception
@@ -112,7 +113,7 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
     };
 }
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum FaultKind {
     InstructionAddressMisaligned = 0,
     InstructionAddressFault = 1,
@@ -150,22 +151,8 @@ impl TryFrom<usize> for FaultKind {
     }
 }
 
-impl FaultKind {
-    pub fn name(&self) -> &'static str {
-        match self {
-            FaultKind::InstructionAddressMisaligned => "InstructionAddressMisaligned",
-            FaultKind::InstructionAddressFault => "InstructionAddressFault",
-            FaultKind::IllegalInstruction => "IllegalInstruction",
-            FaultKind::Breakpoint => "Breakpoint",
-            FaultKind::LoadAddressMisaligned => "LoadAddressMisaligned",
-            FaultKind::LoadAccessFault => "LoadAccessFault",
-            FaultKind::StoreAddressMisaligned => "StoreAddressMisaligned",
-            FaultKind::StoreAccessFault => "StoreAccessFault",
-            FaultKind::Unknown => "Unknown",
-        }
-    }
-}
-
+#[derive(PartialEq, Eq, Copy, Clone, Debug, UnrecoverableError)]
+#[unrecoverable_error("RISCV fault: {kind:?} mtval = {mtval}")]
 pub struct RISCFault {
     kind: FaultKind,
     mtval: usize,
@@ -182,28 +169,7 @@ impl RISCFault {
     }
 }
 
-impl FaultInfo<RISCVTrapFrame> for RISCFault {
-    fn code(&self) -> usize {
-        self.kind as usize
-    }
 
-    fn name(&self) -> &'static str {
-        self.kind.name()
-    }
-
-    fn address(&self) -> usize {
-        if self.kind == FaultKind::Breakpoint {
-            // Breakpoint sets mtval to zero, but pc is the address of interest
-            unsafe { *self.frame }.pc
-        } else {
-            self.mtval
-        }
-    }
-
-    fn context(&self) -> &RISCVTrapFrame {
-        unsafe { &*self.frame }
-    }
-}
 
 unsafe extern "C" {
     unsafe fn _start_first_thread(idle_context: *mut ()) -> !;
@@ -211,7 +177,11 @@ unsafe extern "C" {
 
 pub struct RISCV32 {}
 
-fn abort() -> ! {
+fn on_abort() -> ! {
+    on_exit(1)
+}
+
+fn on_exit(_exit_code: i32) -> ! {
     // Abort by disabling interrupts and then waiting for an interrupt
     unsafe {
         riscv::interrupt::disable();
@@ -221,29 +191,43 @@ fn abort() -> ! {
     }
 }
 
+fn on_error(_error: &dyn UnrecoverableError) -> ! {
+    on_exit(1)
+}
+
 #[unsafe(no_mangle)]
 static CURRENT_THREAD_CONTEXT: AtomicPtr<RISCVTrapFrame> = AtomicPtr::new(core::ptr::null_mut());
 
 impl FlowController for RISCV32 {
     type StackAlignment = A16;
     type Context = RISCVTrapFrame;
-    type Fault = RISCFault;
+    type HardwareError = RISCFault;
 
     fn start_first_thread(idle_context: *mut Self::Context) -> ! {
         unsafe { _start_first_thread(idle_context as *mut _) }
     }
 
     #[inline(always)]
-    fn abort() -> ! {
-        crate::abort()
+    fn on_abort() -> ! {
+        crate::on_abort()
     }
 
-    fn breakpoint() {
+    #[inline(always)]
+    fn on_exit(exit_code: i32) -> ! {
+        crate::on_exit(exit_code)
+    }
+
+    #[inline(always)]
+    fn on_error(error: &dyn UnrecoverableError) -> ! {
+        crate::on_error(error)
+    }
+
+    fn on_breakpoint() {
         unsafe { riscv::asm::ebreak() };
     }
 
     #[inline(always)]
-    fn idle() {
+    fn on_idle() {
         unsafe { riscv::asm::wfi() };
     }
 

@@ -45,4 +45,4 @@ pub trait KernelCallbacks<Context, Exception> {
     }
 }
 
-impl<T> KernelCallbacks<T::Context, T::Fault> for T where T: FlowController {}
+impl<T> KernelCallbacks<T::Context, T::HardwareError> for T where T: FlowController {}
