@@ -27,13 +27,14 @@ pub trait KernelCallbacks<Context, Exception> {
         unsafe { private::_private_kernel_wakeup_handler() }
     }
 
-    /// SAFETY: Must be called from interrupt handler with interrupts disabled.
+    /// This function is called by the kernel hardware abstraction layer when an
+    /// interrupt is pending. A pending interrupt is claimed by the kernel interrupt
+    /// handler and completed before returning from this function.
     #[inline(always)]
     unsafe fn kernel_interrupt_handler() {
         unsafe { private::_private_kernel_interrupt_handler() }
     }
 
-    /// SAFETY: Must be called from interrupt handler with interrupts disabled.
     #[inline(always)]
     unsafe fn kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
         unsafe { private::_private_kernel_syscall_handler(id, arg0, arg1, arg2) }
