@@ -5,17 +5,15 @@ use crate::kernel::tracing;
 use crate::kernel::{
     RuntimeError, Stack, ThreadPriority,
     atomic_queue::AtomicQueue,
-    hal::{
-        Context, disable_alarm_interrupt, disable_interrupts, enable_alarm_interrupt,
-        enable_interrupts, set_alarm, set_current_thread_context, start_first_thread,
-    },
+    exception::{KernelError, handle_kernel_error},
+    hal::{Context, set_alarm, set_current_thread_context, start_first_thread},
     handle_runtime_error,
     interrupt::{RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold},
     priority::{AnyPriority, Priority, PriorityStatus},
     syscall,
     waiter::{SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag},
-    exception::{handle_kernel_error, KernelError},
 };
+use crate::Instant;
 use crate::printkln;
 use crate::sync::{
     InterruptLock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
@@ -518,15 +516,11 @@ impl RawScheduler {
     fn reprogram_alarm(self: Pin<&Self>, _pkey: PreemptLockKey<'_>) {
         match self.sleep_queue().head() {
             Some(sleeping_thread) => {
-                if let Some(wakeup_time) = sleeping_thread.deadline() {
-                    set_alarm(wakeup_time.tick);
-                } else {
-                    panic!("No wakeup time set for thread in wakeup queue");
-                }
+                set_alarm(sleeping_thread.deadline().map(|d| d.tick));
             }
             None => {
                 // Disable wakeup
-                set_alarm(u64::MAX);
+                set_alarm(None);
             }
         }
     }
@@ -543,19 +537,19 @@ impl RawScheduler {
 
     fn reschedule<'key>(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'key>, kind: usize) {
         // Wakeup sleeping threads that should have been woken up
-        let now = crate::clock_ticks();
+        let now = Instant::now();
         loop {
             if let Some(sleeping_thread) = self.as_ref().sleep_queue().head() {
                 if let Some(wakeup_time) = sleeping_thread.deadline() {
-                    if wakeup_time.tick > now {
+                    if wakeup_time > now {
                         // No more threads to wake up
-                        set_alarm(wakeup_time.tick);
+                        set_alarm(Some(wakeup_time.tick));
                         break;
                     }
                 }
             } else {
                 // Wakeup queue is empty, disable wakeup
-                set_alarm(u64::MAX);
+                set_alarm(None);
                 break;
             }
 
@@ -764,7 +758,6 @@ impl Scheduler {
         unsafe {
             let _ = (&mut *SCHEDULER.get()).write(Scheduler::new(idle_thread));
         }
-        enable_alarm_interrupt();
         let idle_context = idle_thread.context.as_ptr() as *mut _;
         start_first_thread(idle_context)
     }

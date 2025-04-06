@@ -12,7 +12,7 @@ pub trait GetInterruptNumber {
     fn get_interrupt_number(&self) -> u16;
 }
 
-pub trait InterruptController {
+pub trait InterruptController: Sync {
     const MAX_INTERRUPT_PRIORITY: usize;
     const MAX_INTERRUPT_NUMBER: usize;
     type InterruptClaim: GetInterruptNumber;
@@ -20,10 +20,6 @@ pub trait InterruptController {
     fn get_interrupt_priority(&self, interrupt_number: u16) -> u8;
 
     fn set_interrupt_priority(&self, interrupt_number: u16, prio: u8) -> u8;
-
-    fn enable_interrupts(&self);
-
-    fn disable_interrupts(&self);
 
     fn claim_interrupt(&self) -> Self::InterruptClaim;
 
@@ -46,18 +42,17 @@ pub trait InterruptController {
 
 pub type Ticks = u64;
 
-pub trait AlarmClockController {
+pub trait AlarmClockController: Sync {
     /// Timer frequency as Ticks per second
     const TICK_FREQ_HZ: Ticks;
 
     /// Monotonously growing tick counter since some earlier epoch
     fn clock_ticks(&self) -> Ticks;
 
-    fn set_wakeup(&self, at: Ticks);
-
-    fn enable_wakeup(&self);
-
-    fn disable_wakeup(&self);
+    /// Set the wakeup time for the alarm clock.
+    ///
+    /// If `at` is `None`, the wakeup is disabled.
+    fn set_wakeup(&self, at: Option<Ticks>);
 }
 
 pub trait ContextInfo {
@@ -73,7 +68,7 @@ pub trait ContextInfo {
     );
 }
 
-pub trait FlowController {
+pub trait FlowController: Sync {
     type StackAlignment: Alignment;
     type Context: ContextInfo;
     type HardwareError: UnrecoverableError;

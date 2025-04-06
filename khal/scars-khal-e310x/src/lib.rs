@@ -69,16 +69,6 @@ impl InterruptController for E310x {
     }
 
     #[inline(always)]
-    fn enable_interrupts(&self) {
-        unsafe { riscv::register::mstatus::set_mie() }
-    }
-
-    #[inline(always)]
-    fn disable_interrupts(&self) {
-        unsafe { riscv::register::mstatus::clear_mie() }
-    }
-
-    #[inline(always)]
     fn get_interrupt_threshold(&self) -> u8 {
         self.plic.threshold.read().bits() as u8
     }
@@ -95,7 +85,7 @@ impl InterruptController for E310x {
         let restore_threshold = self.get_interrupt_threshold();
         let interrupt_prio = self.get_interrupt_priority(interrupt_number as u16);
         self.set_interrupt_threshold(interrupt_prio);
-        self.enable_interrupts();
+        self.restore(true);
         InterruptClaim {
             interrupt_number,
             restore_threshold,
@@ -103,7 +93,7 @@ impl InterruptController for E310x {
     }
 
     fn complete_interrupt(&self, claim: Self::InterruptClaim) {
-        self.disable_interrupts();
+        self.restore(false);
         self.set_interrupt_threshold(claim.restore_threshold);
         self.plic
             .claim
@@ -191,7 +181,8 @@ impl AlarmClockController for E310x {
     }
 
     #[inline(always)]
-    fn set_wakeup(&self, at: u64) {
+    fn set_wakeup(&self, at: Option<u64>) {
+        let at = at.unwrap_or(u64::MAX);
         let restore_state = self.acquire();
         // First set high-word to maximum value to prevent triggering the timer
         // with old high-word and new low-word.
@@ -203,20 +194,6 @@ impl AlarmClockController for E310x {
             .mtimecmph
             .write(|w| unsafe { w.bits((at >> 32) as u32) });
         self.restore(restore_state);
-    }
-
-    #[inline(always)]
-    fn enable_wakeup(&self) {
-        unsafe {
-            riscv::register::mie::set_mtimer();
-        }
-    }
-
-    #[inline(always)]
-    fn disable_wakeup(&self) {
-        unsafe {
-            riscv::register::mie::clear_mtimer();
-        }
     }
 }
 

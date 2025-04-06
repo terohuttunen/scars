@@ -23,8 +23,8 @@ pub use critical_section::CriticalSection;
 use scars_khal::*;
 
 use crate::kernel::hal::{
-    Context, MAX_INTERRUPT_NUMBER, claim_interrupt, complete_interrupt, disable_interrupts,
-    enable_interrupt, enable_interrupts, get_interrupt_priority, get_interrupt_threshold,
+    Context, MAX_INTERRUPT_NUMBER, claim_interrupt, complete_interrupt,
+    enable_interrupt, get_interrupt_priority, get_interrupt_threshold,
     set_interrupt_priority, set_interrupt_threshold,
 };
 use core::cell::UnsafeCell;

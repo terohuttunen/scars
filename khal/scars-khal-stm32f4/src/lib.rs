@@ -147,16 +147,6 @@ impl InterruptController for STM32F4 {
         old_prio
     }
 
-    #[inline(always)]
-    fn enable_interrupts(&self) {
-        unsafe { cortex_m::interrupt::enable() }
-    }
-
-    #[inline(always)]
-    fn disable_interrupts(&self) {
-        cortex_m::interrupt::disable();
-    }
-
     //#[inline(always)]
     fn get_interrupt_threshold(&self) -> u8 {
         NVIC_PRIO_MAX - (cortex_m::register::basepri::read() >> NVIC_PRIO_SHIFT)
@@ -233,7 +223,8 @@ impl AlarmClockController for STM32F4 {
     }
 
     #[inline(always)]
-    fn set_wakeup(&self, at: u64) {
+    fn set_wakeup(&self, at: Option<u64>) {
+        let at = at.unwrap_or(u64::MAX);
         let restore_state = self.acquire();
         let compare_high = (at >> 32) as u32;
         let compare_low = (at & 0xffff_ffff) as u32;
@@ -254,18 +245,6 @@ impl AlarmClockController for STM32F4 {
             self.tim2.egr.write(|w| w.cc1g().set_bit());
         }
         self.restore(restore_state);
-    }
-
-    #[inline(always)]
-    fn enable_wakeup(&self) {
-        self.tim2.dier.write(|w| w.cc1ie().enabled());
-        cortex_m::asm::dmb();
-    }
-
-    #[inline(always)]
-    fn disable_wakeup(&self) {
-        self.tim2.dier.write(|w| w.cc1ie().disabled());
-        cortex_m::asm::dmb();
     }
 }
 

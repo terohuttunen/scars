@@ -58,20 +58,8 @@ pub fn clock_ticks() -> u64 {
 
 #[allow(dead_code)]
 #[inline(always)]
-pub(crate) fn set_alarm(at: u64) {
+pub(crate) fn set_alarm(at: Option<u64>) {
     Hal::instance().set_wakeup(at)
-}
-
-#[allow(dead_code)]
-#[inline(always)]
-pub(crate) fn enable_alarm_interrupt() {
-    Hal::instance().enable_wakeup();
-}
-
-#[allow(dead_code)]
-#[inline(always)]
-pub(crate) fn disable_alarm_interrupt() {
-    Hal::instance().disable_wakeup();
 }
 
 #[allow(dead_code)]
@@ -84,18 +72,6 @@ pub fn get_interrupt_priority(interrupt_number: u16) -> u8 {
 #[inline(always)]
 pub fn set_interrupt_priority(interrupt_number: u16, prio: InterruptPriority) -> InterruptPriority {
     Hal::instance().set_interrupt_priority(interrupt_number, prio)
-}
-
-#[allow(dead_code)]
-#[inline(always)]
-pub fn enable_interrupts() {
-    Hal::instance().enable_interrupts();
-}
-
-#[allow(dead_code)]
-#[inline(always)]
-pub fn disable_interrupts() {
-    Hal::instance().disable_interrupts();
 }
 
 #[allow(dead_code)]

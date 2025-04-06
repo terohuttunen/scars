@@ -1,6 +1,6 @@
 use crate::kernel::{
     RuntimeError,
-    hal::{clock_ticks, disable_interrupts, enable_interrupts, syscall},
+    hal::{clock_ticks, syscall},
     interrupt::{
         CriticalSection, RawInterruptHandler, in_interrupt, interrupt_context,
         restore_current_interrupt, switch_current_interrupt,

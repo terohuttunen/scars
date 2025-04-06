@@ -468,28 +468,6 @@ impl InterruptController for Simulator {
         self.interrupt_controller.priority[interrupt_number as usize].swap(prio, Ordering::SeqCst)
     }
 
-    fn enable_interrupts(&self) {
-        INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
-        unsafe {
-            libc::pthread_sigmask(
-                libc::SIG_UNBLOCK,
-                &self.interrupt_controller.interrupt_sigmask,
-                core::ptr::null_mut(),
-            );
-        }
-    }
-
-    fn disable_interrupts(&self) {
-        INTERRUPTS_ENABLED.store(false, Ordering::SeqCst);
-        unsafe {
-            libc::pthread_sigmask(
-                libc::SIG_BLOCK,
-                &self.interrupt_controller.interrupt_sigmask,
-                core::ptr::null_mut(),
-            );
-        }
-    }
-
     #[inline(always)]
     fn get_interrupt_threshold(&self) -> u8 {
         self.interrupt_controller.threshold.load(Ordering::SeqCst)
@@ -681,29 +659,15 @@ impl AlarmClockController for Simulator {
         VirtualTimer::timespec_to_ticks(time)
     }
 
-    fn set_wakeup(&self, at: u64) {
+    fn set_wakeup(&self, at: Option<u64>) {
         unsafe {
             libc::pthread_mutex_lock(self.timer.wait_lock.get());
 
-            if at == u64::MAX {
-                (*self.timer.wait_until.get()) = None;
-            } else {
-                (*self.timer.wait_until.get()) = Some(VirtualTimer::ticks_to_timespec(at));
-            };
+            (*self.timer.wait_until.get()) = at.map(|ticks| VirtualTimer::ticks_to_timespec(ticks) );
 
             libc::pthread_cond_signal(self.timer.wait.get());
             libc::pthread_mutex_unlock(self.timer.wait_lock.get());
         }
-    }
-
-    #[inline(always)]
-    fn enable_wakeup(&self) {
-        VirtualTimer::enabled_flag().store(true, Ordering::SeqCst);
-    }
-
-    #[inline(always)]
-    fn disable_wakeup(&self) {
-        VirtualTimer::enabled_flag().store(false, Ordering::SeqCst);
     }
 }
 
