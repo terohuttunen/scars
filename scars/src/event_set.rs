@@ -25,12 +25,12 @@ impl EventSet {
 
     pub(crate) fn set_wakeup_event(&self) {
         self.sent_events_mask
-            .fetch_or(SCHEDULER_WAKEUP_EVENT, Ordering::Release);
+            .fetch_or(SCHEDULER_WAKEUP_EVENT, Ordering::SeqCst);
     }
 
     pub(crate) fn set_resume_event(&self) {
         self.sent_events_mask
-            .fetch_or(SCHEDULER_NOTIFY_EVENT, Ordering::Release);
+            .fetch_or(SCHEDULER_NOTIFY_EVENT, Ordering::SeqCst);
     }
 
     pub(crate) fn set_waited_events(&self, events: u32) {
