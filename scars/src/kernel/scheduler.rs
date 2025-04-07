@@ -676,7 +676,7 @@ impl RawScheduler {
         let received_events = self
             .current_thread
             .events
-            .read_and_clear_matching_events(events);
+            .read_and_clear_matching_sent_events(events);
 
         // Note: If there is a send_events call from ISR between the above read and clear,
         // and blocking of the thread, then the ISR will put the thread into pending resume

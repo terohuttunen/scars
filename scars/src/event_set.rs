@@ -37,7 +37,7 @@ impl EventSet {
         self.waited_events_mask.store(events, Ordering::SeqCst);
     }
 
-    pub(crate) fn read_and_clear_matching_events(&self, events: u32) -> u32 {
+    pub(crate) fn read_and_clear_matching_sent_events(&self, events: u32) -> u32 {
         self.sent_events_mask.fetch_and(!events, Ordering::SeqCst) & events
     }
 
@@ -92,7 +92,7 @@ impl EventSet {
         // In case there were more events sent between thread notification and syscall return,
         // Read and clear matching events that could have lead to the thread wakeup, now that
         // the waited events mask has been cleared.
-        received_events |= self.sent_events_mask.fetch_and(!events, Ordering::SeqCst) & events;
+        received_events |= self.read_and_clear_matching_sent_events(events);
 
         received_events
     }
@@ -112,7 +112,7 @@ impl EventSet {
         // Read and clear matching events that could have lead to the thread wakeup, now that
         // the waited events mask has been cleared.
         events |= SCHEDULER_WAKEUP_EVENT;
-        received_events |= self.sent_events_mask.fetch_and(!events, Ordering::SeqCst) & events;
+        received_events |= self.read_and_clear_matching_sent_events(events);
 
         if received_events & SCHEDULER_WAKEUP_EVENT != 0 {
             Err(WaitEventsUntilError::Timeout(received_events))
