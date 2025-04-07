@@ -14,6 +14,7 @@
 pub mod kernel;
 pub mod api;
 pub mod cell;
+pub mod event_set;
 pub mod events;
 pub mod sync;
 pub mod task;

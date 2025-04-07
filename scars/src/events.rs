@@ -1,5 +1,6 @@
-use crate::kernel::{scheduler::ExecutionContext, Scheduler};
-pub use crate::thread::{RawThread, TryWaitEventsError};
+pub use crate::event_set::TryWaitEventsError;
+use crate::kernel::{Scheduler, scheduler::ExecutionContext};
+pub use crate::thread::RawThread;
 use crate::time::Instant;
 
 pub const EXECUTOR_WAKEUP_EVENT: u32 = 1u32 << 28;

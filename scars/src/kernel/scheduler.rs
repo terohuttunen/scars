@@ -1,3 +1,4 @@
+use crate::Instant;
 use crate::cell::{LockedCell, LockedPinRefCell, LockedRefCell, PinRefMut, RefMut};
 use crate::events::REQUIRE_ALL_EVENTS;
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, impl_linked};
@@ -13,7 +14,6 @@ use crate::kernel::{
     syscall,
     waiter::{SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag},
 };
-use crate::Instant;
 use crate::printkln;
 use crate::sync::{
     InterruptLock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
@@ -666,9 +666,7 @@ impl RawScheduler {
 
         // Set waited events mask. If any events are sent to the thread, it will
         // be notified if the required events are received.
-        self.current_thread
-            .waited_events_mask
-            .store(events, Ordering::SeqCst);
+        self.current_thread.events.set_waited_events(events);
 
         // Extract require_all flag from the events mask.
         let require_all = events & REQUIRE_ALL_EVENTS != 0;
@@ -677,9 +675,8 @@ impl RawScheduler {
         // Read and clear matching events from sent events mask.
         let received_events = self
             .current_thread
-            .sent_events_mask
-            .fetch_and(!events, Ordering::SeqCst)
-            & events;
+            .events
+            .read_and_clear_matching_events(events);
 
         // Note: If there is a send_events call from ISR between the above read and clear,
         // and blocking of the thread, then the ISR will put the thread into pending resume
