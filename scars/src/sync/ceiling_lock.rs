@@ -3,9 +3,9 @@ use crate::kernel::{
     Priority,
     interrupt::RawInterruptHandler,
     list::{Node, impl_linked},
-    priority::PriorityStatus,
     scheduler::{ExecutionContext, Scheduler},
 };
+use crate::priority::PriorityStatus;
 use crate::runtime_error;
 use crate::sync::{NestingLock, PreemptLock, ScopedLock, TryLockResult, Unlock};
 use crate::thread::{IDLE_THREAD_ID, LockListTag, RawThread};

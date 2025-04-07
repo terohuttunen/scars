@@ -1,4 +1,5 @@
-use crate::kernel::{interrupt::in_interrupt, priority::Priority, waiter::WaitQueue};
+use crate::kernel::{interrupt::in_interrupt, waiter::WaitQueue};
+use crate::priority::Priority;
 use crate::sync::{MutexGuard, Unlock, ceiling_lock::RawCeilingLockGuard, mutex};
 
 pub struct WaitTimeoutResult(bool);

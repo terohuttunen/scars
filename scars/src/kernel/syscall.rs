@@ -6,19 +6,19 @@ use crate::kernel::{
         restore_current_interrupt, switch_current_interrupt,
     },
     list::LinkedList,
-    priority::{AnyPriority, Priority},
     scheduler::Scheduler,
     waiter::{Suspendable, WaitQueueTag},
 };
+use crate::priority::{AnyPriority, Priority};
 use crate::sync::{InterruptLock, interrupt_lock::InterruptLockKey};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
 use core::cell::SyncUnsafeCell;
+use core::marker::PhantomData;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 use scars_khal::{FlowController, UnrecoverableError};
-use core::marker::PhantomData;
 
 pub const SYSCALL_ID_YIELD: usize = 1;
 pub const SYSCALL_ID_WAIT: usize = 2;

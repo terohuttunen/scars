@@ -3,18 +3,17 @@ use crate::event_set::{EventSet, TryWaitEventsError};
 use crate::events::{
     REQUIRE_ALL_EVENTS, SCHEDULER_NOTIFY_EVENT, SCHEDULER_WAKEUP_EVENT, WaitEventsUntilError,
 };
-use crate::kernel::priority::PriorityStatus;
 use crate::kernel::{
     Priority,
     hal::Context,
     interrupt::set_ceiling_threshold,
     list::{LinkedList, LinkedListTag, Node, impl_linked},
-    priority::AtomicPriorityStatusPair,
     scheduler::ExecStateTag,
     scheduler::Scheduler,
     stack::StackRefMut,
     waiter::Suspendable,
 };
+use crate::priority::{AtomicPriorityStatusPair, PriorityStatus};
 use crate::sync::{OnceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
 use crate::syscall;
 use crate::task::ThreadExecutor;

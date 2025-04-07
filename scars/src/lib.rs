@@ -16,6 +16,7 @@ pub mod api;
 pub mod cell;
 pub mod event_set;
 pub mod events;
+pub mod priority;
 pub mod sync;
 pub mod task;
 pub mod thread;
@@ -31,9 +32,9 @@ pub use kernel::hal::clock_ticks;
 pub use kernel::hal::kernel_hal as khal;
 pub use kernel::hal::kernel_hal::{printk, printkln};
 pub use kernel::hal::pac;
-pub use kernel::priority::{AnyPriority, Priority};
 pub use kernel::scheduler::{ExecutionContext, Scheduler};
 pub use kernel::stack::Stack;
+pub use priority::{AnyPriority, Priority};
 pub use static_cell;
 pub use thread::{Thread, ThreadRef};
 
@@ -47,11 +48,11 @@ pub use api::*;
 
 pub mod prelude {
     pub use crate::delay_until;
-    pub use crate::kernel::priority::{AnyPriority, Priority};
     pub use crate::make_channel;
     pub use crate::make_interrupt_handler;
     pub use crate::make_rendezvous;
     pub use crate::make_shared;
     pub use crate::make_thread;
+    pub use crate::priority::{AnyPriority, Priority};
     pub use crate::thread::Thread;
 }

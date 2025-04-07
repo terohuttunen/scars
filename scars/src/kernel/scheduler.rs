@@ -10,11 +10,11 @@ use crate::kernel::{
     hal::{Context, set_alarm, set_current_thread_context, start_first_thread},
     handle_runtime_error,
     interrupt::{RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold},
-    priority::{AnyPriority, Priority, PriorityStatus},
     syscall,
     waiter::{SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag},
 };
 use crate::printkln;
+use crate::priority::{AnyPriority, Priority, PriorityStatus};
 use crate::sync::{
     InterruptLock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
     preempt_lock::PreemptLockKey,

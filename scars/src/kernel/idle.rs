@@ -1,4 +1,4 @@
-use crate::kernel::priority::Priority;
+use crate::priority::Priority;
 use crate::sync::PreemptLock;
 use crate::thread::{InitializedThread, RawThread, ThreadBuilder, ThreadExecutionState};
 use crate::{make_local_storage, make_thread, make_thread_executor, thread};

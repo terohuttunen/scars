@@ -1,14 +1,14 @@
-use crate::kernel::priority::InterruptPriority;
+use crate::priority::InterruptPriority;
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use scars_khal::*;
-use unrecoverable_error::UnrecoverableError;
 #[cfg(feature = "khal-e310x")]
 pub use scars_khal_e310x as kernel_hal;
 #[cfg(feature = "khal-sim")]
 pub use scars_khal_sim as kernel_hal;
 #[cfg(feature = "khal-stm32f4")]
 pub use scars_khal_stm32f4 as kernel_hal;
+use unrecoverable_error::UnrecoverableError;
 
 pub use kernel_hal::pac;
 
@@ -31,7 +31,6 @@ pub(crate) fn init_hal() {
         kernel_hal::HAL::init(kernel_hal::HAL::instance() as *const _ as *mut _);
     }
 }
-
 
 #[allow(dead_code)]
 #[inline(always)]

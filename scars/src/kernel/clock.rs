@@ -3,9 +3,9 @@ use crate::kernel::{
         RawInterruptHandler, in_interrupt, interrupt_context, restore_current_interrupt,
         switch_current_interrupt,
     },
-    priority::Priority,
     scheduler::Scheduler,
 };
+use crate::priority::Priority;
 use crate::sync::preempt_lock::PreemptLockKey;
 use core::cell::SyncUnsafeCell;
 use core::ops::{Add, Mul, Sub};

@@ -3,17 +3,16 @@ pub(crate) mod clock;
 pub mod exception;
 pub(crate) mod idle;
 pub mod interrupt;
-pub mod priority;
 pub(crate) mod scheduler;
 pub(crate) mod stack;
 use crate::cell::LockedCell;
 use crate::printkln;
+pub(crate) use crate::priority::{
+    AnyPriority, AtomicPriority, InterruptPriority, Priority, ThreadPriority,
+};
 use crate::sync::interrupt_lock::InterruptLockKey;
 use core::cell::UnsafeCell;
 pub(crate) use exception::{RuntimeError, handle_runtime_error};
-pub(crate) use priority::{
-    AnyPriority, AtomicPriority, InterruptPriority, Priority, ThreadPriority,
-};
 use scars_khal::{ContextInfo, FlowController, HardwareAbstractionLayer};
 //pub use scheduler::print_threads;
 pub(crate) use scheduler::Scheduler;

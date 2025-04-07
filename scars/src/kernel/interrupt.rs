@@ -2,13 +2,13 @@ use crate::cell::LockedCell;
 use crate::events::EXECUTOR_WAKEUP_EVENT;
 pub use crate::events::{REQUIRE_ALL_EVENTS, TryWaitEventsError};
 use crate::kernel::list::{LinkedList, LinkedListTag};
-use crate::kernel::priority::{
-    AtomicPriorityPair, AtomicPriorityStatusPair, INVALID_PRIORITY, InterruptPriority, Priority,
-    PriorityStatus,
-};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::kernel::tracing;
 use crate::kernel::waiter::Suspendable;
+use crate::priority::{
+    AtomicPriorityPair, AtomicPriorityStatusPair, INVALID_PRIORITY, InterruptPriority, Priority,
+    PriorityStatus,
+};
 use crate::sync::{
     OnceLock,
     ceiling_lock::RawCeilingLock,
@@ -23,9 +23,9 @@ pub use critical_section::CriticalSection;
 use scars_khal::*;
 
 use crate::kernel::hal::{
-    Context, MAX_INTERRUPT_NUMBER, claim_interrupt, complete_interrupt,
-    enable_interrupt, get_interrupt_priority, get_interrupt_threshold,
-    set_interrupt_priority, set_interrupt_threshold,
+    Context, MAX_INTERRUPT_NUMBER, claim_interrupt, complete_interrupt, enable_interrupt,
+    get_interrupt_priority, get_interrupt_threshold, set_interrupt_priority,
+    set_interrupt_threshold,
 };
 use core::cell::UnsafeCell;
 use core::future::{Future, poll_fn};
