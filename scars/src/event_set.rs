@@ -1,13 +1,9 @@
-use core::pin::Pin;
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use crate::events::{
     REQUIRE_ALL_EVENTS, SCHEDULER_NOTIFY_EVENT, SCHEDULER_WAKEUP_EVENT, WaitEventsUntilError,
 };
-use crate::kernel::scheduler::Scheduler;
 use crate::syscall;
-use crate::thread::RawThread;
 use crate::time::Instant;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Copy, Clone, Debug)]
 pub enum TryWaitEventsError {
@@ -45,7 +41,7 @@ impl EventSet {
         self.sent_events_mask.fetch_and(!events, Ordering::SeqCst) & events
     }
 
-    pub fn send_events(&self, thread: Pin<&'static RawThread>, mut events: u32) {
+    pub fn send_events(&self, mut events: u32) -> bool {
         // Remove require_all flag from incoming events. This flag is only used for receiving events.
         events &= !REQUIRE_ALL_EVENTS;
 
@@ -67,7 +63,11 @@ impl EventSet {
         if (!require_all && received_events != 0)
             || (received_events != 0 && received_events == receiving_events)
         {
-            Scheduler::resume_thread(thread);
+            // Thread is waiting for the events, resume it
+            true
+        } else {
+            // Thread is not waiting for the events, do not resume it
+            false
         }
     }
 

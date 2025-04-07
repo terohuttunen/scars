@@ -362,7 +362,9 @@ impl RawThread {
     }
 
     pub fn send_events(&'static self, events: u32) {
-        self.events.send_events(Pin::static_ref(self), events);
+        if self.events.send_events(events) {
+            self.resume();
+        }
     }
 
     pub fn wait_events(&self, events: u32) -> u32 {
