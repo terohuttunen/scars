@@ -86,7 +86,7 @@ impl EventSet {
         // Wait for the events. The syscall returns events read before blocking.
         let mut received_events = syscall::thread_wait_event(events);
 
-        // Clear waited events mask to suppress thread notifications from sender.
+        // We are no longer waiting for any events, so we can clear the mask.
         self.waited_events_mask.store(0, Ordering::SeqCst);
 
         // In case there were more events sent between thread notification and syscall return,
@@ -105,7 +105,7 @@ impl EventSet {
         // Wait for the events. The syscall returns events read before blocking.
         let mut received_events = syscall::thread_wait_event_until(events, deadline);
 
-        // Clear waited events mask to suppress thread notifications from sender.
+        // We are no longer waiting for any events, so we can clear the mask.
         self.waited_events_mask.store(0, Ordering::SeqCst);
 
         // In case there were more events sent between thread notification and syscall return,
