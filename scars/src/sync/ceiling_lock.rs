@@ -58,7 +58,7 @@ impl RawCeilingLock {
     ) {
         // Ceiling check: If locking interrupt has priority higher than the
         // mutex ceiling, then it violates the priority ceiling protocol.
-        if current_interrupt.base_priority() > self.ceiling_priority {
+        if current_interrupt.priority() > self.ceiling_priority {
             runtime_error!(RuntimeError::CeilingPriorityViolation);
         }
 
@@ -86,7 +86,7 @@ impl RawCeilingLock {
 
             // Ceiling check: If locking thread has priority higher than the
             // mutex ceiling, then it violates the priority ceiling protocol.
-            if current_thread.base_priority > self.ceiling_priority {
+            if current_thread.priority() > self.ceiling_priority {
                 runtime_error!(RuntimeError::CeilingPriorityViolation);
             }
 

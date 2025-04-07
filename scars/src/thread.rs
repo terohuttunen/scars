@@ -283,7 +283,7 @@ impl RawThread {
     /// A thread can temporary boost its priority by acquiring locks. If a thread
     /// owns any locks, the highest owned lock priority will be returned; otherwise,
     /// returns the thread base priority.
-    pub(crate) fn active_priority<'key>(&self) -> Priority {
+    pub(crate) fn priority<'key>(&self) -> Priority {
         let lock_priority = self.lock_priority();
         self.base_priority.max_valid(lock_priority)
     }
@@ -498,7 +498,7 @@ impl ThreadRef {
     }
 
     pub fn priority(&self) -> Priority {
-        unsafe { self.0.as_ref().active_priority() }
+        unsafe { self.0.as_ref().priority() }
     }
 
     pub(crate) unsafe fn as_ref(&self) -> &'static RawThread {

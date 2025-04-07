@@ -280,7 +280,7 @@ impl RawInterruptHandler {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn active_priority(&self) -> Priority {
+    pub(crate) fn priority(&self) -> Priority {
         let lock_priority = self.lock_priority();
         self.base_priority.max_valid(lock_priority)
     }
