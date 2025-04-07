@@ -41,6 +41,19 @@ impl EventSet {
         self.sent_events_mask.fetch_and(!events, Ordering::SeqCst) & events
     }
 
+    pub fn clear_waited_events(&self) {
+        self.waited_events_mask.store(0, Ordering::SeqCst);
+    }
+
+    fn will_not_block(require_all: bool, sent_events: u32, events: u32) -> bool {
+        (!require_all && sent_events & events != 0) || (sent_events & events) == events
+    }
+
+    fn should_notify(require_all: bool, received_events: u32, receiving_events: u32) -> bool {
+        (!require_all && received_events != 0)
+            || (received_events != 0 && received_events == receiving_events)
+    }
+
     pub fn send_events(&self, mut events: u32) -> bool {
         // Remove require_all flag from incoming events. This flag is only used for receiving events.
         events &= !REQUIRE_ALL_EVENTS;
@@ -60,9 +73,7 @@ impl EventSet {
         let received_events = receiving_events & sent_events;
 
         // Notify the thread if it is waiting for any/all of the sent events
-        if (!require_all && received_events != 0)
-            || (received_events != 0 && received_events == receiving_events)
-        {
+        if Self::should_notify(require_all, received_events, receiving_events) {
             // Thread is waiting for the events, resume it
             true
         } else {
@@ -116,7 +127,7 @@ impl EventSet {
 
         let sent_events = self.sent_events_mask.load(Ordering::SeqCst);
 
-        if (!require_all && sent_events & events != 0) || (sent_events & events) == events {
+        if Self::will_not_block(require_all, sent_events, events) {
             Ok(self.wait_events(events))
         } else {
             Err(TryWaitEventsError::WouldBlock)
