@@ -1,13 +1,12 @@
-use crate::cell::{LockedCell, LockedPinRefCell, LockedRefCell};
+use super::{INVALID_THREAD_ID, LockListTag, ThreadInfo, ThreadRef};
+use crate::cell::{LockedCell, LockedPinRefCell};
 use crate::event_set::{EventSet, TryWaitEventsError};
-use crate::events::{
-    REQUIRE_ALL_EVENTS, SCHEDULER_NOTIFY_EVENT, SCHEDULER_WAKEUP_EVENT, WaitEventsUntilError,
-};
+use crate::events::WaitEventsUntilError;
 use crate::kernel::{
     Priority,
     hal::Context,
     interrupt::set_ceiling_threshold,
-    list::{LinkedList, LinkedListTag, Node, impl_linked},
+    list::{LinkedList, Node, impl_linked},
     scheduler::ExecStateTag,
     scheduler::Scheduler,
     stack::StackRefMut,
@@ -15,57 +14,12 @@ use crate::kernel::{
 };
 use crate::priority::{AtomicPriorityStatusPair, PriorityStatus};
 use crate::sync::{OnceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
-use crate::syscall;
 use crate::task::ThreadExecutor;
 use crate::time::Instant;
 use crate::tls::{LocalCell, LocalStorage};
-use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
-use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, Ordering};
-use scars_khal::ContextInfo;
-use static_cell::ConstStaticCell;
-
-#[macro_export]
-macro_rules! make_thread {
-    ($name: expr, $prio : expr, $stack_size : expr, $local_storage_size : expr, executor = true) => {{
-        let mut thread = $crate::make_thread!($name, $prio, $stack_size, $local_storage_size);
-        let executor = $crate::make_thread_executor!();
-        thread.start_executor(executor);
-        thread
-    }};
-    ($name: expr, $prio : expr, $stack_size : expr, $local_storage_size : expr) => {{
-        let mut thread = $crate::make_thread!($name, $prio, $stack_size);
-        let local_storage = $crate::make_local_storage!($local_storage_size);
-        thread.set_local_storage(local_storage);
-        thread
-    }};
-    ($name: expr, $prio : expr, $stack_size: expr) => {{
-        static STACK: $crate::Stack<{ $stack_size }> = $crate::Stack::new();
-        type T = impl ::core::marker::Sized + ::core::marker::Send + FnMut();
-        static THREAD: $crate::Thread<{ $prio }, T> = $crate::Thread::new($name);
-        THREAD.init(STACK.init())
-    }};
-}
-
-pub const INVALID_THREAD_ID: u32 = 0;
-pub const IDLE_THREAD_ID: u32 = 1;
-
-static NEXT_FREE_THREAD_ID: AtomicU32 = AtomicU32::new(IDLE_THREAD_ID);
-
-pub struct LockListTag {}
-
-impl LinkedListTag for LockListTag {}
-
-pub struct ThreadInfo {
-    pub name: &'static str,
-    pub state: ThreadExecutionState,
-    pub base_priority: Priority,
-    pub stack_addr: *const (),
-    pub stack_size: usize,
-    pub entry: *const (),
-}
+use core::sync::atomic::Ordering;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 #[repr(C)]
@@ -139,7 +93,11 @@ pub struct RawThread {
 }
 
 impl RawThread {
-    const fn new(name: &'static str, base_priority: Priority, main_fn: *const ()) -> RawThread {
+    pub(crate) const fn new(
+        name: &'static str,
+        base_priority: Priority,
+        main_fn: *const (),
+    ) -> RawThread {
         RawThread {
             thread_id: INVALID_THREAD_ID,
             state: LockedCell::new(ThreadExecutionState::Created),
@@ -406,219 +364,3 @@ impl RawThread {
 }
 
 impl_linked!(exec_queue_link, RawThread, ExecStateTag);
-
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub struct ThreadRef(NonNull<RawThread>);
-
-impl ThreadRef {
-    fn new_from_pin(thread: Pin<&'static RawThread>) -> ThreadRef {
-        ThreadRef(NonNull::from(thread.get_ref()))
-    }
-
-    fn new(thread: &'static RawThread) -> ThreadRef {
-        ThreadRef(NonNull::from(thread))
-    }
-
-    unsafe fn from_ptr(ptr: *const RawThread) -> ThreadRef {
-        ThreadRef(unsafe { NonNull::new_unchecked(ptr as *mut RawThread) })
-    }
-
-    pub fn name(&self) -> &'static str {
-        unsafe { self.0.as_ref().name }
-    }
-
-    pub fn send_events(&self, event: u32) {
-        unsafe { self.0.as_ref().send_events(event) }
-    }
-
-    pub fn priority(&self) -> Priority {
-        unsafe { self.0.as_ref().priority() }
-    }
-
-    pub(crate) unsafe fn as_ref(&self) -> &'static RawThread {
-        unsafe { self.0.as_ref() }
-    }
-
-    pub unsafe fn current() -> ThreadRef {
-        match Scheduler::current_execution_context() {
-            crate::ExecutionContext::Thread(ctx) => ThreadRef::new_from_pin(ctx),
-            crate::ExecutionContext::Interrupt(_) => panic!("No current thread"),
-        }
-    }
-}
-
-impl PartialEq for ThreadRef {
-    fn eq(&self, other: &ThreadRef) -> bool {
-        core::ptr::eq(self.0.as_ptr(), other.0.as_ptr())
-    }
-}
-
-impl Eq for ThreadRef {}
-
-unsafe impl Sync for ThreadRef {}
-unsafe impl Send for ThreadRef {}
-
-pub struct ThreadBuilder<const PRIO: Priority, F: FnMut() + Send + 'static> {
-    thread: &'static mut RawThread,
-    closure: &'static mut MaybeUninit<F>,
-    stack: StackRefMut,
-}
-
-impl<const PRIO: Priority, F: FnMut() + Send + 'static> ThreadBuilder<PRIO, F> {
-    pub fn start<C: FnOnce() -> F>(self, closure: C) -> ThreadRef {
-        self.attach(closure).start()
-    }
-
-    pub fn build<C: FnOnce() -> F>(self, closure: C) -> ThreadRef {
-        self.attach(closure).finish()
-    }
-
-    pub fn attach<C: FnOnce() -> F>(self, closure: C) -> InitializedThread {
-        let closure = closure();
-        let closure_ref = self.closure.write(closure);
-        let closure_ptr = closure_ref as *const F as *const ();
-
-        // A closure cannot be called directly, so every thread has a wrapper function
-        // that calls the closure. The wrapper function is passed as the main function
-        // to the KHAL thread context. The wrapper function then calls the closure.
-        // The closure is passed as an argument to the wrapper function.
-        self.thread.main_fn = Thread::<PRIO, F>::closure_wrapper as *const ();
-
-        self.thread.stack.write(self.stack);
-        let stack_ptr = unsafe { self.thread.stack.assume_init_ref() }.bottom_ptr();
-        let stack_size = unsafe { self.thread.stack.assume_init_ref() }.alloc_size();
-
-        self.thread.thread_id = NEXT_FREE_THREAD_ID.fetch_add(1, Ordering::SeqCst);
-
-        unsafe {
-            Context::init(
-                self.thread.name,
-                self.thread.main_fn,
-                Some(closure_ptr as *const u8),
-                stack_ptr,
-                stack_size,
-                self.thread.context.as_mut_ptr(),
-            );
-        }
-
-        InitializedThread {
-            thread: self.thread,
-        }
-    }
-
-    pub fn set_local_storage(&mut self, local_storage: LocalStorage) {
-        self.thread
-            .set_local_storage(local_storage)
-            .unwrap_or_else(|_| {
-                panic!("TLS already set");
-            });
-    }
-
-    pub fn start_executor(&mut self, executor: &'static LocalCell<ThreadExecutor>) {
-        self.thread.start_executor(executor);
-    }
-
-    pub fn modify<R>(&mut self, f: impl FnOnce(&mut RawThread) -> R) -> R {
-        f(self.thread)
-    }
-
-    pub fn name(&self) -> &'static str {
-        self.thread.name
-    }
-
-    pub fn base_priority(&self) -> Priority {
-        self.thread.base_priority
-    }
-
-    pub fn as_ref(&self) -> ThreadRef {
-        unsafe { ThreadRef::from_ptr(self.thread as *const _) }
-    }
-
-    pub fn stack_ref(&self) -> &StackRefMut {
-        &self.stack
-    }
-}
-
-pub struct InitializedThread {
-    thread: &'static mut RawThread,
-}
-
-impl InitializedThread {
-    pub fn start(self) -> ThreadRef {
-        let InitializedThread { thread } = self;
-        let thread_ref = unsafe { ThreadRef::from_ptr(thread as *const _) };
-        unsafe { thread.start() };
-
-        thread_ref
-    }
-
-    pub fn finish(self) -> ThreadRef {
-        let InitializedThread { thread } = self;
-        ThreadRef::new(thread)
-    }
-
-    pub fn set_local_storage(&mut self, local_storage: LocalStorage) {
-        self.thread
-            .set_local_storage(local_storage)
-            .unwrap_or_else(|_| {
-                panic!("TLS already set");
-            });
-    }
-
-    pub fn start_executor(&mut self, executor: &'static LocalCell<ThreadExecutor>) {
-        self.thread.start_executor(executor);
-    }
-
-    pub fn modify<R>(&mut self, f: impl FnOnce(&mut RawThread) -> R) -> R {
-        f(self.thread)
-    }
-
-    pub fn name(&self) -> &'static str {
-        self.thread.name
-    }
-
-    pub fn base_priority(&self) -> Priority {
-        self.thread.base_priority
-    }
-
-    pub fn stack_ref(&self) -> &StackRefMut {
-        unsafe { self.thread.stack.assume_init_ref() }
-    }
-}
-
-pub struct Thread<const PRIO: Priority, F: FnMut() + Send> {
-    thread: ConstStaticCell<RawThread>,
-    closure: UnsafeCell<MaybeUninit<F>>,
-}
-
-impl<const PRIO: Priority, F: FnMut() + Send> Thread<PRIO, F> {
-    pub const fn new(name: &'static str) -> Thread<PRIO, F> {
-        Thread {
-            thread: ConstStaticCell::new(RawThread::new(
-                name,
-                PRIO,
-                Self::closure_wrapper as *const (),
-            )),
-            closure: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
-
-    unsafe extern "C" fn closure_wrapper(closure_ptr: *mut ::core::ffi::c_void) {
-        let closure = unsafe { &mut *(closure_ptr as *mut F) };
-        closure();
-    }
-
-    pub fn init(&'static self, stack: StackRefMut) -> ThreadBuilder<PRIO, F> {
-        let thread = self.thread.take();
-        thread.suspendable = Suspendable::new_thread(thread);
-        let closure = unsafe { &mut *self.closure.get() };
-        ThreadBuilder {
-            thread,
-            closure,
-            stack,
-        }
-    }
-}
-
-unsafe impl<const PRIO: Priority, F: FnMut() + Send> Sync for Thread<PRIO, F> {}

@@ -1,5 +1,5 @@
 use core::marker::ConstParamTy;
-use core::sync::atomic::{AtomicI16, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU32, Ordering};
 
 pub type ThreadPriority = u8;
 pub type InterruptPriority = u8;
