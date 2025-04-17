@@ -5,7 +5,7 @@ use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, impl_linked
 use crate::kernel::tracing;
 use crate::kernel::{
     RuntimeError, Stack, ThreadPriority,
-    atomic_queue::AtomicQueue,
+    atomic_queue::{AtomicNode, AtomicQueue},
     exception::{KernelError, handle_kernel_error},
     hal::{Context, set_alarm, set_current_thread_context, start_first_thread},
     handle_runtime_error,
@@ -844,13 +844,13 @@ impl Scheduler {
         let scheduler = Scheduler::pin_instance();
         let mut raw_scheduler = scheduler.borrow_mut(pkey);
 
-        while let Some(resuming) = scheduler.pending_resume.pop_front() {
+        while let Some(resuming) = Scheduler::instance().pending_resume.pop_front() {
             raw_scheduler
                 .as_mut()
                 .resume_suspendable_now(pkey, resuming);
         }
 
-        while let Some(suspending) = scheduler.pending_sleep.pop_front() {
+        while let Some(suspending) = Scheduler::instance().pending_sleep.pop_front() {
             raw_scheduler
                 .as_mut()
                 .suspend_suspendable_now(pkey, suspending);
