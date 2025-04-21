@@ -1,5 +1,7 @@
 use super::{NestingLock, TryLockError};
+use crate::kernel::hal::{acquire, restore};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
+use crate::sync::InterruptLock;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -104,12 +106,24 @@ impl PreemptLock {
             let key = unsafe { PreemptLockKey::new() };
 
             // This is the lock that was first acquired, and now released last.
-            // Move any pending ready threads to ready queue while we still have
-            // the ownership of the lock.
-            Scheduler::complete_pending(key);
+            // Complete any pending operations while we still have the ownership of
+            // the lock.
+            loop {
+                // Completion of pending operations and release of the preemption lock
+                // is made atomically.
+                let int_restore = acquire();
 
-            // Release the lock
-            PREEMPT_LOCK.store(core::ptr::null_mut(), Ordering::Release);
+                if !Scheduler::is_pending() {
+                    // Release the lock
+                    PREEMPT_LOCK.store(core::ptr::null_mut(), Ordering::Release);
+                    restore(int_restore);
+                    break;
+                }
+
+                restore(int_restore);
+
+                Scheduler::complete_pending(key);
+            }
 
             // Rescheduling was not allowed while the preemption lock was held.
             // If any operations were made that require rescheduling, a pending

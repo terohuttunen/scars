@@ -13,7 +13,7 @@ use crate::time::Instant;
 use core::cell::Cell;
 use core::future::{Future, poll_fn};
 use core::pin::Pin;
-use core::sync::atomic::AtomicPtr;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{RawWaker, Waker};
 
 pub struct WaitQueueTag {}
@@ -23,6 +23,10 @@ impl LinkedListTag for WaitQueueTag {}
 pub struct SleepQueueTag {}
 
 impl LinkedListTag for SleepQueueTag {}
+
+pub(crate) const SUSPENDABLE_PENDING_RESUME: u32 = 1;
+pub(crate) const SUSPENDABLE_PENDING_WAKEUP: u32 = 2;
+pub(crate) const SUSPENDABLE_PENDING_SUSPEND: u32 = 4;
 
 pub enum SuspendableKind {
     None,
@@ -47,10 +51,12 @@ pub struct Suspendable {
     /// Link for the kernel sleep queue.
     pub(crate) sleep_queue_link: Node<Self, SleepQueueTag>,
 
-    /// When PreemptLock cannot be acquired, the Suspendable cannot be inserted into Scheduler queues,
-    /// and it is instead added to the pending schedule queue to wait for scheduling when the lock is
-    /// released.
+    /// When PreemptLock cannot be acquired, operations on the Suspendable are postponed.
+    /// This link is used to insert the Suspendable into the pending schedule queue.
     pub(crate) pending_schedule_link: AtomicNode<Self, ExecStateTag>,
+
+    /// Mask of pending operations that could not be completed because of PreemptLock.
+    pub(crate) pending_mask: AtomicU32,
 }
 
 impl Suspendable {
@@ -61,6 +67,7 @@ impl Suspendable {
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicNode::new(),
+            pending_mask: AtomicU32::new(0),
         }
     }
 
@@ -76,6 +83,7 @@ impl Suspendable {
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicNode::new(),
+            pending_mask: AtomicU32::new(0),
         }
     }
 
@@ -86,6 +94,7 @@ impl Suspendable {
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicNode::new(),
+            pending_mask: AtomicU32::new(0),
         }
     }
 
@@ -96,6 +105,7 @@ impl Suspendable {
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
             pending_schedule_link: AtomicNode::new(),
+            pending_mask: AtomicU32::new(0),
         }
     }
 
@@ -131,6 +141,10 @@ impl Suspendable {
 
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline.get()
+    }
+
+    pub fn set_pending(&self, mask: u32) {
+        self.pending_mask.fetch_or(mask, Ordering::Relaxed);
     }
 }
 

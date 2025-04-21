@@ -69,8 +69,17 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
         head_node.next.load(Ordering::Acquire).is_null()
     }
 
-    // Enqueues an item at the tail of the queue.
     pub fn push_back<'item>(&'static self, item: Pin<&'item T>)
+    where
+        T: AtomicQueueNode<N>,
+    {
+        if let Err(e) = self.try_push_back(item) {
+            unrecoverable_error!(e);
+        }
+    }
+
+    // Enqueues an item at the tail of the queue.
+    pub fn try_push_back<'item>(&'static self, item: Pin<&'item T>) -> Result<(), AtomicQueueError>
     where
         T: AtomicQueueNode<N>,
     {
@@ -84,7 +93,7 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
         {
-            unrecoverable_error!(AtomicQueueError::ItemAlreadyInQueue);
+            return Err(AtomicQueueError::ItemAlreadyInQueue);
         }
 
         // Ensure next is null initially
@@ -124,7 +133,7 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
                         Ordering::SeqCst,
                         Ordering::Relaxed,
                     );
-                    return; // Enqueue successful
+                    return Ok(()); // Enqueue successful
                 }
             } else {
                 // Tail pointer is lagging behind the actual last node.
