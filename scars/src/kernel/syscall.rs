@@ -7,10 +7,10 @@ use crate::kernel::{
     },
     list::LinkedList,
     scheduler::Scheduler,
-    waiter::{Suspendable, WaitQueueTag},
+    waiter::{Suspendable, WaitQueue, WaitQueueHandle, WaitQueueTag},
 };
 use crate::priority::{AnyPriority, Priority};
-use crate::sync::{InterruptLock, interrupt_lock::InterruptLockKey};
+use crate::sync::{InterruptLock, NestingLock, interrupt_lock::InterruptLockKey};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
 use core::cell::SyncUnsafeCell;
@@ -34,16 +34,15 @@ pub fn thread_yield() {
     let _ = syscall(SYSCALL_ID_YIELD, 0, 0, 0);
 }
 
-pub(crate) fn thread_wait(
-    waiter_queue: *mut LinkedList<Suspendable, WaitQueueTag>,
-    ceiling: AnyPriority,
-) {
+pub(crate) fn thread_wait<'a, L: NestingLock>(wait_queue: &WaitQueue<L>) {
     if in_interrupt() {
         // Error: cannot wait in an interrupt handler
         crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
     }
 
-    let _ = syscall(SYSCALL_ID_WAIT, waiter_queue as usize, ceiling as usize, 0);
+    let (queue, vtable) = wait_queue.to_raw();
+
+    let _ = syscall(SYSCALL_ID_WAIT, queue as usize, vtable as usize, 0);
 }
 
 pub(crate) fn thread_wait_event(events: u32) -> u32 {
@@ -132,10 +131,8 @@ unsafe fn _private_kernel_syscall_handler(
                 Scheduler::yield_current_thread_isr();
             }
             SYSCALL_ID_WAIT => {
-                Scheduler::wait_current_thread_isr(
-                    arg0 as *mut _,
-                    Priority::from_any(arg1 as AnyPriority),
-                );
+                let wait_queue = WaitQueueHandle::from_raw(arg0 as *const (), arg1 as *const _);
+                Scheduler::wait_current_thread_isr(wait_queue);
             }
             SYSCALL_ID_WAIT_EVENT => {
                 rval = Scheduler::wait_current_thread_event_isr(arg0 as u32, None) as usize;

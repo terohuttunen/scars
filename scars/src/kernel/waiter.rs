@@ -5,7 +5,7 @@ use crate::kernel::atomic_queue::{AtomicNode, impl_atomic_linked};
 use crate::kernel::interrupt::RawInterruptHandler;
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, Node, impl_linked};
 use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
-use crate::sync::CeilingLock;
+use crate::sync::{CeilingLock, NestingLock, PreemptLock};
 use crate::syscall;
 use crate::task::task::RawTask;
 use crate::thread::RawThread;
@@ -152,26 +152,103 @@ impl_linked!(wait_queue_link, Suspendable, WaitQueueTag);
 impl_linked!(sleep_queue_link, Suspendable, SleepQueueTag);
 impl_atomic_linked!(pending_schedule_link, Suspendable, ExecStateTag);
 
-pub struct WaitQueue<const CEILING: Priority> {
-    queue: LockedPinRefCell<LinkedList<Suspendable, WaitQueueTag>, CeilingLock<CEILING>>,
+#[derive(Clone, Copy)]
+pub(crate) struct WaitQueueHandle {
+    queue: *const (),
+    vtable: &'static WaitQueueVTable,
 }
 
-impl<const CEILING: Priority> WaitQueue<CEILING> {
-    pub const fn new() -> WaitQueue<CEILING> {
+impl WaitQueueHandle {
+    pub unsafe fn insert(&self, suspendable: Pin<&Suspendable>) {
+        unsafe { (self.vtable.insert)(self.queue, suspendable.get_ref()) }
+    }
+
+    pub unsafe fn remove(&self, suspendable: Pin<&Suspendable>) {
+        unsafe { (self.vtable.remove)(self.queue, suspendable.get_ref()) }
+    }
+
+    pub fn to_raw(&self) -> (*const (), *const WaitQueueVTable) {
+        (self.queue, self.vtable)
+    }
+
+    pub unsafe fn from_raw(queue: *const (), vtable: *const WaitQueueVTable) -> Self {
+        Self {
+            queue,
+            vtable: unsafe { &*(vtable as *const WaitQueueVTable) },
+        }
+    }
+}
+
+pub(crate) struct WaitQueueVTable {
+    insert: unsafe fn(*const (), *const Suspendable),
+    remove: unsafe fn(*const (), *const Suspendable),
+}
+
+pub struct WaitQueue<L: NestingLock> {
+    queue: LockedPinRefCell<LinkedList<Suspendable, WaitQueueTag>, L>,
+}
+
+impl<L: NestingLock> WaitQueue<L> {
+    const WAIT_QUEUE_VTABLE: &'static WaitQueueVTable = &WaitQueueVTable {
+        insert: Self::insert_unsafe,
+        remove: Self::remove_unsafe,
+    };
+
+    pub const fn new() -> WaitQueue<L> {
         WaitQueue {
             queue: LockedPinRefCell::new(LinkedList::new()),
         }
     }
 
+    fn insert(&self, suspendable: Pin<&Suspendable>) {
+        L::with(|key| {
+            let priority = suspendable.priority();
+
+            let this = unsafe { Pin::new_unchecked(self) };
+            let queue = unsafe { this.map_unchecked(|s| &s.queue) };
+            queue
+                .borrow_mut(key)
+                .as_mut()
+                .insert_after(suspendable, |s| s.priority() >= priority);
+        })
+    }
+
+    fn remove(&self, suspendable: Pin<&Suspendable>) {
+        L::with(|key| {
+            let this = unsafe { Pin::new_unchecked(self) };
+            let queue = unsafe { this.map_unchecked(|s| &s.queue) };
+            queue.borrow_mut(key).as_mut().remove(suspendable);
+        })
+    }
+
+    unsafe fn insert_unsafe(queue: *const (), suspendable: *const Suspendable) {
+        let queue = unsafe { &*(queue as *const WaitQueue<L>) };
+        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
+        queue.insert(suspendable);
+    }
+
+    unsafe fn remove_unsafe(queue: *const (), suspendable: *const Suspendable) {
+        let queue = unsafe { &*(queue as *const WaitQueue<L>) };
+        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
+        queue.remove(suspendable);
+    }
+
     pub fn wait(&self) {
-        syscall::thread_wait(self.queue.as_ptr(), CEILING.into_any());
+        syscall::thread_wait(self);
+    }
+
+    pub(crate) fn to_raw(&self) -> (*const (), *const WaitQueueVTable) {
+        (
+            self as *const _ as *const (),
+            Self::WAIT_QUEUE_VTABLE as *const WaitQueueVTable,
+        )
     }
 
     pub async fn async_wait(&'static self) {
         let mut waiter_queued: bool = false;
         poll_fn(|cx| {
-            CeilingLock::with(|ckey| {
-                let mut queue = Pin::static_ref(&self.queue).borrow_mut(ckey);
+            L::with(|key| {
+                let mut queue = Pin::static_ref(&self.queue).borrow_mut(key);
                 let task = unsafe { &*(cx.waker().data() as *const RawTask) };
 
                 if !waiter_queued {
@@ -194,10 +271,9 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
         .await
     }
 
-    #[inline(never)]
     pub fn notify_one(&self) {
-        CeilingLock::with(|ckey| {
-            let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(ckey);
+        L::with(|key| {
+            let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(key);
 
             if let Some(waiter) = queue.as_mut().pop_front() {
                 waiter.notify()
@@ -206,8 +282,8 @@ impl<const CEILING: Priority> WaitQueue<CEILING> {
     }
 
     pub fn notify_all(&self) {
-        CeilingLock::with(|ckey| {
-            let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(ckey);
+        L::with(|key| {
+            let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(key);
 
             while let Some(waiter) = queue.as_mut().pop_front() {
                 waiter.notify();

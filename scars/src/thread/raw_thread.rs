@@ -10,7 +10,7 @@ use crate::kernel::{
     scheduler::ExecStateTag,
     scheduler::Scheduler,
     stack::StackRefMut,
-    waiter::Suspendable,
+    waiter::{Suspendable, WaitQueueHandle},
 };
 use crate::priority::{AtomicPriorityStatusPair, PriorityStatus};
 use crate::sync::{OnceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
@@ -82,6 +82,9 @@ pub struct RawThread {
 
     pub(crate) suspendable: Suspendable,
 
+    // Holds reference to the wait queue that the thread is waiting on, if any.
+    pub(crate) wait_queue: LockedCell<Option<WaitQueueHandle>, PreemptLock>,
+
     pub(crate) events: EventSet,
 
     pub(crate) local_storage: OnceLock<LocalStorage>,
@@ -112,6 +115,7 @@ impl RawThread {
             scoped_locks: LockedPinRefCell::new(LinkedList::new()),
             exec_queue_link: Node::new(),
             suspendable: Suspendable::new(),
+            wait_queue: LockedCell::new(None),
             events: EventSet::new(),
             local_storage: OnceLock::new(),
             context: MaybeUninit::uninit(),
@@ -308,6 +312,14 @@ impl RawThread {
 
     pub fn resume(&'static self) {
         Scheduler::resume_thread(Pin::static_ref(self));
+    }
+
+    pub(crate) fn set_wait_queue(
+        &self,
+        wait_queue: Option<WaitQueueHandle>,
+        pkey: PreemptLockKey<'_>,
+    ) {
+        self.wait_queue.set(pkey, wait_queue);
     }
 
     pub(crate) fn set_wakeup_event(&self) {

@@ -13,7 +13,7 @@ use crate::kernel::{
     syscall,
     waiter::{
         SUSPENDABLE_PENDING_RESUME, SUSPENDABLE_PENDING_SUSPEND, SUSPENDABLE_PENDING_WAKEUP,
-        SleepQueueTag, Suspendable, SuspendableKind, WaitQueueTag,
+        SleepQueueTag, Suspendable, SuspendableKind, WaitQueueHandle, WaitQueueTag,
     },
 };
 use crate::printkln;
@@ -616,8 +616,7 @@ impl RawScheduler {
     pub(crate) fn wait_current_thread(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
-        wait_list: *mut LinkedList<Suspendable, WaitQueueTag>,
-        ceiling: Priority,
+        wait_queue: WaitQueueHandle,
     ) {
         if self.current_thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread cannot block");
@@ -637,22 +636,11 @@ impl RawScheduler {
 
         let blocked_thread = self.as_mut().switch_thread(pkey, next);
 
-        let icb = unsafe { current_interrupt().unwrap().as_ref() };
         let suspendable = blocked_thread.suspendable_ref();
 
-        // Protect access to waiter queue with priority lock.
-        // SAFETY: list is accessed within raised priority section.
-        // TODO: priority is not immutable
-        let waiter_queue = unsafe { Pin::new_unchecked(&mut *wait_list) };
-        let old_prio = icb.raise_nesting_lock_priority(ceiling);
+        unsafe { wait_queue.insert(suspendable) };
 
-        let thread_prio = suspendable.priority();
-
-        waiter_queue.insert_after(suspendable, |queue_waiter| {
-            queue_waiter.priority() >= thread_prio
-        });
-
-        icb.set_nesting_lock_priority(old_prio);
+        blocked_thread.set_wait_queue(Some(wait_queue), pkey);
 
         self.block_thread(pkey, blocked_thread, None);
     }
@@ -1009,15 +997,12 @@ impl Scheduler {
 
     // Blocking
     // ISR context
-    pub(crate) fn wait_current_thread_isr(
-        wait_list: *mut LinkedList<Suspendable, WaitQueueTag>,
-        ceiling: Priority,
-    ) {
+    pub(crate) fn wait_current_thread_isr(wait_list: WaitQueueHandle) {
         match PreemptLock::try_with(|pkey| {
             Scheduler::pin_instance()
                 .borrow_mut(pkey)
                 .as_mut()
-                .wait_current_thread(pkey, wait_list, ceiling);
+                .wait_current_thread(pkey, wait_list);
         }) {
             Ok(()) => (),
             Err(_) => {
