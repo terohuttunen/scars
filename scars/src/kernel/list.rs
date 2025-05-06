@@ -25,6 +25,10 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
         }
     }
 
+    pub fn is_empty(self: Pin<&Self>) -> bool {
+        self.head.is_none()
+    }
+
     pub fn head<'item>(self: Pin<&Self>) -> Option<Pin<&'item T>> {
         self.head
             .map(|node_ptr| unsafe { node_ptr.as_ref().get_item() })
