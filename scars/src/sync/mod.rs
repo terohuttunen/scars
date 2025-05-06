@@ -24,6 +24,7 @@
 pub mod ceiling_lock;
 pub mod channel;
 pub mod condvar;
+pub mod inheritance_lock;
 pub mod interrupt_lock;
 pub mod mutex;
 pub mod no_lock;
@@ -48,6 +49,7 @@ pub use ::core::sync::atomic;
 
 pub use ceiling_lock::{CeilingLock, RawCeilingLock};
 pub use critical_section::{self, CriticalSection};
+pub use inheritance_lock::InheritanceLock;
 pub use interrupt_lock::InterruptLock;
 pub use no_lock::NoLock;
 pub use preempt_lock::PreemptLock;

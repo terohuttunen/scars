@@ -40,6 +40,10 @@ pub struct LockListTag {}
 
 impl LinkedListTag for LockListTag {}
 
+pub struct InheritanceLockListTag {}
+
+impl LinkedListTag for InheritanceLockListTag {}
+
 pub struct ThreadInfo {
     pub name: &'static str,
     pub state: ThreadExecutionState,

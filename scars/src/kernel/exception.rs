@@ -3,7 +3,9 @@ use crate::kernel::hal::{Context, Fault};
 use crate::printkln;
 use core::panic::{Location, PanicInfo};
 use scars_khal::FlowController;
-use unrecoverable_error::{UnrecoverableError, unrecoverable_error_handler, UnrecoverableErrorInfo};
+use unrecoverable_error::{
+    UnrecoverableError, UnrecoverableErrorInfo, unrecoverable_error_handler,
+};
 
 #[macro_export]
 macro_rules! runtime_error {
@@ -51,7 +53,7 @@ pub enum RuntimeError {
     /// Some task must always be able to run if others are suspended.
     IdleTaskSuspend,
 
-    /// Attempt to access mutex from a task with higher than mutex ceiling
+    /// Attempt to access mutex from a thread with higher than mutex ceiling
     /// priority.
     CeilingPriorityViolation,
 
@@ -72,6 +74,12 @@ pub enum RuntimeError {
 
     /// Attempt to use ceiling locking in idle task
     IdleThreadCeilingLock,
+
+    /// Inheritance locks may not be acquired while holding any ceiling locks.
+    InheritanceLockNotAllowed,
+
+    /// Inheritance lock priority cannot be decreased.
+    InheritanceLockPriorityDecrease,
 }
 
 pub fn handle_runtime_error(error: &dyn UnrecoverableError) -> ! {

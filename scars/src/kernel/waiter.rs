@@ -5,14 +5,14 @@ use crate::kernel::atomic_queue::{AtomicNode, impl_atomic_linked};
 use crate::kernel::interrupt::RawInterruptHandler;
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, Node, impl_linked};
 use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
-use crate::sync::{CeilingLock, NestingLock, PreemptLock};
+use crate::sync::{CeilingLock, NestingLock, PreemptLock, preempt_lock::PreemptLockKey};
 use crate::syscall;
 use crate::task::task::RawTask;
 use crate::thread::RawThread;
 use crate::time::Instant;
 use core::cell::Cell;
 use core::future::{Future, poll_fn};
-use core::pin::Pin;
+use core::pin::{Pin, pin};
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{RawWaker, Waker};
 
@@ -118,10 +118,10 @@ impl Suspendable {
         }
     }
 
-    pub fn priority(&self) -> Priority {
+    pub fn priority(&self, pkey: PreemptLockKey<'_>) -> Priority {
         match &self.kind {
             SuspendableKind::None => Priority::Thread(0),
-            SuspendableKind::Thread(thread) => unsafe { (&**thread).base_priority },
+            SuspendableKind::Thread(thread) => unsafe { (&**thread).priority.get(pkey) },
             SuspendableKind::Interrupt(interrupt) => unsafe { (&**interrupt).base_priority() },
             SuspendableKind::Async(priority, _) => *priority,
         }
@@ -159,12 +159,16 @@ pub(crate) struct WaitQueueHandle {
 }
 
 impl WaitQueueHandle {
-    pub unsafe fn insert(&self, suspendable: Pin<&Suspendable>) {
-        unsafe { (self.vtable.insert)(self.queue, suspendable.get_ref()) }
+    pub unsafe fn insert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+        unsafe { (self.vtable.insert)(self.queue, pkey, suspendable.get_ref()) }
     }
 
-    pub unsafe fn remove(&self, suspendable: Pin<&Suspendable>) {
-        unsafe { (self.vtable.remove)(self.queue, suspendable.get_ref()) }
+    pub unsafe fn remove(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+        unsafe { (self.vtable.remove)(self.queue, pkey, suspendable.get_ref()) }
+    }
+
+    pub unsafe fn reinsert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+        unsafe { (self.vtable.reinsert)(self.queue, pkey, suspendable.get_ref()) }
     }
 
     pub fn to_raw(&self) -> (*const (), *const WaitQueueVTable) {
@@ -180,8 +184,9 @@ impl WaitQueueHandle {
 }
 
 pub(crate) struct WaitQueueVTable {
-    insert: unsafe fn(*const (), *const Suspendable),
-    remove: unsafe fn(*const (), *const Suspendable),
+    insert: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable),
+    remove: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable),
+    reinsert: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable), // reinsert after priority change
 }
 
 pub struct WaitQueue<L: NestingLock> {
@@ -192,6 +197,7 @@ impl<L: NestingLock> WaitQueue<L> {
     const WAIT_QUEUE_VTABLE: &'static WaitQueueVTable = &WaitQueueVTable {
         insert: Self::insert_unsafe,
         remove: Self::remove_unsafe,
+        reinsert: Self::reinsert_unsafe,
     };
 
     pub const fn new() -> WaitQueue<L> {
@@ -200,37 +206,71 @@ impl<L: NestingLock> WaitQueue<L> {
         }
     }
 
-    fn insert(&self, suspendable: Pin<&Suspendable>) {
-        L::with(|key| {
-            let priority = suspendable.priority();
+    fn insert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+        L::try_with(|key| {
+            let key = L::upcast_key(key);
+            let priority = suspendable.priority(pkey);
 
-            let this = unsafe { Pin::new_unchecked(self) };
-            let queue = unsafe { this.map_unchecked(|s| &s.queue) };
+            let queue = unsafe { self.map_unchecked(|s| &s.queue) };
             queue
                 .borrow_mut(key)
                 .as_mut()
-                .insert_after(suspendable, |s| s.priority() >= priority);
+                .insert_after(suspendable, |s| s.priority(pkey) >= priority);
         })
+        .unwrap_or_else(|_| unreachable!());
     }
 
-    fn remove(&self, suspendable: Pin<&Suspendable>) {
-        L::with(|key| {
-            let this = unsafe { Pin::new_unchecked(self) };
-            let queue = unsafe { this.map_unchecked(|s| &s.queue) };
+    fn remove(self: Pin<&Self>, _pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+        L::try_with(|key| {
+            let key = L::upcast_key(key);
+            let queue = unsafe { self.map_unchecked(|s| &s.queue) };
             queue.borrow_mut(key).as_mut().remove(suspendable);
         })
+        .unwrap_or_else(|_| unreachable!());
     }
 
-    unsafe fn insert_unsafe(queue: *const (), suspendable: *const Suspendable) {
-        let queue = unsafe { &*(queue as *const WaitQueue<L>) };
-        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
-        queue.insert(suspendable);
+    fn reinsert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+        L::try_with(|key| {
+            let key = L::upcast_key(key);
+            let priority = suspendable.priority(pkey);
+            let queue = unsafe { self.map_unchecked(|s| &s.queue) };
+            queue.borrow_mut(key).as_mut().remove(suspendable);
+            queue
+                .borrow_mut(key)
+                .as_mut()
+                .insert_after(suspendable, |s| s.priority(pkey) >= priority);
+        })
+        .unwrap_or_else(|_| unreachable!());
     }
 
-    unsafe fn remove_unsafe(queue: *const (), suspendable: *const Suspendable) {
-        let queue = unsafe { &*(queue as *const WaitQueue<L>) };
+    unsafe fn insert_unsafe(
+        queue: *const (),
+        pkey: PreemptLockKey<'_>,
+        suspendable: *const Suspendable,
+    ) {
+        let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
         let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
-        queue.remove(suspendable);
+        queue.insert(pkey, suspendable);
+    }
+
+    unsafe fn remove_unsafe(
+        queue: *const (),
+        pkey: PreemptLockKey<'_>,
+        suspendable: *const Suspendable,
+    ) {
+        let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
+        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
+        queue.remove(pkey, suspendable);
+    }
+
+    unsafe fn reinsert_unsafe(
+        queue: *const (),
+        pkey: PreemptLockKey<'_>,
+        suspendable: *const Suspendable,
+    ) {
+        let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
+        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
+        queue.reinsert(pkey, suspendable);
     }
 
     pub fn wait(&self) {
@@ -291,6 +331,12 @@ impl<L: NestingLock> WaitQueue<L> {
                 waiter.notify();
             }
         });
+    }
+
+    pub fn priority<'key>(&'key self, key: L::Key<'key>) -> Option<Priority> {
+        let queue = unsafe { Pin::new_unchecked(&self.queue) };
+
+        PreemptLock::with(|pkey| queue.borrow(key).as_ref().head().map(|s| s.priority(pkey)))
     }
 }
 

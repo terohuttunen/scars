@@ -142,17 +142,58 @@ impl RawScheduler {
             return;
         }
         tracing::thread_ready_begin(thread.as_thread_ref());
-        let thread_priority = thread.priority();
-        if !thread.lock_priority().is_valid() {
+        let thread_priority = thread.priority(pkey);
+        if !thread.ceiling_lock_priority(pkey).is_valid() {
             // If thread is not holding any locks, then thread goes to the back of its priority queue
             self.ready_queue_mut().insert_after(thread, |queue_thread| {
-                queue_thread.priority() >= thread_priority
+                queue_thread.priority.get(pkey) >= thread_priority
             });
         } else {
             // If thread is holding any locks, then it goes to the front of its priority queue
             self.ready_queue_mut().insert_after(thread, |queue_thread| {
-                queue_thread.priority() > thread_priority
+                queue_thread.priority.get(pkey) > thread_priority
             });
+        }
+    }
+
+    // Reinsert when priority changes
+    fn reinsert_to_ready_queue(
+        mut self: Pin<&mut Self>,
+        pkey: PreemptLockKey<'_>,
+        thread: Pin<&'static RawThread>,
+    ) {
+        // Reinsert to ready queue
+        self.as_mut().ready_queue_mut().remove(thread);
+        let thread_priority = thread.priority(pkey);
+        if !thread.ceiling_lock_priority(pkey).is_valid() {
+            // If thread is not holding any locks, then thread goes to the back of its priority queue
+            self.ready_queue_mut().insert_after(thread, |queue_thread| {
+                queue_thread.priority.get(pkey) >= thread_priority
+            });
+        } else {
+            // If thread is holding any locks, then it goes to the front of its priority queue
+            self.ready_queue_mut().insert_after(thread, |queue_thread| {
+                queue_thread.priority.get(pkey) > thread_priority
+            });
+        }
+    }
+
+    fn blocked_list_order(
+        pkey: PreemptLockKey<'_>,
+        thread: &RawThread,
+        thread_priority: PriorityStatus,
+    ) -> bool {
+        let queue_thread_priority =
+            unsafe { Pin::new_unchecked(thread).ceiling_lock_priority(pkey) };
+
+        if queue_thread_priority.is_valid() && thread_priority.is_valid() {
+            queue_thread_priority >= thread_priority
+        } else if queue_thread_priority.is_valid() {
+            true
+        } else if thread_priority.is_valid() {
+            false
+        } else {
+            false
         }
     }
 
@@ -167,21 +208,33 @@ impl RawScheduler {
         }
 
         tracing::thread_ready_end(thread.as_thread_ref());
-        let thread_priority = thread.lock_priority();
+        let thread_priority = thread.ceiling_lock_priority(pkey);
         self.blocked_list_mut()
             .insert_after(thread, |queue_thread| {
-                let queue_thread_priority = queue_thread.lock_priority();
-
-                if queue_thread_priority.is_valid() && thread_priority.is_valid() {
-                    queue_thread_priority >= thread_priority
-                } else if queue_thread_priority.is_valid() {
-                    true
-                } else if thread_priority.is_valid() {
-                    false
-                } else {
-                    false
-                }
+                Self::blocked_list_order(pkey, queue_thread, thread_priority)
             });
+    }
+
+    fn reinsert_to_blocked_queue(
+        mut self: Pin<&mut Self>,
+        pkey: PreemptLockKey<'_>,
+        thread: Pin<&'static RawThread>,
+    ) {
+        // Reinsert to blocked list
+        self.as_mut().blocked_list_mut().remove(thread);
+        let thread_priority = thread.ceiling_lock_priority(pkey);
+        self.blocked_list_mut()
+            .insert_after(thread, |queue_thread| {
+                Self::blocked_list_order(pkey, queue_thread, thread_priority)
+            });
+
+        // If thread is waiting in a queue, reinsert to the wait queue
+        match thread.wait_queue.get(pkey) {
+            Some(wait_queue_handle) => unsafe {
+                wait_queue_handle.reinsert(pkey, thread.suspendable_ref());
+            },
+            None => (),
+        }
     }
 
     fn insert_to_suspended_list(
@@ -398,10 +451,10 @@ impl RawScheduler {
             }
         }
 
-        let current_priority = self.current_thread.priority();
-        let locks_priority = self.as_ref().locks_priority_ceiling();
+        let current_priority = self.current_thread.priority(pkey);
+        let locks_priority = self.as_ref().locks_priority_ceiling(pkey);
         let min_priority = current_priority.max_valid(locks_priority);
-        if min_priority < thread.priority() {
+        if min_priority < thread.priority(pkey) {
             Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER)
         }
     }
@@ -446,7 +499,7 @@ impl RawScheduler {
                 // the minimum priority, so default lock priority to MIN.
                 let locks_ceiling = self
                     .as_ref()
-                    .locks_priority_ceiling()
+                    .locks_priority_ceiling(pkey)
                     .unwrap_or_default(Priority::MIN);
 
                 // Highest priority ready thread that is above the lock ceiling
@@ -455,7 +508,7 @@ impl RawScheduler {
                 let next = self
                     .as_mut()
                     .ready_queue_mut()
-                    .pop_front_if(|ready| ready.priority() > locks_ceiling)
+                    .pop_front_if(|ready| ready.priority.get(pkey) > locks_ceiling)
                     .unwrap_or(self.as_ref().idle_thread);
 
                 let previous = self.as_mut().switch_thread(pkey, next);
@@ -528,13 +581,13 @@ impl RawScheduler {
         }
     }
 
-    fn locks_priority_ceiling(self: Pin<&Self>) -> PriorityStatus {
+    fn locks_priority_ceiling(self: Pin<&Self>, pkey: PreemptLockKey<'_>) -> PriorityStatus {
         if let Some(blocked_thread) = self.blocked_list().head() {
-            let blocked_prio = blocked_thread.lock_priority();
-            let current_prio = self.current_thread.lock_priority();
+            let blocked_prio = blocked_thread.ceiling_lock_priority(pkey);
+            let current_prio = self.current_thread.ceiling_lock_priority(pkey);
             blocked_prio.max(current_prio)
         } else {
-            self.current_thread.lock_priority()
+            self.current_thread.ceiling_lock_priority(pkey)
         }
     }
 
@@ -561,7 +614,7 @@ impl RawScheduler {
             }
         }
 
-        let current_priority = self.current_thread.priority();
+        let current_priority = self.current_thread.priority(pkey);
 
         // Minimum priority of a thread that is allowed to run next
 
@@ -569,13 +622,13 @@ impl RawScheduler {
             // Any thread that has equal or higher priority than the current thread
             self.as_mut()
                 .ready_queue_mut()
-                .pop_front_if(|ready| ready.priority() >= current_priority)
+                .pop_front_if(|ready| ready.priority.get(pkey) >= current_priority)
                 .unwrap_or(self.current_thread)
         } else if (kind & RESCHEDULE_KIND_YIELD_TO_HIGHER) != 0 {
             // Any thread that has higher priority than the current thread
             self.as_mut()
                 .ready_queue_mut()
-                .pop_front_if(|ready| ready.priority() > current_priority)
+                .pop_front_if(|ready| ready.priority.get(pkey) > current_priority)
                 .unwrap_or(self.current_thread)
         } else {
             unreachable!();
@@ -596,7 +649,7 @@ impl RawScheduler {
         // Any ready thread above lock ceiling can run next.
         let locks_ceiling = self
             .as_ref()
-            .locks_priority_ceiling()
+            .locks_priority_ceiling(pkey)
             .unwrap_or_default(Priority::MIN);
 
         // Highest priority ready thread that is above the lock ceiling
@@ -605,7 +658,7 @@ impl RawScheduler {
         let next = self
             .as_mut()
             .ready_queue_mut()
-            .pop_front_if(|ready| ready.priority() > locks_ceiling)
+            .pop_front_if(|ready| ready.priority.get(pkey) > locks_ceiling)
             .unwrap_or(self.idle_thread);
 
         let previous = self.as_mut().switch_thread(pkey, next);
@@ -625,20 +678,20 @@ impl RawScheduler {
         // Highest priority of any locks held by the current or blocked threads.
         let locks_ceiling = self
             .as_ref()
-            .locks_priority_ceiling()
+            .locks_priority_ceiling(pkey)
             .unwrap_or_default(Priority::MIN);
 
         let next = self
             .as_mut()
             .ready_queue_mut()
-            .pop_front_if(|ready| ready.priority() > locks_ceiling)
+            .pop_front_if(|ready| ready.priority.get(pkey) > locks_ceiling)
             .unwrap_or(self.idle_thread);
 
         let blocked_thread = self.as_mut().switch_thread(pkey, next);
 
         let suspendable = blocked_thread.suspendable_ref();
 
-        unsafe { wait_queue.insert(suspendable) };
+        unsafe { wait_queue.insert(pkey, suspendable) };
 
         blocked_thread.set_wait_queue(Some(wait_queue), pkey);
 
@@ -678,13 +731,13 @@ impl RawScheduler {
             // Highest priority of any locks held by the current or blocked threads.
             let locks_ceiling = self
                 .as_ref()
-                .locks_priority_ceiling()
+                .locks_priority_ceiling(pkey)
                 .unwrap_or_default(Priority::MIN);
 
             let next = self
                 .as_mut()
                 .ready_queue_mut()
-                .pop_front_if(|ready| ready.priority() > locks_ceiling)
+                .pop_front_if(|ready| ready.priority.get(pkey) > locks_ceiling)
                 .unwrap_or(self.idle_thread);
 
             let blocked_thread = self.as_mut().switch_thread(pkey, next);
@@ -803,12 +856,39 @@ impl Scheduler {
         };
     }
 
+    pub(crate) fn thread_priority_changed<'key>(
+        pkey: PreemptLockKey<'key>,
+        thread: Pin<&'static RawThread>,
+    ) {
+        let mut scheduler = Scheduler::pin_instance().borrow_mut(pkey);
+        let mut pin_scheduler = scheduler.as_mut();
+
+        match thread.state.get(pkey) {
+            ThreadExecutionState::Ready => {
+                // Reorder in the ready queue
+                pin_scheduler.as_mut().reinsert_to_ready_queue(pkey, thread);
+
+                if let Some(ready_thread) = pin_scheduler.as_ref().ready_queue().head() {
+                    if pin_scheduler.current_thread.priority(pkey) < ready_thread.priority(pkey) {
+                        // Rescheduling will be executed when preemption lock is released
+                        Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
+                    }
+                }
+            }
+            ThreadExecutionState::Blocked => {
+                // Reorder in the blocked list, and wakeup queues if needed
+                pin_scheduler.reinsert_to_blocked_queue(pkey, thread);
+            }
+            _ => (),
+        }
+    }
+
     pub(crate) fn cond_reschedule<'key>(pkey: PreemptLockKey<'key>) {
         let scheduler = Scheduler::pin_instance().borrow_mut(pkey);
         let pin_scheduler = scheduler.as_ref();
 
         if let Some(ready_thread) = pin_scheduler.ready_queue().head() {
-            if pin_scheduler.current_thread.priority() < ready_thread.priority() {
+            if pin_scheduler.current_thread.priority(pkey) < ready_thread.priority(pkey) {
                 // Rescheduling will be executed when preemption lock is released
                 Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
             }
@@ -883,6 +963,7 @@ impl Scheduler {
         }) {
             Ok(()) => (),
             Err(_) => {
+                printkln!("Could not acquire preemption lock");
                 // Could not acquire pre-emption lock, because some thread or ongoing lower
                 // priority ISR holds the lock.
                 // Store unblocked thread in pending ready list instead, from which it will be
@@ -975,7 +1056,6 @@ impl Scheduler {
 
         // Thread mutability ends
         let thread = thread.into_ref();
-
         tracing::thread_new(thread.as_thread_ref());
         Scheduler::resume_thread(thread);
     }

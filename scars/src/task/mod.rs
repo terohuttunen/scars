@@ -385,7 +385,7 @@ impl RawThreadExecutor {
     }
 
     fn priority(&self) -> Priority {
-        self.thread.priority()
+        self.thread.base_priority()
     }
 
     // Safe to call from ISR or another thread

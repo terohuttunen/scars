@@ -86,13 +86,13 @@ impl RawCeilingLock {
 
             // Ceiling check: If locking thread has priority higher than the
             // mutex ceiling, then it violates the priority ceiling protocol.
-            if current_thread.priority() > self.ceiling_priority {
+            if current_thread.priority(pkey) > self.ceiling_priority {
                 runtime_error!(RuntimeError::CeilingPriorityViolation);
             }
 
             // Acquisition of the lock raises the thread priority to the lock ceiling
             unsafe {
-                current_thread.acquire_scoped_lock(pkey, self);
+                current_thread.scoped_lock_acquired(pkey, self);
             }
         })
     }
@@ -142,7 +142,7 @@ impl RawCeilingLock {
         }
 
         PreemptLock::with(|pkey| unsafe {
-            current_thread.release_scoped_lock(pkey, self);
+            current_thread.scoped_lock_released(pkey, self);
         });
     }
 

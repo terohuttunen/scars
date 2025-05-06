@@ -1,7 +1,7 @@
 pub use super::{BorrowError, BorrowMutError};
 pub use crate::cell::pincell::{PinRef, PinRefMut};
 pub use crate::cell::refcell::{BorrowFlag, BorrowRef};
-use crate::sync::{NestingLock, NoLock, Once};
+use crate::sync::{NestingLock, Once};
 use core::cell::{Cell, UnsafeCell};
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;

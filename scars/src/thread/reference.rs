@@ -30,8 +30,8 @@ impl ThreadRef {
         unsafe { self.0.as_ref().send_events(event) }
     }
 
-    pub fn priority(&self) -> Priority {
-        unsafe { self.0.as_ref().priority() }
+    pub fn base_priority(&self) -> Priority {
+        unsafe { self.0.as_ref().base_priority }
     }
 
     pub(crate) unsafe fn as_ref(&self) -> &'static RawThread {
