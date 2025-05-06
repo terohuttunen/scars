@@ -133,24 +133,20 @@ impl<T, L: NestingLock> LockedRefCell<T, L> {
     }
 
     #[inline]
-    pub fn replace<'key, 'a: 'key>(&'a self, key: L::Key<'key>, t: T) -> T {
+    pub fn replace<'key>(&'key self, key: L::Key<'key>, t: T) -> T {
         let mut dest = self.borrow_mut(key);
         core::mem::replace(&mut dest, t)
     }
 
     #[inline]
-    pub fn replace_with<'key, 'a: 'key, F: FnOnce(&mut T) -> T>(
-        &'a self,
-        key: L::Key<'key>,
-        f: F,
-    ) -> T {
+    pub fn replace_with<'key, F: FnOnce(&mut T) -> T>(&'key self, key: L::Key<'key>, f: F) -> T {
         let mut dest = self.borrow_mut(key);
         let replacement = f(&mut dest);
         core::mem::replace(&mut dest, replacement)
     }
 
     #[inline]
-    pub fn swap<'key, 'a: 'key, 'b: 'key>(&'a self, key: L::Key<'key>, other: &'b Self) {
+    pub fn swap<'key>(&'key self, key: L::Key<'key>, other: &'key Self) {
         if self.as_ptr() == other.as_ptr() {
             return;
         }
@@ -163,7 +159,7 @@ impl<T, L: NestingLock> LockedRefCell<T, L> {
 
 impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
     #[inline]
-    pub fn borrow<'key, 'a: 'key>(&'a self, _key: L::Key<'key>) -> Ref<'key, T> {
+    pub fn borrow<'key>(&'key self, _key: L::Key<'key>) -> Ref<'key, T> {
         let reference = unsafe { &*self.value.get() };
         let borrow_ref = BorrowRef::new_immutable(&self.borrow);
         Ref {
@@ -173,10 +169,7 @@ impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
     }
 
     #[inline]
-    pub fn try_borrow<'key, 'a: 'key>(
-        &'a self,
-        _key: L::Key<'key>,
-    ) -> Result<Ref<'key, T>, BorrowError> {
+    pub fn try_borrow<'key>(&'key self, _key: L::Key<'key>) -> Result<Ref<'key, T>, BorrowError> {
         if self.borrow.get() < 0 {
             return Err(BorrowError);
         }
@@ -190,7 +183,7 @@ impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
     }
 
     #[inline]
-    pub fn borrow_mut<'key, 'a: 'key>(&'a self, _key: L::Key<'key>) -> RefMut<'key, T> {
+    pub fn borrow_mut<'key>(&'key self, _key: L::Key<'key>) -> RefMut<'key, T> {
         let reference = unsafe { &mut *self.value.get() };
         let borrow_ref = BorrowRef::new_mutable(&self.borrow);
         RefMut {
@@ -200,8 +193,8 @@ impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
     }
 
     #[inline]
-    pub fn try_borrow_mut<'key, 'a: 'key>(
-        &'a self,
+    pub fn try_borrow_mut<'key>(
+        &'key self,
         _key: L::Key<'key>,
     ) -> Result<RefMut<'key, T>, BorrowMutError> {
         if self.borrow.get() != 0 {
@@ -228,7 +221,7 @@ impl<T: ?Sized, L: NestingLock> LockedRefCell<T, L> {
 }
 
 impl<T: Default, L: NestingLock> LockedRefCell<T, L> {
-    pub fn take<'key, 'a: 'key>(&'a self, key: L::Key<'key>) -> T {
+    pub fn take<'key>(&'key self, key: L::Key<'key>) -> T {
         self.replace(key, Default::default())
     }
 }
@@ -405,7 +398,7 @@ impl<T, L: NestingLock> LockedPinRefCell<T, L> {
     }
 
     #[inline]
-    pub fn borrow<'key, 'a: 'key>(self: Pin<&'a Self>, _key: L::Key<'key>) -> PinRef<'key, T> {
+    pub fn borrow<'key>(self: Pin<&'key Self>, _key: L::Key<'key>) -> PinRef<'key, T> {
         let reference = unsafe { Pin::map_unchecked(self, |s| &*s.value.get()) };
         let borrow_ref = BorrowRef::new_immutable(&self.get_ref().borrow);
 
@@ -416,10 +409,7 @@ impl<T, L: NestingLock> LockedPinRefCell<T, L> {
     }
 
     #[inline]
-    pub fn borrow_mut<'key, 'a: 'key>(
-        self: Pin<&'a Self>,
-        _key: L::Key<'key>,
-    ) -> PinRefMut<'key, T> {
+    pub fn borrow_mut<'key>(self: Pin<&'key Self>, _key: L::Key<'key>) -> PinRefMut<'key, T> {
         let reference = unsafe { Pin::new_unchecked(&mut *self.value.get()) };
         let _borrow_ref = BorrowRef::new_mutable(&self.get_ref().borrow);
 
@@ -429,8 +419,9 @@ impl<T, L: NestingLock> LockedPinRefCell<T, L> {
         }
     }
 
-    pub fn try_borrow_mut<'key, 'a: 'key>(
-        self: Pin<&'a Self>,
+    #[inline]
+    pub fn try_borrow_mut<'key>(
+        self: Pin<&'key Self>,
         _key: L::Key<'key>,
     ) -> Result<PinRefMut<'key, T>, BorrowMutError> {
         if self.borrow.get() != 0 {

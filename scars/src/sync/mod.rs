@@ -93,5 +93,13 @@ pub trait NestingLock {
 
     fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError>;
 
+    // Upcast a key from a longer lifetime to a shorter one.
+    //
+    // Needed because there is no way to control the variance of the associated
+    // key type lifetime. Keys are covariant, i.e. Key<'long> can be used as Key<'short>.
+    fn upcast_key<'short, 'long: 'short>(_key: Self::Key<'long>) -> Self::Key<'short> {
+        unsafe { Self::get_key_unchecked() }
+    }
+
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a>;
 }

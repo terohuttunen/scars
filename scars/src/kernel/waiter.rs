@@ -273,6 +273,7 @@ impl<L: NestingLock> WaitQueue<L> {
 
     pub fn notify_one(&self) {
         L::with(|key| {
+            let key = L::upcast_key(key);
             let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(key);
 
             if let Some(waiter) = queue.as_mut().pop_front() {
@@ -283,6 +284,7 @@ impl<L: NestingLock> WaitQueue<L> {
 
     pub fn notify_all(&self) {
         L::with(|key| {
+            let key = L::upcast_key(key);
             let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(key);
 
             while let Some(waiter) = queue.as_mut().pop_front() {
