@@ -8,7 +8,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use scars::prelude::*;
 use scars::sync::CeilingLock;
-use scars::sync::channel::Sender;
+use scars::sync::channel::CeilingSender;
 use scars::time::Duration;
 use scars_test;
 
@@ -37,8 +37,8 @@ fn idle() {
 
 #[scars::thread(name = "low", priority = LOW_PRIORITY, stack_size = STACK_SIZE)]
 fn low_thread(
-    sender0: Sender<u32, CAPACITY, CEILING>,
-    medium_sender: Sender<u32, CAPACITY, CEILING>,
+    sender0: CeilingSender<u32, CAPACITY, CEILING>,
+    medium_sender: CeilingSender<u32, CAPACITY, CEILING>,
 ) -> ! {
     let lock: CeilingLock<CEILING> = CeilingLock::new();
 
@@ -64,7 +64,7 @@ fn low_thread(
 }
 
 #[scars::thread(name = "medium", priority = MEDIUM_PRIORITY, stack_size = STACK_SIZE)]
-fn medium_thread(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn medium_thread(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     sender.send(1);
     loop {
         scars::delay(Duration::from_secs(1));

@@ -1,13 +1,21 @@
 use crate::kernel::Priority;
 use crate::sync::atomic::{AtomicBool, Ordering};
-use crate::sync::condvar::Condvar;
-use crate::sync::mutex::Mutex;
+use crate::sync::condvar::LockedCondvar;
+use crate::sync::{
+    CeilingLock, InheritanceLock, NestingLock, PreemptLock, ScopedLock, Unlock, mutex::LockedMutex,
+};
 use core::mem::MaybeUninit;
 
 #[macro_export]
 macro_rules! make_channel {
     ($ty:path, $size:expr, $prio:expr) => {{
-        static mut CHANNEL: $crate::sync::channel::Channel<$ty, { $size }, { $prio }> =
+        static mut CHANNEL: $crate::sync::channel::CeilingChannel<$ty, { $size }, { $prio }> =
+            $crate::sync::channel::CeilingChannel::new();
+
+        unsafe { CHANNEL.split() }
+    }};
+    ($ty:path, $size:expr) => {{
+        static mut CHANNEL: $crate::sync::channel::Channel<$ty, { $size }> =
             $crate::sync::channel::Channel::new();
 
         unsafe { CHANNEL.split() }
@@ -15,6 +23,19 @@ macro_rules! make_channel {
 }
 
 pub use make_channel;
+
+pub type CeilingChannel<T, const CAPACITY: usize, const CEILING: Priority> =
+    LockedChannel<T, CAPACITY, CeilingLock<CEILING>, CeilingLock<CEILING>>;
+pub type CeilingSender<T, const CAPACITY: usize, const CEILING: Priority> =
+    LockedSender<T, CAPACITY, CeilingLock<CEILING>, CeilingLock<CEILING>>;
+pub type CeilingReceiver<T, const CAPACITY: usize, const CEILING: Priority> =
+    LockedReceiver<T, CAPACITY, CeilingLock<CEILING>, CeilingLock<CEILING>>;
+
+pub type Channel<T, const CAPACITY: usize> =
+    LockedChannel<T, CAPACITY, InheritanceLock, PreemptLock>;
+pub type Sender<T, const CAPACITY: usize> = LockedSender<T, CAPACITY, InheritanceLock, PreemptLock>;
+pub type Receiver<T, const CAPACITY: usize> =
+    LockedReceiver<T, CAPACITY, InheritanceLock, PreemptLock>;
 
 pub struct FIFO<T, const CAPACITY: usize> {
     // Where new data can be written (unless full)
@@ -133,20 +154,23 @@ pub enum TrySendError<T> {
     Full(T),
 }
 
-pub struct Channel<T, const CAPACITY: usize, const CEILING: Priority> {
+pub struct LockedChannel<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> {
     receiver_acquired: AtomicBool,
-    fifo: Mutex<FIFO<T, CAPACITY>, CEILING>,
-    receivers: Condvar<CEILING>,
-    senders: Condvar<CEILING>,
+    fifo: LockedMutex<FIFO<T, CAPACITY>, L>,
+    receivers: LockedCondvar<N>,
+    senders: LockedCondvar<N>,
 }
 
-impl<T, const CAPACITY: usize, const CEILING: Priority> Channel<T, CAPACITY, CEILING> {
-    pub const fn new() -> Channel<T, CAPACITY, CEILING> {
-        Channel {
+impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedChannel<T, CAPACITY, L, N>
+where
+    for<'a> L::Guard<'a>: Unlock,
+{
+    pub const fn new() -> LockedChannel<T, CAPACITY, L, N> {
+        LockedChannel {
             receiver_acquired: AtomicBool::new(false),
-            fifo: Mutex::new(FIFO::new()),
-            receivers: Condvar::new(),
-            senders: Condvar::new(),
+            fifo: LockedMutex::new(FIFO::new()),
+            receivers: LockedCondvar::new(),
+            senders: LockedCondvar::new(),
         }
     }
 
@@ -236,35 +260,45 @@ impl<T, const CAPACITY: usize, const CEILING: Priority> Channel<T, CAPACITY, CEI
         self.fifo.lock().used()
     }
 
-    pub fn receiver(&'static self) -> Receiver<T, CAPACITY, CEILING> {
+    pub fn receiver(&'static self) -> LockedReceiver<T, CAPACITY, L, N> {
         match self.receiver_acquired.compare_exchange(
             false,
             true,
             Ordering::SeqCst,
             Ordering::SeqCst,
         ) {
-            Ok(_) => Receiver { channel: self },
+            Ok(_) => LockedReceiver { channel: self },
             Err(_) => panic!("Receiver already acquired"),
         }
     }
 
-    pub fn sender(&'static self) -> Sender<T, CAPACITY, CEILING> {
-        Sender { channel: self }
+    pub fn sender(&'static self) -> LockedSender<T, CAPACITY, L, N> {
+        LockedSender { channel: self }
     }
 
     pub fn split(
         &'static mut self,
-    ) -> (Sender<T, CAPACITY, CEILING>, Receiver<T, CAPACITY, CEILING>) {
+    ) -> (
+        LockedSender<T, CAPACITY, L, N>,
+        LockedReceiver<T, CAPACITY, L, N>,
+    ) {
         (self.sender(), self.receiver())
     }
 }
 
-#[derive(Clone)]
-pub struct Sender<T: 'static, const CAPACITY: usize, const CEILING: Priority> {
-    channel: &'static Channel<T, CAPACITY, CEILING>,
+pub struct LockedSender<
+    T: 'static,
+    const CAPACITY: usize,
+    L: ScopedLock + 'static,
+    N: NestingLock + 'static,
+> {
+    channel: &'static LockedChannel<T, CAPACITY, L, N>,
 }
 
-impl<T, const CAPACITY: usize, const CEILING: Priority> Sender<T, CAPACITY, CEILING> {
+impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedSender<T, CAPACITY, L, N>
+where
+    for<'a> L::Guard<'a>: Unlock,
+{
     pub fn send(&self, t: T) {
         self.channel.send(t)
     }
@@ -286,21 +320,39 @@ impl<T, const CAPACITY: usize, const CEILING: Priority> Sender<T, CAPACITY, CEIL
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, const CEILING: Priority> Send
-    for Sender<T, CAPACITY, CEILING>
+unsafe impl<T: Send, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Send
+    for LockedSender<T, CAPACITY, L, N>
 {
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, const CEILING: Priority> Sync
-    for Sender<T, CAPACITY, CEILING>
+unsafe impl<T: Send, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Sync
+    for LockedSender<T, CAPACITY, L, N>
 {
 }
 
-pub struct Receiver<T: 'static, const CAPACITY: usize, const CEILING: Priority> {
-    channel: &'static Channel<T, CAPACITY, CEILING>,
+impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Clone
+    for LockedSender<T, CAPACITY, L, N>
+{
+    fn clone(&self) -> Self {
+        LockedSender {
+            channel: self.channel,
+        }
+    }
 }
 
-impl<T, const CAPACITY: usize, const CEILING: Priority> Receiver<T, CAPACITY, CEILING> {
+pub struct LockedReceiver<
+    T: 'static,
+    const CAPACITY: usize,
+    L: ScopedLock + 'static,
+    N: NestingLock + 'static,
+> {
+    channel: &'static LockedChannel<T, CAPACITY, L, N>,
+}
+
+impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedReceiver<T, CAPACITY, L, N>
+where
+    for<'a> L::Guard<'a>: Unlock,
+{
     pub fn recv(&self) -> T {
         self.channel.recv()
     }
@@ -326,7 +378,9 @@ impl<T, const CAPACITY: usize, const CEILING: Priority> Receiver<T, CAPACITY, CE
     }
 }
 
-impl<T, const CAPACITY: usize, const CEILING: Priority> Drop for Receiver<T, CAPACITY, CEILING> {
+impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Drop
+    for LockedReceiver<T, CAPACITY, L, N>
+{
     fn drop(&mut self) {
         self.channel
             .receiver_acquired
@@ -334,7 +388,7 @@ impl<T, const CAPACITY: usize, const CEILING: Priority> Drop for Receiver<T, CAP
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, const CEILING: Priority> Send
-    for Receiver<T, CAPACITY, CEILING>
+unsafe impl<T: Send, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Send
+    for LockedReceiver<T, CAPACITY, L, N>
 {
 }

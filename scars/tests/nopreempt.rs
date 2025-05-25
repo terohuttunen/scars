@@ -6,7 +6,7 @@
 #![reexport_test_harness_main = "test_main"]
 #![feature(impl_trait_in_assoc_type)]
 use scars::prelude::*;
-use scars::sync::channel::Sender;
+use scars::sync::channel::CeilingSender;
 use scars::time::{Duration, Instant};
 use scars_test;
 
@@ -30,7 +30,7 @@ const CAPACITY: usize = 20;
 const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRIORITY);
 
 #[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
-fn thread0(sender: Sender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
+fn thread0(sender: CeilingSender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
     sender.send(Event::Thread0Start);
     let end_time = wakeup_time + Duration::from_millis(100);
 
@@ -56,7 +56,7 @@ fn thread0(sender: Sender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! 
 }
 
 #[scars::thread(name = "thread1", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
-fn thread1(sender: Sender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
+fn thread1(sender: CeilingSender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
     sender.send(Event::Thread1Start);
     let end_time = wakeup_time + Duration::from_millis(50);
     // Go to sleep until it is time to wake up to preempt the lower priority thread0
@@ -72,7 +72,7 @@ fn thread1(sender: Sender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! 
 }
 
 #[scars::thread(name = "thread2", priority = THREAD2_PRIORITY, stack_size = STACK_SIZE)]
-fn thread2(sender: Sender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
+fn thread2(sender: CeilingSender<Event, CAPACITY, CEILING>, wakeup_time: Instant) -> ! {
     sender.send(Event::Thread2Start);
     let end_time = wakeup_time + Duration::from_millis(50);
     // Go to sleep until it is time to wake up to preempt the lower priority thread0

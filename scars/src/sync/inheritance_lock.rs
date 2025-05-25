@@ -111,6 +111,8 @@ unsafe impl Send for InheritanceLock {}
 unsafe impl Sync for InheritanceLock {}
 
 impl ScopedLock for InheritanceLock {
+    const DEFAULT: Self = Self::new();
+
     type Guard<'lock> = InheritanceLockGuard<'lock>;
 
     fn lock(&self) -> Self::Guard<'_> {

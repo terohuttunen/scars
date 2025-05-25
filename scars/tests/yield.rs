@@ -6,7 +6,7 @@
 #![reexport_test_harness_main = "test_main"]
 #![feature(impl_trait_in_assoc_type)]
 use scars::prelude::*;
-use scars::sync::channel::Sender;
+use scars::sync::channel::CeilingSender;
 use scars::time::Duration;
 use scars_test;
 
@@ -27,7 +27,7 @@ const CAPACITY: usize = 14;
 const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY);
 
 #[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
-fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let mut sender0 = sender.clone();
     thread1(sender0.clone()).start();
     send_numbers_and_sleep(&mut sender0, 0, 3);
@@ -35,7 +35,7 @@ fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
 }
 
 #[scars::thread(name = "thread1", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
-fn thread1(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread1(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let mut sender1 = sender.clone();
     thread2(sender1.clone()).start();
     send_numbers_and_sleep(&mut sender1, 1, 4);
@@ -43,7 +43,7 @@ fn thread1(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
 }
 
 #[scars::thread(name = "thread2", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
-fn thread2(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread2(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let mut sender2 = sender.clone();
     thread3(sender2.clone()).start();
     send_numbers_and_sleep(&mut sender2, 2, 4);
@@ -51,13 +51,17 @@ fn thread2(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
 }
 
 #[scars::thread(name = "thread3", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
-fn thread3(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread3(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let mut sender3 = sender.clone();
     send_numbers_and_sleep(&mut sender3, 3, 3);
     scars_test::test_fail()
 }
 
-fn send_numbers_and_sleep(sender: &mut Sender<u32, CAPACITY, CEILING>, number: u32, count: usize) {
+fn send_numbers_and_sleep(
+    sender: &mut CeilingSender<u32, CAPACITY, CEILING>,
+    number: u32,
+    count: usize,
+) {
     for _i in 0..count {
         sender.send(number);
         scars::thread_yield();

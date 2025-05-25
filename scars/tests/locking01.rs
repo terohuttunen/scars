@@ -8,7 +8,7 @@
 use scars::cell::LockedCell;
 use scars::prelude::*;
 use scars::sync::CeilingLock;
-use scars::sync::channel::Sender;
+use scars::sync::channel::CeilingSender;
 use scars::time::Duration;
 use scars_test;
 
@@ -33,7 +33,7 @@ const CEILING: Priority = MEDIUM_PRIORITY;
 
 #[scars::thread(name = "low", priority = LOW_PRIORITY, stack_size = STACK_SIZE)]
 fn low_thread(
-    sender0: Sender<u32, CAPACITY, HIGH_PRIORITY>,
+    sender0: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>,
     protected_data: LockedCell<usize, CeilingLock<CEILING>>,
 ) -> ! {
     let medium_sender = sender0.clone();
@@ -55,7 +55,7 @@ fn low_thread(
 }
 
 #[scars::thread(name = "medium", priority = MEDIUM_PRIORITY, stack_size = STACK_SIZE)]
-fn medium_thread(sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
+fn medium_thread(sender: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
     sender.send(1);
     loop {
         scars::delay(Duration::from_secs(1));
@@ -63,7 +63,7 @@ fn medium_thread(sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
 }
 
 #[scars::thread(name = "high", priority = HIGH_PRIORITY, stack_size = STACK_SIZE)]
-fn high_thread(sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
+fn high_thread(sender: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
     sender.send(2);
     loop {
         scars::delay(Duration::from_secs(1));

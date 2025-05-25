@@ -1,6 +1,13 @@
 use crate::kernel::{interrupt::in_interrupt, waiter::WaitQueue};
 use crate::priority::Priority;
-use crate::sync::{CeilingLock, MutexGuard, Unlock, ceiling_lock::RawCeilingLockGuard, mutex};
+use crate::sync::{
+    CeilingLock, InterruptLock, MutexGuard, NestingLock, PreemptLock, ScopedLock, Unlock,
+    mutex::guard_raw,
+};
+
+pub type Condvar = LockedCondvar<PreemptLock>;
+pub type CeilingCondvar<const CEILING: Priority> = LockedCondvar<CeilingLock<CEILING>>;
+pub type InterruptCondvar = LockedCondvar<InterruptLock>;
 
 pub struct WaitTimeoutResult(bool);
 
@@ -10,19 +17,22 @@ impl WaitTimeoutResult {
     }
 }
 
-pub struct Condvar<const CEILING: Priority> {
-    waiter_queue: WaitQueue<CeilingLock<CEILING>>,
+pub struct LockedCondvar<L: NestingLock> {
+    waiter_queue: WaitQueue<L>,
 }
 
-impl<const CEILING: Priority> Condvar<CEILING> {
-    pub const fn new() -> Condvar<CEILING> {
-        Condvar {
+impl<L: NestingLock> LockedCondvar<L> {
+    pub const fn new() -> LockedCondvar<L> {
+        LockedCondvar {
             waiter_queue: WaitQueue::new(),
         }
     }
 
     #[inline(never)]
-    fn wait_lock(&self, guard: &mut RawCeilingLockGuard) {
+    fn wait_lock<G: ScopedLock>(&self, guard: &mut G::Guard<'_>)
+    where
+        for<'a> G::Guard<'a>: Unlock,
+    {
         unsafe {
             guard.unlock();
         }
@@ -33,24 +43,32 @@ impl<const CEILING: Priority> Condvar<CEILING> {
     }
 
     #[inline(always)]
-    pub fn wait<'a, T>(&self, mut guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    pub fn wait<'a, T, G: ScopedLock>(
+        &self,
+        mut guard: MutexGuard<'a, T, G>,
+    ) -> MutexGuard<'a, T, G>
+    where
+        for<'b> G::Guard<'b>: Unlock,
+    {
         if in_interrupt() {
             // Error: cannot wait condition variable in interrupt handler
             crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
         }
 
-        let raw = mutex::guard_raw(&mut guard);
-        self.wait_lock(raw);
+        let raw = guard_raw(&mut guard);
+
+        self.wait_lock::<G>(raw);
         guard
     }
 
-    pub fn wait_while<'a, T, F>(
+    pub fn wait_while<'a, T, G: ScopedLock, F>(
         &self,
-        mut guard: MutexGuard<'a, T>,
+        mut guard: MutexGuard<'a, T, G>,
         mut condition: F,
-    ) -> MutexGuard<'a, T>
+    ) -> MutexGuard<'a, T, G>
     where
         F: FnMut(&mut T) -> bool,
+        for<'b> G::Guard<'b>: Unlock,
     {
         if in_interrupt() {
             // Error: cannot wait condition variable in interrupt handler
@@ -63,28 +81,34 @@ impl<const CEILING: Priority> Condvar<CEILING> {
         guard
     }
 
-    pub async fn async_wait<'a, T>(
+    pub async fn async_wait<'a, T, G: ScopedLock>(
         &'static self,
-        mut guard: MutexGuard<'static, T>,
-    ) -> MutexGuard<'static, T> {
-        let raw = mutex::guard_raw(&mut guard);
+        mut guard: MutexGuard<'static, T, G>,
+    ) -> MutexGuard<'static, T, G>
+    where
+        for<'b> G::Guard<'b>: Unlock,
+    {
+        let raw = guard_raw(&mut guard);
+
         unsafe {
             raw.unlock();
         }
 
         self.waiter_queue.async_wait().await;
 
-        raw.lock();
+        raw.relock();
+
         guard
     }
 
-    pub async fn async_wait_while<T, F>(
+    pub async fn async_wait_while<T, G: ScopedLock, F>(
         &'static self,
-        mut guard: MutexGuard<'static, T>,
+        mut guard: MutexGuard<'static, T, G>,
         condition: F,
-    ) -> MutexGuard<'static, T>
+    ) -> MutexGuard<'static, T, G>
     where
         F: FnOnce(&mut T) -> bool + 'static + core::marker::Copy,
+        for<'b> G::Guard<'b>: Unlock,
     {
         while condition(&mut *guard) {
             guard = self.async_wait(guard).await;
@@ -101,8 +125,8 @@ impl<const CEILING: Priority> Condvar<CEILING> {
     }
 }
 
-impl<const CEILING: Priority> Default for Condvar<CEILING> {
-    fn default() -> Condvar<CEILING> {
-        Condvar::new()
+impl<L: NestingLock> Default for LockedCondvar<L> {
+    fn default() -> LockedCondvar<L> {
+        LockedCondvar::new()
     }
 }

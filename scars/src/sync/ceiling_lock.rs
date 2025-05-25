@@ -225,19 +225,6 @@ impl Drop for RawCeilingLockGuard<'_> {
     }
 }
 
-impl ScopedLock for RawCeilingLock {
-    type Guard<'guard> = RawCeilingLockGuard<'guard>;
-
-    fn lock(&self) -> Self::Guard<'_> {
-        let this = unsafe { Pin::new_unchecked(self) };
-        this.lock()
-    }
-
-    fn try_lock(&self) -> TryLockResult<Self::Guard<'_>> {
-        Ok(self.lock())
-    }
-}
-
 #[pin_project]
 pub struct CeilingLock<const CEILING: Priority> {
     #[pin]
@@ -283,6 +270,12 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
     }
 }
 
+impl<const CEILING: Priority> Default for CeilingLock<CEILING> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct CeilingLockRestoreState {
     saved_priority: PriorityStatus,
 }
@@ -304,6 +297,7 @@ impl<'lock, const CEILING: Priority> Unlock for CeilingLockGuard<'lock, CEILING>
 }
 
 impl<const CEILING: Priority> ScopedLock for CeilingLock<CEILING> {
+    const DEFAULT: Self = Self::new();
     type Guard<'guard> = CeilingLockGuard<'guard, CEILING>;
 
     fn lock(&self) -> Self::Guard<'_> {

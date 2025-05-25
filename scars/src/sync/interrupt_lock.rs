@@ -12,7 +12,7 @@ pub struct InterruptLock {
 }
 
 impl InterruptLock {
-    pub fn new() -> InterruptLock {
+    pub const fn new() -> InterruptLock {
         InterruptLock {
             owned: AtomicBool::new(false),
         }
@@ -74,6 +74,8 @@ impl InterruptLock {
 }
 
 impl ScopedLock for InterruptLock {
+    const DEFAULT: Self = Self::new();
+
     type Guard<'lock> = InterruptLockGuard<'lock>;
 
     fn lock(&self) -> Self::Guard<'_> {

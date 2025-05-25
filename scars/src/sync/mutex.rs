@@ -1,33 +1,34 @@
 use crate::kernel::Priority;
-use crate::sync::{RawCeilingLock, ceiling_lock::RawCeilingLockGuard};
+use crate::sync::{CeilingLock, InheritanceLock, InterruptLock, ScopedLock};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::pin::Pin;
 
-pub struct Mutex<T: ?Sized, const CEILING: Priority> {
-    lock: RawCeilingLock,
+pub type Mutex<T> = LockedMutex<T, InheritanceLock>;
+pub type CeilingMutex<T, const CEILING: Priority> = LockedMutex<T, CeilingLock<CEILING>>;
+pub type InterruptMutex<T> = LockedMutex<T, InterruptLock>;
+
+pub struct LockedMutex<T: ?Sized, L: ScopedLock> {
+    lock: L,
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized + Send, const CEILING: Priority> Send for Mutex<T, CEILING> {}
-unsafe impl<T: ?Sized + Send, const CEILING: Priority> Sync for Mutex<T, CEILING> {}
+unsafe impl<T: ?Sized + Send, L: ScopedLock> Send for LockedMutex<T, L> {}
+unsafe impl<T: ?Sized + Send, L: ScopedLock> Sync for LockedMutex<T, L> {}
 
-impl<T, const CEILING: Priority> Mutex<T, CEILING> {
+impl<T, L: ScopedLock> LockedMutex<T, L> {
     #[inline(always)]
-    pub const fn new(t: T) -> Mutex<T, CEILING> {
-        Mutex {
-            lock: RawCeilingLock::new(CEILING),
+    pub const fn new(t: T) -> LockedMutex<T, L> {
+        LockedMutex {
+            lock: L::DEFAULT,
             data: UnsafeCell::new(t),
         }
     }
 }
 
-impl<T: ?Sized, const CEILING: Priority> Mutex<T, CEILING> {
+impl<T: ?Sized, L: ScopedLock> LockedMutex<T, L> {
     #[inline(always)]
-    pub fn lock(&self) -> MutexGuard<'_, T> {
-        let pinned_lock = unsafe { Pin::new_unchecked(&self.lock) };
-
-        let guard = pinned_lock.lock();
+    pub fn lock(&self) -> MutexGuard<'_, T, L> {
+        let guard = self.lock.lock();
 
         MutexGuard {
             guard,
@@ -36,38 +37,38 @@ impl<T: ?Sized, const CEILING: Priority> Mutex<T, CEILING> {
     }
 
     #[inline(always)]
-    pub fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
+    pub fn try_lock(&self) -> Result<MutexGuard<'_, T, L>, ()> {
         Ok(self.lock())
     }
 
     #[inline(always)]
-    pub fn unlock(guard: MutexGuard<'_, T>) {
+    pub fn unlock(guard: MutexGuard<'_, T, L>) {
         drop(guard)
     }
 }
 
 #[inline(always)]
-pub(crate) fn guard_raw<'a, 'b, T: ?Sized>(
-    guard: &'b mut MutexGuard<'a, T>,
-) -> &'b mut RawCeilingLockGuard<'a> {
+pub(crate) fn guard_raw<'a, 'b, T: ?Sized, L: ScopedLock>(
+    guard: &'b mut MutexGuard<'a, T, L>,
+) -> &'b mut L::Guard<'a> {
     &mut guard.guard
 }
 
-pub struct MutexGuard<'a, T: ?Sized + 'a> {
-    guard: RawCeilingLockGuard<'a>,
+pub struct MutexGuard<'a, T: ?Sized + 'a, L: ScopedLock + 'a> {
+    guard: L::Guard<'a>,
     data: &'a UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
+unsafe impl<T: ?Sized + Sync, L: ScopedLock> Sync for MutexGuard<'_, T, L> {}
 
-impl<'a, T: ?Sized> Deref for MutexGuard<'a, T> {
+impl<'a, T: ?Sized, L: ScopedLock> Deref for MutexGuard<'a, T, L> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.data.get() }
     }
 }
 
-impl<'a, T: ?Sized> DerefMut for MutexGuard<'a, T> {
+impl<'a, T: ?Sized, L: ScopedLock> DerefMut for MutexGuard<'a, T, L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.data.get() }
     }

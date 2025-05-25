@@ -7,7 +7,7 @@
 #![feature(impl_trait_in_assoc_type)]
 use scars::prelude::*;
 use scars::sync::CeilingLock;
-use scars::sync::channel::Sender;
+use scars::sync::channel::CeilingSender;
 use scars::time::Duration;
 use scars_test;
 
@@ -45,9 +45,9 @@ pub fn ceiling_lock_owned_preempt() {
 
 #[scars::thread(name = "low", priority = LOW_PRIORITY, stack_size = STACK_SIZE)]
 fn low_thread(
-    sender0: Sender<u32, CAPACITY, HIGH_PRIORITY>,
-    medium_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>,
-    high_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>,
+    sender0: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>,
+    medium_sender: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>,
+    high_sender: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>,
 ) -> ! {
     let medium_sender = medium_sender.clone();
     let high_sender = high_sender.clone();
@@ -70,7 +70,7 @@ fn low_thread(
 }
 
 #[scars::thread(name = "medium", priority = MEDIUM_PRIORITY, stack_size = STACK_SIZE)]
-fn medium_thread(medium_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
+fn medium_thread(medium_sender: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
     medium_sender.send(1);
     loop {
         scars::delay(Duration::from_secs(1));
@@ -78,7 +78,7 @@ fn medium_thread(medium_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
 }
 
 #[scars::thread(name = "high", priority = HIGH_PRIORITY, stack_size = STACK_SIZE)]
-fn high_thread(high_sender: Sender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
+fn high_thread(high_sender: CeilingSender<u32, CAPACITY, HIGH_PRIORITY>) -> ! {
     high_sender.send(3);
     loop {
         scars::delay(Duration::from_secs(1));

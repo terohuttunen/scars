@@ -1,4 +1,4 @@
-use crate::sync::mutex::Mutex;
+use crate::sync::mutex::CeilingMutex;
 use crate::Priority;
 use core::ops::Deref;
 
@@ -13,11 +13,11 @@ macro_rules! make_shared {
 }
 
 pub struct Shared<T: 'static, const CEILING: Priority> {
-    shared: &'static Mutex<T, CEILING>,
+    shared: &'static CeilingMutex<T, CEILING>,
 }
 
 impl<T: 'static, const CEILING: Priority> Shared<T, CEILING> {
-    pub fn new(shared: &'static Mutex<T, CEILING>) -> Shared<T, CEILING> {
+    pub fn new(shared: &'static CeilingMutex<T, CEILING>) -> Shared<T, CEILING> {
         Shared { shared }
     }
 }
@@ -31,7 +31,7 @@ impl<T: 'static, const CEILING: Priority> Clone for Shared<T, CEILING> {
 impl<T: 'static, const CEILING: Priority> Copy for Shared<T, CEILING> {}
 
 impl<T: 'static, const CEILING: Priority> Deref for Shared<T, CEILING> {
-    type Target = Mutex<T, CEILING>;
+    type Target = CeilingMutex<T, CEILING>;
 
     fn deref(&self) -> &Self::Target {
         self.shared

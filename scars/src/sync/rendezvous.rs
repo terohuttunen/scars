@@ -1,3 +1,4 @@
+use crate::Priority;
 /// This module provides synchronization primitives for rendezvous-style communication.
 ///
 /// The `Rendezvous` struct allows two threads to synchronize and exchange data. It acts as a
@@ -31,8 +32,10 @@
 /// let result = accept.accept(|arg| arg * 2);
 /// assert_eq!(result, 84);
 /// ```
-use crate::sync::{Condvar, Mutex};
-use crate::Priority;
+use crate::sync::{
+    CeilingLock, InheritanceLock, NestingLock, PreemptLock, ScopedLock, Unlock,
+    condvar::LockedCondvar, mutex::LockedMutex,
+};
 
 /// Creates a new statically allocated `Rendezvous` with the specified ceiling priority.
 #[macro_export]
@@ -40,26 +43,41 @@ macro_rules! make_rendezvous {
     ($prio:expr) => {{
         type A = impl ::core::marker::Sized + ::core::marker::Send + 'static;
         type R = impl ::core::marker::Sized + ::core::marker::Send + 'static;
-        static mut RENDEZVOUS: $crate::sync::rendezvous::Rendezvous<A, R, { $prio }> =
+        static mut RENDEZVOUS: $crate::sync::rendezvous::CeilingRendezvous<A, R, { $prio }> =
+            $crate::sync::rendezvous::CeilingRendezvous::new();
+
+        unsafe { RENDEZVOUS.split() }
+    }};
+    () => {{
+        type A = impl ::core::marker::Sized + ::core::marker::Send + 'static;
+        type R = impl ::core::marker::Sized + ::core::marker::Send + 'static;
+        static mut RENDEZVOUS: $crate::sync::rendezvous::Rendezvous<A, R> =
             $crate::sync::rendezvous::Rendezvous::new();
 
         unsafe { RENDEZVOUS.split() }
     }};
 }
 
+pub use make_rendezvous;
+
+pub type CeilingRendezvous<A, R, const CEILING: Priority> =
+    LockedRendezvous<A, R, CeilingLock<CEILING>, CeilingLock<CEILING>>;
+
+pub type Rendezvous<A, R> = LockedRendezvous<A, R, InheritanceLock, PreemptLock>;
+
 /// Represents a rendezvous synchronization primitive. It allows two threads to synchronize and
 /// exchange data. It acts as a synchronized remote procedure call into another thread's context.
-pub struct Rendezvous<A, R, const CEILING: Priority>
+pub struct LockedRendezvous<A, R, L: ScopedLock, N: NestingLock>
 where
     A: Send + 'static,
     R: Send + 'static,
 {
-    arg: Mutex<Option<A>, CEILING>,
-    result: Mutex<Option<R>, CEILING>,
-    waiter: Condvar<CEILING>,
+    arg: LockedMutex<Option<A>, L>,
+    result: LockedMutex<Option<R>, L>,
+    waiter: LockedCondvar<N>,
 }
 
-impl<A, R, const CEILING: Priority> Rendezvous<A, R, CEILING>
+impl<A, R, L: ScopedLock, N: NestingLock> LockedRendezvous<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -69,11 +87,11 @@ where
     /// # Returns
     ///
     /// A new `Rendezvous` instance.
-    pub const fn new() -> Rendezvous<A, R, CEILING> {
-        Rendezvous {
-            arg: Mutex::new(None),
-            result: Mutex::new(None),
-            waiter: Condvar::new(),
+    pub const fn new() -> LockedRendezvous<A, R, L, N> {
+        LockedRendezvous {
+            arg: LockedMutex::new(None),
+            result: LockedMutex::new(None),
+            waiter: LockedCondvar::new(),
         }
     }
 
@@ -82,8 +100,10 @@ where
     /// # Returns
     ///
     /// A tuple containing the `Entry` and `Accept` instances.
-    pub const fn split(&'static mut self) -> (Entry<A, R, CEILING>, Accept<A, R, CEILING>) {
-        (Entry { rendezvous: self }, Accept { rendezvous: self })
+    pub const fn split(&'static mut self) -> (LockedEntry<A, R, L, N>, LockedAccept<A, R, L, N>) {
+        (LockedEntry { rendezvous: self }, LockedAccept {
+            rendezvous: self,
+        })
     }
 }
 
@@ -91,18 +111,19 @@ where
 /// allows the thread to provide an argument and wait for the result. The `Entry` struct is
 /// created by calling the `split` method on a `Rendezvous` instance. The `Entry` struct is
 /// `Send` because it is intended to be passed to another thread.
-pub struct Entry<A, R, const CEILING: Priority>
+pub struct LockedEntry<A, R, L: ScopedLock + 'static, N: NestingLock + 'static>
 where
     A: Send + 'static,
     R: Send + 'static,
 {
-    rendezvous: &'static Rendezvous<A, R, CEILING>,
+    rendezvous: &'static LockedRendezvous<A, R, L, N>,
 }
 
-impl<A, R, const CEILING: Priority> Entry<A, R, CEILING>
+impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> LockedEntry<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,
+    for<'b> L::Guard<'b>: Unlock,
 {
     /// Provides an argument and waits for the result.
     pub fn entry(&self, arg: A) -> R {
@@ -127,7 +148,8 @@ where
     }
 }
 
-unsafe impl<A, R, const CEILING: Priority> Send for Entry<A, R, CEILING>
+unsafe impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> Send
+    for LockedEntry<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -139,18 +161,19 @@ where
 /// the result. The `Accept` struct is created by calling the `split` method on a `Rendezvous`
 /// instance. The `Accept` struct is `Send` because it is intended to be passed to another
 /// thread.
-pub struct Accept<A, R, const CEILING: Priority>
+pub struct LockedAccept<A, R, L: ScopedLock + 'static, N: NestingLock + 'static>
 where
     A: Send + 'static,
     R: Send + 'static,
 {
-    rendezvous: &'static Rendezvous<A, R, CEILING>,
+    rendezvous: &'static LockedRendezvous<A, R, L, N>,
 }
 
-impl<A, R, const CEILING: Priority> Accept<A, R, CEILING>
+impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> LockedAccept<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,
+    for<'b> L::Guard<'b>: Unlock,
 {
     /// Waits for the argument, computes the result using a closure, and returns the result to
     /// the other thread.
@@ -177,7 +200,8 @@ where
     }
 }
 
-unsafe impl<A, R, const CEILING: Priority> Send for Accept<A, R, CEILING>
+unsafe impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> Send
+    for LockedAccept<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,

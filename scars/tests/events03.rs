@@ -7,7 +7,7 @@
 #![feature(impl_trait_in_assoc_type)]
 use scars::events::wait_events_until;
 use scars::prelude::*;
-use scars::sync::channel::Sender;
+use scars::sync::channel::CeilingSender;
 use scars::thread_suspend;
 use scars::time::Duration;
 use scars_test;
@@ -28,7 +28,7 @@ const CEILING: Priority = THREAD0_PRIORITY;
 const UNBLOCK_EVENT: u32 = 1u32;
 
 #[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
-fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let deadline = scars::time::Instant::now() + Duration::from_millis(10);
     let wait_result = wait_events_until(UNBLOCK_EVENT, Some(deadline));
     assert!(wait_result.is_err());

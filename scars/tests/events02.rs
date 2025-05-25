@@ -7,7 +7,7 @@
 #![feature(impl_trait_in_assoc_type)]
 use scars::events::{REQUIRE_ALL_EVENTS, wait_events};
 use scars::prelude::*;
-use scars::sync::channel::Sender;
+use scars::sync::channel::CeilingSender;
 use scars::thread::ThreadRef;
 use scars::time::Duration;
 use scars_test;
@@ -35,7 +35,7 @@ const UNBLOCK_EVENT1: u32 = 1u32;
 const UNBLOCK_EVENT2: u32 = 2u32;
 
 #[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
-fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let thread0_ref = unsafe { ThreadRef::current() };
     thread1(sender.clone(), thread0_ref).start();
     wait_events(UNBLOCK_EVENT1 | UNBLOCK_EVENT2 | REQUIRE_ALL_EVENTS);
@@ -45,7 +45,7 @@ fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
 }
 
 #[scars::thread(name = "thread1", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
-fn thread1(sender: Sender<u32, CAPACITY, CEILING>, thread0_ref: ThreadRef) -> ! {
+fn thread1(sender: CeilingSender<u32, CAPACITY, CEILING>, thread0_ref: ThreadRef) -> ! {
     let thread1_ref = unsafe { ThreadRef::current() };
     thread2(sender.clone(), thread0_ref, thread1_ref).start();
     wait_events(UNBLOCK_EVENT1 | UNBLOCK_EVENT2 | REQUIRE_ALL_EVENTS);
@@ -56,7 +56,7 @@ fn thread1(sender: Sender<u32, CAPACITY, CEILING>, thread0_ref: ThreadRef) -> ! 
 
 #[scars::thread(name = "thread2", priority = THREAD2_PRIORITY, stack_size = STACK_SIZE)]
 fn thread2(
-    sender: Sender<u32, CAPACITY, CEILING>,
+    sender: CeilingSender<u32, CAPACITY, CEILING>,
     thread0_ref: ThreadRef,
     thread1_ref: ThreadRef,
 ) -> ! {

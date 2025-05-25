@@ -37,6 +37,10 @@ pub struct NoLockGuard<'lock> {
 }
 
 impl ScopedLock for NoLock {
+    const DEFAULT: Self = NoLock {
+        _phantom: PhantomData,
+    };
+
     type Guard<'guard> = NoLockGuard<'guard>;
 
     fn lock(&self) -> Self::Guard<'_> {

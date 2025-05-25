@@ -6,8 +6,8 @@
 #![reexport_test_harness_main = "test_main"]
 #![feature(impl_trait_in_assoc_type)]
 use scars::prelude::*;
-use scars::sync::channel::Sender;
-use scars::sync::{Condvar, Mutex};
+use scars::sync::channel::CeilingSender;
+use scars::sync::{CeilingCondvar, CeilingMutex};
 use scars::time::Duration;
 use scars_test;
 
@@ -30,11 +30,11 @@ const THREAD2_PRIORITY: Priority = Priority::thread(4);
 const CAPACITY: usize = 14;
 const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRIORITY);
 
-static LOCK: Mutex<bool, CEILING> = Mutex::new(false);
-static CVAR: Condvar<CEILING> = Condvar::new();
+static LOCK: CeilingMutex<bool, CEILING> = CeilingMutex::new(false);
+static CVAR: CeilingCondvar<CEILING> = CeilingCondvar::new();
 
 #[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
-fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let sender0 = sender.clone();
     thread1(sender0).start();
     let guarded_started = LOCK.lock();
@@ -45,7 +45,7 @@ fn thread0(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
 }
 
 #[scars::thread(name = "thread1", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
-fn thread1(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread1(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let sender1 = sender.clone();
     thread2(sender1).start();
     let guarded_started = LOCK.lock();
@@ -56,7 +56,7 @@ fn thread1(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
 }
 
 #[scars::thread(name = "thread2", priority = THREAD2_PRIORITY, stack_size = STACK_SIZE)]
-fn thread2(sender: Sender<u32, CAPACITY, CEILING>) -> ! {
+fn thread2(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let guarded_started = LOCK.lock();
     CVAR.wait_while(guarded_started, |started| !*started);
     sender.send(2);

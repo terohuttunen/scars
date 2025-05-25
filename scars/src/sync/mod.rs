@@ -38,9 +38,9 @@ pub mod shared;
 //pub use async_condvar::AsyncCondvar;
 //pub use async_lock::AsyncLock;
 //pub use async_mutex::{AsyncMutex, AsyncMutexGuard};
-pub use channel::Channel;
-pub use condvar::Condvar;
-pub use mutex::{Mutex, MutexGuard};
+pub use channel::{CeilingChannel, Channel};
+pub use condvar::{CeilingCondvar, Condvar};
+pub use mutex::{CeilingMutex, LockedMutex, Mutex, MutexGuard};
 pub use once::Once;
 pub use once_lock::OnceLock;
 pub use shared::Shared;
@@ -68,6 +68,9 @@ pub trait Unlock {
 }
 
 pub trait ScopedLock {
+    // Const initializer
+    const DEFAULT: Self;
+
     // RAII-style lock guard that releases the lock when dropped. Guards
     // may be dropped in any order.
     type Guard<'lock>
