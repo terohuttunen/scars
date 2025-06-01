@@ -1,7 +1,6 @@
 use super::{NestingLock, TryLockError};
 use crate::kernel::hal::{acquire, restore};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
-use crate::sync::InterruptLock;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -113,7 +112,7 @@ impl PreemptLock {
                 // is made atomically.
                 let int_restore = acquire();
 
-                if !Scheduler::is_pending() {
+                if !Scheduler::is_deferred_work_pending() {
                     // Release the lock
                     PREEMPT_LOCK.store(core::ptr::null_mut(), Ordering::Release);
                     restore(int_restore);
@@ -122,7 +121,7 @@ impl PreemptLock {
 
                 restore(int_restore);
 
-                Scheduler::complete_pending(key);
+                Scheduler::complete_deferred_work(key);
             }
 
             // Rescheduling was not allowed while the preemption lock was held.

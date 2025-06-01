@@ -1,5 +1,5 @@
 use core::marker::ConstParamTy;
-use core::sync::atomic::{AtomicI16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI16, Ordering};
 
 pub type ThreadPriority = u8;
 pub type InterruptPriority = u8;
@@ -402,39 +402,56 @@ const fn to_status_pair(value: u32) -> (PriorityStatus, PriorityStatus) {
 }
 
 #[repr(transparent)]
-pub struct AtomicPriorityPair(AtomicU32);
+pub struct AtomicPriorityStatus(AtomicI16);
 
-impl AtomicPriorityPair {
-    pub const fn new(pair: (Priority, Priority)) -> AtomicPriorityPair {
-        AtomicPriorityPair(AtomicU32::new(from_pair(pair)))
+impl AtomicPriorityStatus {
+    pub const fn new(prio: PriorityStatus) -> AtomicPriorityStatus {
+        AtomicPriorityStatus(AtomicI16::new(prio.into_any()))
     }
 
-    pub fn load(&self, ordering: Ordering) -> (Priority, Priority) {
-        let value = self.0.load(ordering);
-        to_pair(value)
+    pub const fn any(prio: AnyPriority) -> AtomicPriorityStatus {
+        AtomicPriorityStatus(AtomicI16::new(prio))
     }
 
-    pub fn store(&self, pair: (Priority, Priority), ordering: Ordering) {
-        let value = from_pair(pair);
-        self.0.store(value, ordering)
+    pub const fn thread(prio: ThreadPriority) -> AtomicPriorityStatus {
+        AtomicPriorityStatus(AtomicI16::new(prio as i16))
     }
 
-    pub fn swap(&self, pair: (Priority, Priority), ordering: Ordering) -> (Priority, Priority) {
-        let value = from_pair(pair);
-        to_pair(self.0.swap(value, ordering))
+    pub const fn interrupt(prio: InterruptPriority) -> AtomicPriorityStatus {
+        AtomicPriorityStatus(AtomicI16::new(prio as i16 | INTERRUPT_BIT))
+    }
+
+    pub fn is_interrupt(&self) -> bool {
+        (self.0.load(Ordering::Relaxed) & INTERRUPT_BIT) != 0
+    }
+
+    pub fn is_thread(&self) -> bool {
+        (self.0.load(Ordering::Relaxed) & INTERRUPT_BIT) == 0
+    }
+
+    pub fn load(&self, ordering: Ordering) -> PriorityStatus {
+        PriorityStatus::from_any(self.0.load(ordering))
+    }
+
+    pub fn store(&self, prio: PriorityStatus, ordering: Ordering) {
+        self.0.store(prio.into_any(), ordering)
+    }
+
+    pub fn swap(&self, prio: PriorityStatus, ordering: Ordering) -> PriorityStatus {
+        PriorityStatus::from_any(self.0.swap(prio.into_any(), ordering))
     }
 
     pub fn compare_exchange(
         &self,
-        current: (Priority, Priority),
-        new: (Priority, Priority),
+        current: PriorityStatus,
+        new: PriorityStatus,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<(Priority, Priority), (Priority, Priority)> {
+    ) -> Result<PriorityStatus, PriorityStatus> {
         self.0
-            .compare_exchange(from_pair(current), from_pair(new), success, failure)
-            .map(|x| to_pair(x))
-            .map_err(|e| to_pair(e))
+            .compare_exchange(current.into_any(), new.into_any(), success, failure)
+            .map(|x| PriorityStatus::from_any(x))
+            .map_err(|e| PriorityStatus::from_any(e))
     }
 
     pub fn fetch_update<F>(
@@ -442,78 +459,15 @@ impl AtomicPriorityPair {
         set_order: Ordering,
         fetch_order: Ordering,
         mut f: F,
-    ) -> Result<(Priority, Priority), (Priority, Priority)>
+    ) -> Result<PriorityStatus, PriorityStatus>
     where
-        F: FnMut((Priority, Priority)) -> Option<(Priority, Priority)>,
+        F: FnMut(PriorityStatus) -> Option<PriorityStatus>,
     {
         self.0
-            .fetch_update(set_order, fetch_order, |value| {
-                f(to_pair(value)).map(|pair| from_pair(pair))
+            .fetch_update(set_order, fetch_order, |prio| {
+                f(PriorityStatus::from_any(prio)).map(|x| x.into_any())
             })
-            .map(|x| to_pair(x))
-            .map_err(|e| to_pair(e))
-    }
-}
-
-#[repr(transparent)]
-pub struct AtomicPriorityStatusPair(AtomicU32);
-
-impl AtomicPriorityStatusPair {
-    pub const fn new(pair: (PriorityStatus, PriorityStatus)) -> AtomicPriorityStatusPair {
-        AtomicPriorityStatusPair(AtomicU32::new(from_status_pair(pair)))
-    }
-
-    pub fn load(&self, ordering: Ordering) -> (PriorityStatus, PriorityStatus) {
-        let value = self.0.load(ordering);
-        to_status_pair(value)
-    }
-
-    pub fn store(&self, pair: (PriorityStatus, PriorityStatus), ordering: Ordering) {
-        let value = from_status_pair(pair);
-        self.0.store(value, ordering)
-    }
-
-    pub fn swap(
-        &self,
-        pair: (PriorityStatus, PriorityStatus),
-        ordering: Ordering,
-    ) -> (PriorityStatus, PriorityStatus) {
-        let value = from_status_pair(pair);
-        to_status_pair(self.0.swap(value, ordering))
-    }
-
-    pub fn compare_exchange(
-        &self,
-        current: (PriorityStatus, PriorityStatus),
-        new: (PriorityStatus, PriorityStatus),
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<(PriorityStatus, PriorityStatus), (PriorityStatus, PriorityStatus)> {
-        self.0
-            .compare_exchange(
-                from_status_pair(current),
-                from_status_pair(new),
-                success,
-                failure,
-            )
-            .map(|x| to_status_pair(x))
-            .map_err(|e| to_status_pair(e))
-    }
-
-    pub fn fetch_update<F>(
-        &self,
-        set_order: Ordering,
-        fetch_order: Ordering,
-        mut f: F,
-    ) -> Result<(PriorityStatus, PriorityStatus), (PriorityStatus, PriorityStatus)>
-    where
-        F: FnMut((PriorityStatus, PriorityStatus)) -> Option<(PriorityStatus, PriorityStatus)>,
-    {
-        self.0
-            .fetch_update(set_order, fetch_order, |value| {
-                f(to_status_pair(value)).map(|pair| from_status_pair(pair))
-            })
-            .map(|x| to_status_pair(x))
-            .map_err(|e| to_status_pair(e))
+            .map(|x| PriorityStatus::from_any(x))
+            .map_err(|e| PriorityStatus::from_any(e))
     }
 }

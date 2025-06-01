@@ -4,7 +4,7 @@ use crate::in_interrupt;
 use crate::kernel::atomic_queue::{AtomicNode, impl_atomic_linked};
 use crate::kernel::interrupt::RawInterruptHandler;
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, Node, impl_linked};
-use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
+use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler, WorkQueueNode};
 use crate::sync::{CeilingLock, NestingLock, PreemptLock, preempt_lock::PreemptLockKey};
 use crate::syscall;
 use crate::task::task::RawTask;
@@ -51,12 +51,15 @@ pub struct Suspendable {
     /// Link for the kernel sleep queue.
     pub(crate) sleep_queue_link: Node<Self, SleepQueueTag>,
 
-    /// When PreemptLock cannot be acquired, operations on the Suspendable are postponed.
-    /// This link is used to insert the Suspendable into the pending schedule queue.
-    pub(crate) pending_schedule_link: AtomicNode<Self, ExecStateTag>,
+    /// When a lock cannot be acquired, operations on the Suspendable are postponed.
+    /// This link is used to insert the Suspendable into the deferred work queue.
+    pub(crate) deferred_work_queue_link: WorkQueueNode,
 
-    /// Mask of pending operations that could not be completed because of PreemptLock.
+    /// Mask of operations that could not be completed because of locks
     pub(crate) pending_mask: AtomicU32,
+
+    /// The ceiling priority that is required to complete the operations.
+    pub(crate) required_ceiling: Cell<Option<Priority>>,
 }
 
 impl Suspendable {
@@ -66,8 +69,9 @@ impl Suspendable {
             deadline: Cell::new(None),
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
-            pending_schedule_link: AtomicNode::new(),
+            deferred_work_queue_link: AtomicNode::new(),
             pending_mask: AtomicU32::new(0),
+            required_ceiling: Cell::new(None),
         }
     }
 
@@ -82,8 +86,9 @@ impl Suspendable {
             deadline: Cell::new(None),
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
-            pending_schedule_link: AtomicNode::new(),
+            deferred_work_queue_link: AtomicNode::new(),
             pending_mask: AtomicU32::new(0),
+            required_ceiling: Cell::new(None),
         }
     }
 
@@ -93,8 +98,9 @@ impl Suspendable {
             deadline: Cell::new(None),
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
-            pending_schedule_link: AtomicNode::new(),
+            deferred_work_queue_link: AtomicNode::new(),
             pending_mask: AtomicU32::new(0),
+            required_ceiling: Cell::new(None),
         }
     }
 
@@ -104,8 +110,9 @@ impl Suspendable {
             deadline: Cell::new(None),
             wait_queue_link: Node::new(),
             sleep_queue_link: Node::new(),
-            pending_schedule_link: AtomicNode::new(),
+            deferred_work_queue_link: AtomicNode::new(),
             pending_mask: AtomicU32::new(0),
+            required_ceiling: Cell::new(None),
         }
     }
 
@@ -146,11 +153,15 @@ impl Suspendable {
     pub fn set_pending(&self, mask: u32) {
         self.pending_mask.fetch_or(mask, Ordering::Relaxed);
     }
+
+    pub fn set_required_ceiling(&self, ceiling: Option<Priority>) {
+        self.required_ceiling.set(ceiling);
+    }
 }
 
 impl_linked!(wait_queue_link, Suspendable, WaitQueueTag);
 impl_linked!(sleep_queue_link, Suspendable, SleepQueueTag);
-impl_atomic_linked!(pending_schedule_link, Suspendable, ExecStateTag);
+impl_atomic_linked!(deferred_work_queue_link, Suspendable, ExecStateTag);
 
 #[derive(Clone, Copy)]
 pub(crate) struct WaitQueueHandle {
@@ -171,6 +182,10 @@ impl WaitQueueHandle {
         unsafe { (self.vtable.reinsert)(self.queue, pkey, suspendable.get_ref()) }
     }
 
+    pub fn required_ceiling(&self) -> Option<Priority> {
+        (self.vtable.required_ceiling)(self.queue)
+    }
+
     pub fn to_raw(&self) -> (*const (), *const WaitQueueVTable) {
         (self.queue, self.vtable)
     }
@@ -187,6 +202,7 @@ pub(crate) struct WaitQueueVTable {
     insert: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable),
     remove: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable),
     reinsert: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable), // reinsert after priority change
+    required_ceiling: fn(*const ()) -> Option<Priority>,
 }
 
 pub struct WaitQueue<L: NestingLock> {
@@ -198,6 +214,7 @@ impl<L: NestingLock> WaitQueue<L> {
         insert: Self::insert_unsafe,
         remove: Self::remove_unsafe,
         reinsert: Self::reinsert_unsafe,
+        required_ceiling: Self::required_ceiling,
     };
 
     pub const fn new() -> WaitQueue<L> {
@@ -260,7 +277,9 @@ impl<L: NestingLock> WaitQueue<L> {
     ) {
         let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
         let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
-        queue.remove(pkey, suspendable);
+        if suspendable.wait_queue_link.in_list() {
+            queue.remove(pkey, suspendable);
+        }
     }
 
     unsafe fn reinsert_unsafe(
@@ -273,8 +292,34 @@ impl<L: NestingLock> WaitQueue<L> {
         queue.reinsert(pkey, suspendable);
     }
 
+    fn required_ceiling(_queue: *const ()) -> Option<Priority> {
+        L::required_ceiling().map(|c| Priority::from_any(c))
+    }
+
     pub fn wait(&self) {
-        syscall::thread_wait(self);
+        match Scheduler::current_execution_context() {
+            ExecutionContext::Thread(thread) => {
+                L::with(|key| {
+                    let key = L::upcast_key(key);
+                    let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(key);
+
+                    queue.as_mut().push_back(thread.suspendable_ref());
+                    let (queue_ptr, vtable) = self.to_raw();
+                    let handle = unsafe { WaitQueueHandle::from_raw(queue_ptr, vtable) };
+
+                    PreemptLock::with(|pkey| {
+                        thread.wait_queue.set(pkey, Some(handle));
+                    });
+                });
+
+                // If the thread is resumed before the wait-syscall is called, it
+                // will return immediately and not block.
+                syscall::thread_wait(self);
+            }
+            ExecutionContext::Interrupt(_) => {
+                crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
+            }
+        }
     }
 
     pub(crate) fn to_raw(&self) -> (*const (), *const WaitQueueVTable) {

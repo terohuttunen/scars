@@ -53,6 +53,7 @@ pub use inheritance_lock::InheritanceLock;
 pub use interrupt_lock::InterruptLock;
 pub use no_lock::NoLock;
 pub use preempt_lock::PreemptLock;
+
 pub type LockResult<Guard> = Result<Guard, ()>;
 pub type TryLockResult<Guard> = Result<Guard, TryLockError>;
 
@@ -107,4 +108,8 @@ pub trait NestingLock {
     }
 
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a>;
+
+    fn required_ceiling() -> Option<i16> {
+        None
+    }
 }

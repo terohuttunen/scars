@@ -62,11 +62,37 @@ impl RawCeilingLock {
             runtime_error!(RuntimeError::CeilingPriorityViolation);
         }
 
-        if current_interrupt.as_ptr() as *const () == self.owner.load(Ordering::Relaxed) {
-            runtime_error!(RuntimeError::RecursiveLock);
-        }
+        // Raise interrupt threshold to ceiling priority BEFORE ownership acquisition
+        // This prevents higher priority interrupts from acquiring the lock before
+        // the lock is released by this interrupt.
+        let ceiling_priority_status = PriorityStatus::from(self.ceiling_priority);
+        crate::kernel::interrupt::set_ceiling_threshold(ceiling_priority_status);
 
-        unsafe { current_interrupt.acquire_lock(self) };
+        // Atomically acquire ownership and check for recursive lock
+        let current_interrupt_ptr = current_interrupt.as_ptr() as *const () as *mut ();
+        match self.owner.compare_exchange(
+            core::ptr::null_mut(),
+            current_interrupt_ptr,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {
+                // Successfully acquired the lock
+                unsafe {
+                    current_interrupt.ceiling_lock_acquired(self);
+                }
+                // Note: No need for additional set_ceiling_threshold call here.
+                // After acquisition, interrupt priority equals lock ceiling priority,
+                // so the threshold is already correctly set.
+            }
+            Err(current_owner) => {
+                if current_owner == current_interrupt_ptr {
+                    runtime_error!(RuntimeError::RecursiveLock);
+                } else {
+                    panic!("Lock already owned. The scheduler should have prevented this.")
+                }
+            }
+        }
     }
 
     unsafe fn acquire_scoped_lock_in_thread(
@@ -78,21 +104,42 @@ impl RawCeilingLock {
                 runtime_error!(RuntimeError::IdleThreadCeilingLock);
             }
 
-            if current_thread.get_ref() as *const _ as *const ()
-                == self.owner.load(Ordering::Relaxed)
-            {
-                runtime_error!(RuntimeError::RecursiveLock);
-            }
-
             // Ceiling check: If locking thread has priority higher than the
             // mutex ceiling, then it violates the priority ceiling protocol.
             if current_thread.priority(pkey) > self.ceiling_priority {
                 runtime_error!(RuntimeError::CeilingPriorityViolation);
             }
 
-            // Acquisition of the lock raises the thread priority to the lock ceiling
-            unsafe {
-                current_thread.scoped_lock_acquired(pkey, self);
+            // Raise interrupt threshold to ceiling priority BEFORE ownership acquisition
+            // This prevents lower or equal priority interrupts and threads from acquiring the lock
+            // before the lock is released.
+            let ceiling_priority_status = PriorityStatus::from(self.ceiling_priority);
+            crate::kernel::interrupt::set_ceiling_threshold(ceiling_priority_status);
+
+            // Atomically acquire ownership and check for recursive lock
+            let current_thread_ptr = current_thread.get_ref() as *const _ as *mut ();
+            match self.owner.compare_exchange(
+                core::ptr::null_mut(),
+                current_thread_ptr,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    // Successfully acquired the lock
+                    unsafe {
+                        current_thread.ceiling_lock_acquired(pkey, self);
+                    }
+                    // Note: No need for additional set_ceiling_threshold call here.
+                    // After acquisition, thread priority equals lock ceiling priority,
+                    // so the threshold is already correctly set.
+                }
+                Err(current_owner) => {
+                    if current_owner == current_thread_ptr {
+                        runtime_error!(RuntimeError::RecursiveLock);
+                    } else {
+                        panic!("Lock already owned. The scheduler should have prevented this.")
+                    }
+                }
             }
         })
     }
@@ -119,30 +166,82 @@ impl RawCeilingLock {
         self: Pin<&Self>,
         current_interrupt: Pin<&'static RawInterruptHandler>,
     ) {
-        unsafe {
-            current_interrupt.release_lock(self);
-        }
-    }
-
-    unsafe fn release_scoped_lock_in_thread(
-        self: Pin<&Self>,
-        current_thread: Pin<&'static RawThread>,
-    ) {
+        // Validate ownership before proceeding
+        let current_interrupt_ptr = current_interrupt.as_ptr() as *const () as *mut ();
         let owner = self.owner.load(Ordering::Relaxed);
 
-        // If lock has not been acquired by any thread. Most likely
+        // If lock has not been acquired by any interrupt. Most likely
         // an attempt to release a lock twice. For example, guard is
         // used to unlock the lock, and then the guard is dropped.
         if owner.is_null() {
             return;
         }
 
-        if owner != current_thread.get_ref() as *const _ as *mut () {
-            runtime_error!(RuntimeError::LockOwnerViolation);
+        // Update internal state (remove from lock list, calculate new priority)
+        // This must happen before clearing ownership to maintain consistency
+        unsafe {
+            current_interrupt.ceiling_lock_released(self);
         }
 
-        PreemptLock::with(|pkey| unsafe {
-            current_thread.scoped_lock_released(pkey, self);
+        // Atomically clear ownership to signal lock is available
+        // This should always succeed since we validated ownership above.
+        self.owner
+            .compare_exchange(
+                current_interrupt_ptr,
+                core::ptr::null_mut(),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .unwrap_or_else(|_| runtime_error!(RuntimeError::LockOwnerViolation));
+
+        // Set final ceiling threshold based on new interrupt priority
+        // The release_lock method has already updated the interrupt's priority,
+        // so we set the ceiling threshold to the new effective priority
+        let new_priority = current_interrupt.priority();
+        let new_ceiling_priority_status = PriorityStatus::from(new_priority);
+        crate::kernel::interrupt::set_ceiling_threshold(new_ceiling_priority_status);
+    }
+
+    unsafe fn release_scoped_lock_in_thread(
+        self: Pin<&Self>,
+        current_thread: Pin<&'static RawThread>,
+    ) {
+        PreemptLock::with(|pkey| {
+            // Validate ownership before proceeding
+            let current_thread_ptr = current_thread.get_ref() as *const _ as *mut ();
+            let owner = self.owner.load(Ordering::Relaxed);
+
+            // If lock has not been acquired by any thread. Most likely
+            // an attempt to release a lock twice. For example, guard is
+            // used to unlock the lock, and then the guard is dropped.
+            if owner.is_null() {
+                return;
+            }
+
+            // Update internal state (remove from lock list, calculate new priority)
+            // This must happen before clearing ownership to maintain consistency
+            unsafe {
+                current_thread.ceiling_lock_released(pkey, self);
+            }
+
+            // Atomically clear ownership to signal lock is available.
+            // This should always succeed since we validated ownership above.
+            self.owner
+                .compare_exchange(
+                    current_thread_ptr,
+                    core::ptr::null_mut(),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .unwrap_or_else(|_| runtime_error!(RuntimeError::LockOwnerViolation));
+
+            // Set final ceiling threshold based on thread's new effective priority
+            let new_priority = current_thread.priority(pkey);
+            let new_ceiling_priority_status = PriorityStatus::from(new_priority);
+            crate::kernel::interrupt::set_ceiling_threshold(new_ceiling_priority_status);
+
+            // Trigger rescheduling if needed
+            Scheduler::cond_reschedule(pkey);
         });
     }
 
@@ -160,14 +259,44 @@ impl RawCeilingLock {
     pub(crate) unsafe fn acquire_nesting_lock(ceiling: Priority) -> CeilingLockRestoreState {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
+                // Ceiling check: If locking interrupt has priority higher than the
+                // ceiling, then it violates the priority ceiling protocol.
+                if current_interrupt.priority() > ceiling {
+                    runtime_error!(RuntimeError::CeilingPriorityViolation);
+                }
+
+                // Set ceiling threshold BEFORE updating priority to prevent race conditions
+                // This prevents higher priority interrupts from acquiring locks before
+                // the nesting lock is properly established.
+                let ceiling_priority_status = PriorityStatus::from(ceiling);
+                crate::kernel::interrupt::set_ceiling_threshold(ceiling_priority_status);
+
                 let saved_priority = current_interrupt.raise_nesting_lock_priority(ceiling);
 
                 CeilingLockRestoreState { saved_priority }
             }
             ExecutionContext::Thread(current_thread) => {
-                let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
+                PreemptLock::with(|pkey| {
+                    if current_thread.thread_id == IDLE_THREAD_ID {
+                        runtime_error!(RuntimeError::IdleThreadCeilingLock);
+                    }
 
-                CeilingLockRestoreState { saved_priority }
+                    // Ceiling check: If locking thread has priority higher than the
+                    // ceiling, then it violates the priority ceiling protocol.
+                    if current_thread.priority(pkey) > ceiling {
+                        runtime_error!(RuntimeError::CeilingPriorityViolation);
+                    }
+
+                    // Set ceiling threshold BEFORE updating priority to prevent race conditions
+                    // This prevents lower or equal priority interrupts and threads from acquiring
+                    // locks before the nesting lock is properly established.
+                    let ceiling_priority_status = PriorityStatus::from(ceiling);
+                    crate::kernel::interrupt::set_ceiling_threshold(ceiling_priority_status);
+
+                    let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
+
+                    CeilingLockRestoreState { saved_priority }
+                })
             }
         }
     }
@@ -176,10 +305,21 @@ impl RawCeilingLock {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
                 current_interrupt.set_nesting_lock_priority(restore_state.saved_priority);
+
+                // Set ceiling threshold based on the restored interrupt priority
+                let new_priority = current_interrupt.priority();
+                let new_ceiling_priority_status = PriorityStatus::from(new_priority);
+                crate::kernel::interrupt::set_ceiling_threshold(new_ceiling_priority_status);
             }
             ExecutionContext::Thread(current_thread) => {
                 current_thread.set_nesting_lock_priority(restore_state.saved_priority);
+
                 PreemptLock::with(|pkey| {
+                    // Set ceiling threshold based on the restored thread priority
+                    let new_priority = current_thread.priority(pkey);
+                    let new_ceiling_priority_status = PriorityStatus::from(new_priority);
+                    crate::kernel::interrupt::set_ceiling_threshold(new_ceiling_priority_status);
+
                     Scheduler::cond_reschedule(pkey);
                 });
             }
@@ -323,6 +463,10 @@ impl<const CEILING: Priority> NestingLock for CeilingLock<CEILING> {
 
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
         unsafe { CeilingLockKey::new() }
+    }
+
+    fn required_ceiling() -> Option<i16> {
+        Some(CEILING.into_any())
     }
 }
 

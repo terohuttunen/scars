@@ -77,9 +77,6 @@ pub enum RuntimeError {
 
     /// Inheritance locks may not be acquired while holding any ceiling locks.
     InheritanceLockNotAllowed,
-
-    /// Inheritance lock priority cannot be decreased.
-    InheritanceLockPriorityDecrease,
 }
 
 pub fn handle_runtime_error(error: &dyn UnrecoverableError) -> ! {

@@ -5,7 +5,6 @@ use crate::events::WaitEventsUntilError;
 use crate::kernel::{
     Priority,
     hal::Context,
-    interrupt::set_ceiling_threshold,
     list::{LinkedList, Node, impl_linked},
     scheduler::ExecStateTag,
     scheduler::Scheduler,
@@ -21,7 +20,6 @@ use crate::time::Instant;
 use crate::tls::{LocalCell, LocalStorage};
 use core::mem::MaybeUninit;
 use core::pin::Pin;
-use core::sync::atomic::Ordering;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 #[repr(C)]
@@ -188,62 +186,30 @@ impl RawThread {
         unsafe { Pin::map_unchecked(self, |s| &s.inheritance_locks) }
     }
 
-    pub(crate) unsafe fn scoped_lock_acquired<'key>(
+    pub(crate) unsafe fn ceiling_lock_acquired<'key>(
         self: Pin<&'static Self>,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
-        match self.state.get(pkey) {
-            ThreadExecutionState::Running => {
-                lock.owner
-                    .compare_exchange(
-                        core::ptr::null_mut(),
-                        self.get_ref() as *const _ as *mut (),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .unwrap_or_else(|_| {
-                        panic!("Lock already owned. The scheduler should have prevented this.")
-                    });
-                let ceiling_priority = lock.ceiling_priority;
-                self.ceiling_locks()
-                    .borrow_mut(pkey)
-                    .as_mut()
-                    .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
+        // Add lock to thread's owned ceiling locks list (ordered by priority)
+        let ceiling_priority = lock.ceiling_priority;
+        self.ceiling_locks()
+            .borrow_mut(pkey)
+            .as_mut()
+            .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
 
-                self.update_priority(pkey);
-            }
-            state => panic!(
-                "Thread {} cannot acquire ceiling lock in {:?} state",
-                self.name, state
-            ),
-        }
+        self.update_priority(pkey);
     }
 
-    pub(crate) unsafe fn scoped_lock_released<'key>(
+    pub(crate) unsafe fn ceiling_lock_released<'key>(
         self: Pin<&'static Self>,
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
-        let owner = lock.owner.load(Ordering::Relaxed);
-        if !owner.is_null() {
-            if owner == self.get_ref() as *const _ as *mut () {
-                self.ceiling_locks().borrow_mut(pkey).as_mut().remove(lock);
-                lock.owner.store(core::ptr::null_mut(), Ordering::Release);
+        // Remove lock from thread's owned ceiling locks list
+        self.ceiling_locks().borrow_mut(pkey).as_mut().remove(lock);
 
-                self.update_priority(pkey);
-
-                // A thread is releasing a lock, therefore it must be running, and
-                // have the highest priority at that time. If priority drops
-                // below the priority of another ready thread, rescheduling must
-                // be executed.
-                Scheduler::cond_reschedule(pkey);
-            } else {
-                // The `thread` is not the owner of the lock. A lock can be released only
-                // by the owner.
-                crate::runtime_error!(RuntimeError::LockOwnerViolation);
-            }
-        }
+        self.update_priority(pkey);
     }
 
     pub(crate) unsafe fn inheritance_lock_acquired<'key>(
@@ -351,9 +317,7 @@ impl RawThread {
             let raised_priority = PriorityStatus::from(new_priority).max(old_priority);
             self.nesting_lock_priority.set(pkey, raised_priority);
 
-            if self.update_priority(pkey) {
-                set_ceiling_threshold(self.priority(pkey).into());
-            }
+            self.update_priority(pkey);
             old_priority
         })
     }
@@ -361,11 +325,7 @@ impl RawThread {
     pub(crate) fn set_nesting_lock_priority(self: Pin<&Self>, new_priority: PriorityStatus) {
         PreemptLock::with(|pkey| {
             self.nesting_lock_priority.set(pkey, new_priority);
-
-            if self.update_priority(pkey) {
-                set_ceiling_threshold(self.priority(pkey).into());
-            }
-            Scheduler::cond_reschedule(pkey);
+            self.update_priority(pkey);
         });
     }
 

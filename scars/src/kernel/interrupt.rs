@@ -6,7 +6,7 @@ use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::kernel::tracing;
 use crate::kernel::waiter::Suspendable;
 use crate::priority::{
-    AtomicPriorityPair, AtomicPriorityStatusPair, INVALID_PRIORITY, InterruptPriority, Priority,
+    AtomicPriority, AtomicPriorityStatus, INVALID_PRIORITY, InterruptPriority, Priority,
     PriorityStatus,
 };
 use crate::sync::{
@@ -106,15 +106,23 @@ pub struct RawInterruptHandler {
     intnum: InterruptNumber,
     base_priority: Priority,
 
-    closure_ptr: *const (),
+    // Nesting ceiling lock priority
+    pub(crate) nesting_lock_priority: AtomicPriorityStatus,
 
-    lock_priorities: AtomicPriorityStatusPair,
+    // Guarded ceiling Lock priority
+    pub(crate) lock_priority: AtomicPriorityStatus,
+
+    // Effective priority of the thread. This is the maximum of the base priority and the
+    // priority of any lock held by the thread.
+    pub(crate) priority: AtomicPriority,
 
     // The kernel must keep track of owned ceiling locks also in interrupt handlers,
     // because the locks might be released in any order.
     owned_locks: UnsafeCell<LinkedList<RawCeilingLock, LockListTag>>,
 
     pending_interrupt_executor_poll_link: AtomicNode<RawInterruptHandler, PendingNotifyTag>,
+
+    closure_ptr: *const (),
 
     pub(crate) local_storage: OnceLock<LocalStorage>,
 
@@ -135,10 +143,9 @@ impl RawInterruptHandler {
             intnum,
             base_priority: prio,
             closure_ptr: core::ptr::null(),
-            lock_priorities: AtomicPriorityStatusPair::new((
-                PriorityStatus::valid(prio),
-                PriorityStatus::invalid(),
-            )),
+            nesting_lock_priority: AtomicPriorityStatus::new(PriorityStatus::invalid()),
+            lock_priority: AtomicPriorityStatus::new(PriorityStatus::invalid()),
+            priority: AtomicPriority::new(prio),
             owned_locks: UnsafeCell::new(LinkedList::new()),
             pending_interrupt_executor_poll_link: AtomicNode::new(),
             local_storage: OnceLock::new(),
@@ -154,21 +161,39 @@ impl RawInterruptHandler {
     }
 
     /// SAFETY: Caller must guarantee that the lock is free, and that it will be released.
-    pub(crate) unsafe fn acquire_lock(self: Pin<&Self>, lock: Pin<&RawCeilingLock>) {
-        let locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
-        locks.insert_after(lock, |list_lock| {
+    pub(crate) unsafe fn ceiling_lock_acquired(self: Pin<&Self>, lock: Pin<&RawCeilingLock>) {
+        let mut locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
+        locks.as_mut().insert_after(lock, |list_lock| {
             list_lock.ceiling_priority > lock.ceiling_priority
         });
 
-        self.update_owned_lock_priority();
+        let lock_priority = locks
+            .as_ref()
+            .head()
+            .map_or_else(PriorityStatus::invalid, |head| {
+                PriorityStatus::from(head.ceiling_priority)
+            });
+
+        self.lock_priority.store(lock_priority, Ordering::SeqCst);
+
+        self.update_priority();
     }
 
     /// SAFETY: Caller must guarantee that lock has been acquired by the interrupt handler
-    pub(crate) unsafe fn release_lock(&self, lock: Pin<&RawCeilingLock>) {
-        let locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
-        locks.remove(lock);
+    pub(crate) unsafe fn ceiling_lock_released(&self, lock: Pin<&RawCeilingLock>) {
+        let mut locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
+        locks.as_mut().remove(lock);
 
-        self.update_owned_lock_priority();
+        let lock_priority = locks
+            .as_ref()
+            .head()
+            .map_or_else(PriorityStatus::invalid, |head| {
+                PriorityStatus::from(head.ceiling_priority)
+            });
+
+        self.lock_priority.store(lock_priority, Ordering::SeqCst);
+
+        self.update_priority();
     }
 
     // SAFETY: Caller must guarantee that handler_ptr points to valid function f(arg)
@@ -206,66 +231,36 @@ impl RawInterruptHandler {
         enable_interrupt(self.intnum);
     }
 
+    fn update_priority(&self) {
+        let lock_priority = self.lock_priority.load(Ordering::SeqCst);
+        let nesting_lock_priority = self.nesting_lock_priority.load(Ordering::SeqCst);
+
+        let new_priority = self
+            .base_priority
+            .max_valid(lock_priority)
+            .max_valid(nesting_lock_priority);
+
+        self.priority.store(new_priority, Ordering::SeqCst);
+    }
+
     // Returns previous priority
     pub(crate) fn raise_nesting_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
-        let new_priority = new_priority.max(self.base_priority).into();
-        loop {
-            let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
-            let new_priorities = (current_priorities.0.max(new_priority), current_priorities.1);
+        let old_priority = self
+            .nesting_lock_priority
+            .swap(new_priority.into(), Ordering::SeqCst);
 
-            if let Ok(_) = self.lock_priorities.compare_exchange(
-                current_priorities,
-                new_priorities,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                let ceiling = new_priorities.0.max(new_priorities.1);
-                set_ceiling_threshold(ceiling);
-                return current_priorities.0;
-            }
+        if old_priority > new_priority.into() {
+            crate::runtime_error!(RuntimeError::CeilingPriorityViolation);
         }
+
+        self.update_priority();
+        old_priority
     }
 
     pub(crate) fn set_nesting_lock_priority(&self, new_priority: PriorityStatus) {
-        let new_priority = new_priority.into();
-        loop {
-            let current_priorities = self.lock_priorities.load(Ordering::SeqCst);
-            let new_priorities = (new_priority, current_priorities.1);
-
-            if let Ok(_) = self.lock_priorities.compare_exchange(
-                current_priorities,
-                new_priorities,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                let ceiling = new_priorities.0.max(new_priorities.1);
-                set_ceiling_threshold(ceiling);
-                break;
-            }
-        }
-    }
-
-    fn update_owned_lock_priority(&self) {
-        let locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
-        let lock_priority = if let Some(head) = locks.as_ref().head() {
-            PriorityStatus::from(head.ceiling_priority)
-        } else {
-            PriorityStatus::invalid()
-        };
-
-        if let Ok((raised_priority, _)) = self.lock_priorities.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |(raised_priority, _)| Some((raised_priority, lock_priority)),
-        ) {
-            let ceiling_priority = if lock_priority.is_valid() {
-                PriorityStatus::max(raised_priority, lock_priority)
-            } else {
-                raised_priority
-            };
-
-            set_ceiling_threshold(ceiling_priority);
-        }
+        self.nesting_lock_priority
+            .store(new_priority, Ordering::SeqCst);
+        self.update_priority();
     }
 
     pub fn base_priority(&self) -> Priority {
@@ -275,14 +270,12 @@ impl RawInterruptHandler {
     /// Highest lock priority. Returns Invalid priority if no locks owned by the interrupt.
     #[allow(dead_code)]
     pub(crate) fn lock_priority<'key>(&self) -> PriorityStatus {
-        let priorities = self.lock_priorities.load(Ordering::SeqCst);
-        priorities.0.max(priorities.1)
+        self.lock_priority.load(Ordering::SeqCst)
     }
 
     #[allow(dead_code)]
     pub(crate) fn priority(&self) -> Priority {
-        let lock_priority = self.lock_priority();
-        self.base_priority.max_valid(lock_priority)
+        self.priority.load(Ordering::SeqCst)
     }
 
     pub(crate) fn set_pending_executor_poll(&self) {

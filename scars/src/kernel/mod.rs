@@ -5,6 +5,7 @@ pub(crate) mod idle;
 pub mod interrupt;
 pub(crate) mod scheduler;
 pub(crate) mod stack;
+
 use crate::cell::LockedCell;
 use crate::printkln;
 pub(crate) use crate::priority::{
