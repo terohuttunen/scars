@@ -13,6 +13,7 @@ description = "RTOS for hard real-time applications"
 
 [dependencies]
 bit_field = "0.10.2"
+bitflags = { version = "2.4", default-features = false }
 const_env = "0.1.2"
 critical-section = { version = "1.1.1" }
 static_cell = "2.1.0"
