@@ -13,6 +13,6 @@ test = false
 
 [dependencies]
 bit_field = "0.10.2"
-libc = { version = "1.0.0-alpha.1", path = "../../../libc" }
+libc = "0.2.175"
 scars-khal = { version = "0.1.0", path = "../../scars-khal" }
 unrecoverable-error = { path = "../../unrecoverable-error" }
