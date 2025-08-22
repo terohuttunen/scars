@@ -79,5 +79,5 @@ fn idle() -> ! {
 #[thread(priority = TEST_THREAD_PRIO, stack_size = IDLE_THREAD_STACK_SIZE)]
 fn test() -> ! {
     crate::test_main();
-    crate::scars_test::test_succeed();
+    scars_test::test_succeed();
 }

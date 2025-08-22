@@ -1,6 +1,5 @@
 use crate::cell::LockedCell;
-use crate::events::EXECUTOR_WAKEUP_EVENT;
-pub use crate::events::{REQUIRE_ALL_EVENTS, TryWaitEventsError};
+use crate::events::{AtomicEvents, Events, EXECUTOR_WAKEUP_EVENT};
 use crate::kernel::list::{LinkedList, LinkedListTag};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::kernel::tracing;
@@ -127,6 +126,9 @@ pub struct RawInterruptHandler {
     pub(crate) local_storage: OnceLock<LocalStorage>,
 
     pub(crate) suspendable: Suspendable,
+
+    // Event system fields
+    pub(crate) pending_events: AtomicEvents,
 }
 
 impl_atomic_linked!(
@@ -150,6 +152,7 @@ impl RawInterruptHandler {
             pending_interrupt_executor_poll_link: AtomicNode::new(),
             local_storage: OnceLock::new(),
             suspendable: Suspendable::new(),
+            pending_events: AtomicEvents::new(0),
         }
     }
 
@@ -206,10 +209,14 @@ impl RawInterruptHandler {
     ) {
         self.closure_ptr = closure_ptr;
         set_interrupt_priority(self.intnum, self.base_priority.get_value());
-        set_interrupt_vector(self.intnum, key, InterruptVector {
-            handler_ptr,
-            icb_ptr: self as *const _,
-        });
+        set_interrupt_vector(
+            self.intnum,
+            key,
+            InterruptVector {
+                handler_ptr,
+                icb_ptr: self as *const _,
+            },
+        );
 
         // TODO: this should use some shared code
         let old_priority = self.raise_nesting_lock_priority(self.base_priority);
@@ -285,6 +292,10 @@ impl RawInterruptHandler {
         }
 
         PENDING_INTERRUPT_EXECUTOR_POLLS.push_back(unsafe { Pin::new_unchecked(self) });
+    }
+
+    pub fn peek_pending_events(&self) -> Events {
+        self.pending_events.load(Ordering::SeqCst)
     }
 
     pub(crate) fn poll_executor(&self) {
@@ -538,6 +549,12 @@ impl InterruptRef {
 
     pub fn set_pending_executor_poll(&self) {
         unsafe { self.as_ref() }.set_pending_executor_poll();
+    }
+
+    pub fn send_events(&self, events: Events) {
+        let handler = unsafe { self.as_ref() };
+        // Update pending events mask  
+        handler.pending_events.fetch_or(events, Ordering::SeqCst);
     }
 
     /// It is not in general safe to cast a pointer into a reference, and then

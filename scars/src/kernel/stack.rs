@@ -33,8 +33,15 @@ impl<const SIZE: usize> Stack<SIZE> {
         let (canary_slice, stack_slice) = stack_array.split_at_mut(CANARY_SIZE);
 
         // Initialize stack memory
-        let canary = MaybeUninit::fill(canary_slice, CANARY_BYTE);
-        let initialized_stack = MaybeUninit::fill(stack_slice, 0);
+        for byte in canary_slice.iter_mut() {
+            byte.write(CANARY_BYTE);
+        }
+        let canary = unsafe { &mut *(canary_slice as *mut [MaybeUninit<u8>] as *mut [u8]) };
+        
+        for byte in stack_slice.iter_mut() {
+            byte.write(0);
+        }
+        let initialized_stack = unsafe { &mut *(stack_slice as *mut [MaybeUninit<u8>] as *mut [u8]) };
 
         // Make sure that the stack top and bottom are properly aligned
         let (_prefix, stack, _suffix) = unsafe { initialized_stack.align_to_mut::<StackElement>() };

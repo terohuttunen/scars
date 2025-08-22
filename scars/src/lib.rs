@@ -7,14 +7,13 @@
 #![feature(impl_trait_in_assoc_type)]
 #![cfg_attr(test, no_main)]
 #![feature(custom_test_frameworks)]
-#![test_runner(crate::scars_test::test_runner)]
+#![test_runner(scars_test::test_runner)]
 #![feature(sync_unsafe_cell)]
 #![reexport_test_harness_main = "test_main"]
 #[macro_use]
 pub mod kernel;
 pub mod api;
 pub mod cell;
-pub mod event_set;
 pub mod events;
 pub mod priority;
 pub mod sync;
@@ -27,6 +26,10 @@ extern crate self as scars;
 
 pub use scars_macros::*;
 
+pub use events::{
+    AtomicEvents, EXECUTOR_WAKEUP_EVENT, EventOptions, Events,
+    TryWaitError, WaitEvents, WaitTimeoutError,
+};
 pub use kernel::abort::abort;
 pub use kernel::hal::clock_ticks;
 pub use kernel::hal::kernel_hal as khal;
@@ -41,8 +44,6 @@ pub use thread::{Thread, ThreadRef};
 #[cfg(feature = "semihosting")]
 #[macro_use]
 pub use semihosting;
-
-use scars_test;
 
 pub use api::*;
 

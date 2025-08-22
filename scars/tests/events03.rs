@@ -5,7 +5,7 @@
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![feature(impl_trait_in_assoc_type)]
-use scars::events::wait_events_until;
+use scars::{WaitEvents, Events, EventOptions};
 use scars::prelude::*;
 use scars::sync::channel::CeilingSender;
 use scars::thread_suspend;
@@ -25,12 +25,13 @@ const THREAD0_PRIORITY: Priority = Priority::thread(3);
 const CAPACITY: usize = 14;
 const CEILING: Priority = THREAD0_PRIORITY;
 
-const UNBLOCK_EVENT: u32 = 1u32;
+const UNBLOCK_EVENT: Events = 1u32;
 
 #[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
 fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let deadline = scars::time::Instant::now() + Duration::from_millis(10);
-    let wait_result = wait_events_until(UNBLOCK_EVENT, Some(deadline));
+    let mut context = WaitEvents::with_options(UNBLOCK_EVENT, EventOptions::wait_any());
+    let wait_result = context.wait_until(deadline);
     assert!(wait_result.is_err());
     sender.send(0);
     thread_suspend(None);

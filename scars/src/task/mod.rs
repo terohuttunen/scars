@@ -1,8 +1,8 @@
 pub mod task;
 pub mod task_pool;
 use crate::Priority;
-use crate::cell::{PinRefCell, RefCell};
-use crate::events::{EXECUTOR_WAKEUP_EVENT, wait_events_until};
+use crate::cell::PinRefCell;
+use crate::events::{EXECUTOR_WAKEUP_EVENT, EventOptions, WaitEvents};
 use crate::kernel::interrupt::InterruptRef;
 use crate::kernel::list::LinkedList;
 use crate::kernel::waiter::WaitQueueTag;
@@ -380,7 +380,13 @@ impl RawThreadExecutor {
                 .as_ref()
                 .head()
                 .map(|task| task.wakeup_time);
-            let _ = wait_events_until(EXECUTOR_WAKEUP_EVENT, deadline_opt);
+            let mut context =
+                WaitEvents::with_options(EXECUTOR_WAKEUP_EVENT, EventOptions::wait_any());
+            if let Some(deadline) = deadline_opt {
+                let _ = context.wait_until(deadline);
+            } else {
+                let _ = context.wait();
+            }
         }
     }
 

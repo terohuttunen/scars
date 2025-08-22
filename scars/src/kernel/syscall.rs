@@ -45,26 +45,26 @@ pub(crate) fn thread_wait<'a, L: NestingLock>(wait_queue: &WaitQueue<L>) {
     let _ = syscall(SYSCALL_ID_WAIT, queue as usize, vtable as usize, 0);
 }
 
-pub(crate) fn thread_wait_event(events: u32) -> u32 {
+pub(crate) fn thread_wait_event(wait_events: *mut crate::WaitEvents) {
     if in_interrupt() {
         // Error: cannot wait in an interrupt handler
         crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
     }
 
-    syscall(SYSCALL_ID_WAIT_EVENT as usize, events as usize, 0, 0) as u32
+    syscall(SYSCALL_ID_WAIT_EVENT as usize, wait_events as usize, 0, 0);
 }
 
-pub(crate) fn thread_wait_event_until(events: u32, deadline: Instant) -> u32 {
+pub(crate) fn thread_wait_event_until(wait_events: *mut crate::WaitEvents, deadline: Instant) {
     if in_interrupt() {
         // Error: cannot wait in an interrupt handler
         crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
     }
     syscall(
         SYSCALL_ID_WAIT_EVENT_UNTIL,
-        events as usize,
+        wait_events as usize,
         (deadline.tick >> 32) as usize,
         deadline.tick as u32 as usize,
-    ) as u32
+    );
 }
 
 #[cfg(any(feature = "relative-delay", test))]
@@ -124,7 +124,7 @@ unsafe fn _private_kernel_syscall_handler(
     static SYSCALL_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
         SyncUnsafeCell::new(RawInterruptHandler::new(0, Priority::interrupt(0)));
 
-    let mut rval = 0;
+    let rval = 0;
     unsafe {
         interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || match id {
             SYSCALL_ID_YIELD => {
@@ -135,11 +135,13 @@ unsafe fn _private_kernel_syscall_handler(
                 Scheduler::wait_current_thread_isr(wait_queue);
             }
             SYSCALL_ID_WAIT_EVENT => {
-                rval = Scheduler::wait_current_thread_event_isr(arg0 as u32, None) as usize;
+                let wait_events = arg0 as *mut crate::WaitEvents;
+                Scheduler::wait_current_thread_event_isr(wait_events, None);
             }
             SYSCALL_ID_WAIT_EVENT_UNTIL => {
+                let wait_events = arg0 as *mut crate::WaitEvents;
                 let time = (u64::from(arg1 as u32) << 32) + u64::from(arg2 as u32);
-                rval = Scheduler::wait_current_thread_event_isr(arg0 as u32, Some(time)) as usize;
+                Scheduler::wait_current_thread_event_isr(wait_events, Some(time));
             }
             SYSCALL_ID_DELAY_UNTIL => {
                 let time = (u64::from(arg0 as u32) << 32) + u64::from(arg1 as u32);

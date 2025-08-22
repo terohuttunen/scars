@@ -1,7 +1,6 @@
 mod work_queue;
 use crate::Instant;
 use crate::cell::{LockedCell, LockedPinRefCell, LockedRefCell, PinRefMut, RefMut};
-use crate::events::REQUIRE_ALL_EVENTS;
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, impl_linked};
 use crate::kernel::tracing;
 use crate::kernel::{
@@ -31,7 +30,8 @@ use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
 use scars_khal::{ContextInfo, FlowController};
 use work_queue::WorkQueue;
 pub use work_queue::WorkQueueNode;
@@ -312,10 +312,15 @@ impl RawScheduler {
             thread.set_wait_queue(None, pkey);
         }
 
+        // Set timeout flag if thread has current wait events (indicating it timed out)
+        let wait_events_ptr = thread.current_wait_events.load(core::sync::atomic::Ordering::SeqCst);
+        if !wait_events_ptr.is_null() {
+            let wait_events = unsafe { &*wait_events_ptr };
+            wait_events.set_timed_out();
+        }
+
         match thread.state.get(pkey) {
             ThreadExecutionState::Blocked => {
-                thread.set_wakeup_event();
-
                 self.as_mut().blocked_list_mut().remove(thread);
                 self.insert_to_ready_queue(pkey, thread);
             }
@@ -483,7 +488,6 @@ impl RawScheduler {
                 // Thread is already in ready queue or running
             }
             ThreadExecutionState::Blocked => {
-                thread.set_resume_event();
                 // Remove from sleep queue if blocking operation has deadline
                 let suspendable = thread.suspendable_ref();
                 if suspendable.in_sleep_queue() {
@@ -493,7 +497,6 @@ impl RawScheduler {
                 self.as_mut().insert_to_ready_queue(pkey, thread);
             }
             ThreadExecutionState::Suspended => {
-                thread.set_resume_event();
                 self.as_mut().suspended_list_mut().remove(thread);
                 self.as_mut().insert_to_ready_queue(pkey, thread);
             }
@@ -722,7 +725,7 @@ impl RawScheduler {
     pub(crate) fn wait_current_thread(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
-        wait_queue: WaitQueueHandle,
+        _wait_queue: WaitQueueHandle,
     ) {
         if self.current_thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread cannot block");
@@ -754,33 +757,41 @@ impl RawScheduler {
     pub(crate) fn wait_current_thread_event(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
-        mut events: u32,
+        wait_events: *mut crate::WaitEvents,
         deadline: Option<u64>,
-    ) -> u32 {
+    ) {
         if self.current_thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread cannot block");
         }
 
-        // Set waited events mask. If any events are sent to the thread, it will
-        // be notified if the required events are received.
-        self.current_thread.events.set_waited_events(events);
+        let wait_events = unsafe { &*wait_events };
+        let waiting_thread = self.current_thread;
 
-        // Extract require_all flag from the events mask.
-        let require_all = events & REQUIRE_ALL_EVENTS != 0;
-        events &= !REQUIRE_ALL_EVENTS;
+        // Set thread's current WaitEvents
+        waiting_thread
+            .current_wait_events
+            .store(wait_events as *const _ as *mut _, Ordering::SeqCst);
 
-        // Read and clear matching events from sent events mask.
-        let received_events = self
-            .current_thread
-            .events
-            .read_and_clear_matching_sent_events(events);
+        // Step 1: Read all currently pending events
+        let all_pending = waiting_thread.pending_events.load(Ordering::SeqCst);
 
-        // Note: If there is a send_events call from ISR between the above read and clear,
+        // Step 2: Let WaitEvents process and store events atomically
+        let (received_events, events_to_clear) =
+            wait_events.process_and_store_pending_events(all_pending);
+
+        // Step 3: Atomically clear the determined events
+        waiting_thread
+            .pending_events
+            .fetch_and(!events_to_clear, Ordering::SeqCst);
+
+        // Note: If there is a send_events call from ISR between the above operations
         // and blocking of the thread, then the ISR will put the thread into pending resume
         // queue, and the thread will be unblocked when the preemption lock is released.
 
-        // Block thread if required events are not received
-        if (!require_all && received_events == 0) || (received_events & events) != events {
+        // Determine if thread should block based on WaitEvents configuration
+        let should_block = wait_events.should_block(received_events);
+
+        if should_block {
             // Highest priority of any locks held by the current or blocked threads.
             let locks_ceiling = self
                 .as_ref()
@@ -796,8 +807,6 @@ impl RawScheduler {
             let blocked_thread = self.as_mut().switch_thread(pkey, next);
             self.as_mut().block_thread(pkey, blocked_thread, deadline);
         }
-
-        received_events
     }
 
     pub(crate) fn threads(self: Pin<&Self>) -> impl Iterator<Item = Pin<&RawThread>> {
@@ -1146,14 +1155,17 @@ impl Scheduler {
         }
     }
 
-    pub(crate) fn wait_current_thread_event_isr(events: u32, deadline: Option<u64>) -> u32 {
+    pub(crate) fn wait_current_thread_event_isr(
+        wait_events: *mut crate::WaitEvents,
+        deadline: Option<u64>,
+    ) {
         match PreemptLock::try_with(|pkey| {
             Scheduler::pin_instance()
                 .borrow_mut(pkey)
                 .as_mut()
-                .wait_current_thread_event(pkey, events, deadline)
+                .wait_current_thread_event(pkey, wait_events, deadline)
         }) {
-            Ok(received_events) => received_events,
+            Ok(()) => (),
             Err(_) => {
                 // Error: Thread is blocking to wait for events while it holds the preempt lock.
                 unimplemented!()

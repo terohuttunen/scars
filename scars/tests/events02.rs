@@ -5,7 +5,7 @@
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![feature(impl_trait_in_assoc_type)]
-use scars::events::{REQUIRE_ALL_EVENTS, wait_events};
+use scars::{WaitEvents, Events, EventOptions};
 use scars::prelude::*;
 use scars::sync::channel::CeilingSender;
 use scars::thread::ThreadRef;
@@ -31,14 +31,14 @@ const THREAD2_PRIORITY: Priority = Priority::thread(4);
 const CAPACITY: usize = 14;
 const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRIORITY);
 
-const UNBLOCK_EVENT1: u32 = 1u32;
-const UNBLOCK_EVENT2: u32 = 2u32;
+const UNBLOCK_EVENT1: Events = 1u32;
+const UNBLOCK_EVENT2: Events = 2u32;
 
 #[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
 fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
     let thread0_ref = unsafe { ThreadRef::current() };
     thread1(sender.clone(), thread0_ref).start();
-    wait_events(UNBLOCK_EVENT1 | UNBLOCK_EVENT2 | REQUIRE_ALL_EVENTS);
+    WaitEvents::with_options(UNBLOCK_EVENT1 | UNBLOCK_EVENT2, EventOptions::wait_all()).wait();  // Wait for all events
     sender.send(0);
     scars::delay(Duration::from_millis(1000));
     scars_test::test_fail()
@@ -48,7 +48,7 @@ fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
 fn thread1(sender: CeilingSender<u32, CAPACITY, CEILING>, thread0_ref: ThreadRef) -> ! {
     let thread1_ref = unsafe { ThreadRef::current() };
     thread2(sender.clone(), thread0_ref, thread1_ref).start();
-    wait_events(UNBLOCK_EVENT1 | UNBLOCK_EVENT2 | REQUIRE_ALL_EVENTS);
+    WaitEvents::with_options(UNBLOCK_EVENT1 | UNBLOCK_EVENT2, EventOptions::wait_all()).wait();  // Wait for all events
     sender.send(1);
     scars::delay(Duration::from_millis(1000));
     scars_test::test_fail()

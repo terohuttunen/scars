@@ -1,7 +1,6 @@
 use super::{INVALID_THREAD_ID, InheritanceLockListTag, LockListTag, ThreadInfo, ThreadRef};
 use crate::cell::{LockedCell, LockedPinRefCell};
-use crate::event_set::{EventSet, TryWaitEventsError};
-use crate::events::WaitEventsUntilError;
+use crate::events::{AtomicEvents, Events, WaitEvents};
 use crate::kernel::{
     Priority,
     hal::Context,
@@ -16,10 +15,11 @@ use crate::sync::{
     InheritanceLock, OnceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey,
 };
 use crate::task::ThreadExecutor;
-use crate::time::Instant;
 use crate::tls::{LocalCell, LocalStorage};
 use core::mem::MaybeUninit;
 use core::pin::Pin;
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 #[repr(C)]
@@ -95,7 +95,9 @@ pub struct RawThread {
     // Holds reference to the wait queue that the thread is waiting on, if any.
     pub(crate) wait_queue: LockedCell<Option<WaitQueueHandle>, PreemptLock>,
 
-    pub(crate) events: EventSet,
+    // Event system fields
+    pub(crate) pending_events: AtomicEvents,
+    pub(crate) current_wait_events: AtomicPtr<WaitEvents>,
 
     pub(crate) local_storage: OnceLock<LocalStorage>,
 
@@ -126,7 +128,8 @@ impl RawThread {
             exec_queue_link: Node::new(),
             suspendable: Suspendable::new(),
             wait_queue: LockedCell::new(None),
-            events: EventSet::new(),
+            pending_events: AtomicEvents::new(0),
+            current_wait_events: AtomicPtr::new(ptr::null_mut()),
             local_storage: OnceLock::new(),
             context: MaybeUninit::uninit(),
         }
@@ -341,34 +344,23 @@ impl RawThread {
         self.wait_queue.set(pkey, wait_queue);
     }
 
-    pub(crate) fn set_wakeup_event(&self) {
-        self.events.set_wakeup_event();
-    }
+    pub fn send_events(&'static self, events: Events) {
+        // Update pending events mask
+        let all_pending = self.pending_events.fetch_or(events, Ordering::SeqCst) | events;
 
-    pub(crate) fn set_resume_event(&self) {
-        self.events.set_resume_event();
-    }
+        // Check if thread is waiting and should be woken
+        let wait_events_ptr = self.current_wait_events.load(Ordering::SeqCst);
+        if !wait_events_ptr.is_null() {
+            let wait_events = unsafe { &*wait_events_ptr };
 
-    pub fn send_events(&'static self, events: u32) {
-        if self.events.send_events(events) {
-            self.resume();
+            if wait_events.should_resume(all_pending) {
+                self.resume();
+            }
         }
     }
 
-    pub fn wait_events(&self, events: u32) -> u32 {
-        self.events.wait_events(events)
-    }
-
-    pub fn wait_events_until(
-        &self,
-        events: u32,
-        deadline: Instant,
-    ) -> Result<u32, WaitEventsUntilError> {
-        self.events.wait_events_until(events, deadline)
-    }
-
-    pub fn try_wait_events(&self, events: u32) -> Result<u32, TryWaitEventsError> {
-        self.events.try_wait_events(events)
+    pub fn peek_pending_events(&self) -> Events {
+        self.pending_events.load(Ordering::SeqCst)
     }
 
     pub fn local_storage(&self) -> Option<&LocalStorage> {
