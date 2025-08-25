@@ -839,6 +839,9 @@ pub struct Scheduler {
     // or when the preemption lock is released.
     pending_reschedule_kind: AtomicUsize,
 
+    // Current ceiling priority from all held ceiling locks
+    current_ceiling_priority: AtomicPriorityStatus,
+
     raw: LockedPinRefCell<RawScheduler, PreemptLock>,
 }
 
@@ -847,6 +850,7 @@ impl Scheduler {
         Scheduler {
             deferred_work_queue: WorkQueue::new(),
             pending_reschedule_kind: AtomicUsize::new(RESCHEDULE_KIND_NONE),
+            current_ceiling_priority: AtomicPriorityStatus::new(PriorityStatus::invalid()),
             raw: LockedPinRefCell::new(RawScheduler::new(idle_thread)),
         }
     }
@@ -895,6 +899,25 @@ impl Scheduler {
             ExecutionContext::Thread(thread) => thread.priority(pkey),
             ExecutionContext::Interrupt(interrupt) => interrupt.priority(),
         }
+    }
+
+    /// Get current ceiling priority from all held ceiling locks
+    pub(crate) fn current_ceiling_priority() -> PriorityStatus {
+        Scheduler::instance().current_ceiling_priority.load(Ordering::Acquire)
+    }
+
+    /// Update the current ceiling priority atomically
+    pub(crate) fn update_ceiling_priority(new_ceiling: PriorityStatus) {
+        Scheduler::instance().current_ceiling_priority.store(new_ceiling, Ordering::Release);
+    }
+
+    /// Set ceiling priority, updating both global tracking and hardware threshold
+    pub(crate) fn set_ceiling(ceiling: PriorityStatus) {
+        // Update global ceiling priority tracking
+        Self::update_ceiling_priority(ceiling);
+        
+        // Update hardware interrupt threshold
+        crate::interrupt::set_ceiling_threshold(ceiling);
     }
 
     /// Puts the interrupt handler into scheduler sleep queue to be polled later at given time.
