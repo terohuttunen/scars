@@ -140,6 +140,21 @@ impl LocalStorage {
         self
     }
 
+    /// Initialize and store a value, returning a mutable reference
+    /// 
+    /// This method enables safe self-referential initialization by providing
+    /// exclusive access to the newly initialized value.
+    pub fn raw_put_init_with_mut<T: 'static>(
+        &mut self,
+        local_data: &'static LocalCell<T>,
+        init: impl FnOnce() -> T,
+    ) -> &'static mut T {
+        let key = TypeId::of::<T>();
+        let data_ref = local_data.init_with(init);
+        self.put_by_type_id(key, data_ref as *mut _ as *mut ());
+        data_ref  // Return the mutable reference
+    }
+
     pub fn remove<T: 'static>() {
         let key = TypeId::of::<T>();
         match Scheduler::current_execution_context() {
