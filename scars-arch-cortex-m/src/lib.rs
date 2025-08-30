@@ -3,11 +3,11 @@ use core::arch::{asm, global_asm};
 use core::sync::atomic::AtomicPtr;
 use cortex_m::register::basepri;
 use cortex_m_rt::exception;
-use scars_khal::*;
-use unrecoverable_error::*;
 pub use rtt_target::rprint as print;
 pub use rtt_target::rprintln as println;
 use rtt_target::rtt_init_print;
+use scars_khal::*;
+use unrecoverable_error::*;
 
 #[unsafe(no_mangle)]
 pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
@@ -224,6 +224,24 @@ pub fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
     rval
 }
 
+pub fn pend_service_call() {
+    // Set PendSV pending bit in SCB->ICSR (bit 28)
+    const SCB_ICSR_PENDSVSET: u32 = 1 << 28;
+    unsafe {
+        let scb = &*cortex_m::peripheral::SCB::PTR;
+        scb.icsr.modify(|r| r | SCB_ICSR_PENDSVSET);
+    }
+}
+
+pub fn clear_service_call() {
+    // Clear PendSV pending bit in SCB->ICSR (bit 27)
+    const SCB_ICSR_PENDSVCLR: u32 = 1 << 27;
+    unsafe {
+        let scb = &*cortex_m::peripheral::SCB::PTR;
+        scb.icsr.modify(|r| r | SCB_ICSR_PENDSVCLR);
+    }
+}
+
 #[macro_export]
 macro_rules! impl_flow_controller {
     ($struct_name:ident) => {
@@ -273,10 +291,19 @@ macro_rules! impl_flow_controller {
             }
 
             #[inline(always)]
-
             fn set_current_thread_context(context: *const Self::Context) {
                 CURRENT_THREAD_CONTEXT
                     .store(context as *mut _, core::sync::atomic::Ordering::Relaxed);
+            }
+
+            #[inline(always)]
+            fn pend_service_call() {
+                $crate::pend_service_call()
+            }
+
+            #[inline(always)]
+            fn clear_service_call() {
+                $crate::clear_service_call()
             }
         }
     };
@@ -366,9 +393,7 @@ global_asm!(
     "push   {{r0, lr}}",
     "bl     _private_kernel_interrupt_handler",
     "pop    {{r0, lr}}",
-    "ldr    r1,=CURRENT_THREAD_CONTEXT",
-    "ldr    r1, [r1]",
-    "b      _switch_context",
+    "bx      lr",
     ".cfi_endproc
      .size DefaultHandler, . - DefaultHandler",
 );
@@ -408,7 +433,22 @@ unsafe fn DebugMonitor() -> ! {
     loop {}
 }
 
-#[exception]
-unsafe fn PendSV() {
-    loop {}
-}
+global_asm!(
+    ".cfi_sections .debug_frame
+     .section .PendSV.user, \"ax\"
+     .global PendSV
+     .type PendSV,%function
+     .thumb_func",
+    ".cfi_startproc
+    PendSV:",
+    "ldr    r0,=CURRENT_THREAD_CONTEXT",
+    "ldr    r0, [r0]",
+    "push   {{r0, lr}}",
+    "bl     _private_kernel_service_call_handler",
+    "pop    {{r0, lr}}",
+    "ldr    r1,=CURRENT_THREAD_CONTEXT",
+    "ldr    r1, [r1]",
+    "b      _switch_context",
+    ".cfi_endproc
+     .size PendSV, . - PendSV",
+);

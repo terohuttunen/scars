@@ -199,6 +199,7 @@ pub enum VirtualTrap {
         rval: usize,
     },
     Alarm,
+    ServiceCall,
     // Interrupt {}
 }
 
@@ -303,6 +304,31 @@ impl FlowController for Simulator {
 
     fn set_current_thread_context(context: *const VirtualContext) {
         CURRENT_THREAD_CONTEXT.store(context as *mut _, Ordering::SeqCst);
+    }
+
+    fn pend_service_call() {
+        // Mark service call as pending using compare_exchange to avoid duplicate signals
+        if Self::instance().service_call_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok() 
+        {
+            // Only send signal if not already pending
+            let mut trap = VirtualTrap::ServiceCall;
+            unsafe {
+                let context = current_thread_context();
+                libc::pthread_sigqueue(
+                    context.thread_id, 
+                    SYSCALL_SIGNAL, 
+                    libc::sigval {
+                        sival_ptr: &mut trap as *mut VirtualTrap as *mut std::ffi::c_void,
+                    }
+                );
+            }
+        }
+    }
+    
+    fn clear_service_call() {
+        Self::instance().service_call_pending.store(false, Ordering::Release);
     }
 }
 
@@ -441,6 +467,11 @@ impl VirtualInterruptController {
             } => {
                 *rval =
                     unsafe { Simulator::kernel_syscall_handler(*id, args[0], args[1], args[2]) };
+            }
+            VirtualTrap::ServiceCall => {
+                // Clear the pending flag and call the kernel service call handler
+                Simulator::clear_service_call();
+                unsafe { Simulator::kernel_service_call_handler(); }
             }
             _ => panic!("Unhandled exception"),
         }
@@ -686,6 +717,7 @@ fn _scars_idle_thread_hook() {
 pub struct Simulator {
     timer: VirtualTimer,
     interrupt_controller: VirtualInterruptController,
+    service_call_pending: AtomicBool,
 }
 
 unsafe impl Sync for Simulator {}
@@ -701,6 +733,7 @@ impl HardwareAbstractionLayer for Simulator {
         unsafe {
             VirtualTimer::init(&raw mut (*hal).timer);
             (*hal).interrupt_controller = VirtualInterruptController::new();
+            (*hal).service_call_pending = AtomicBool::new(false);
         }
     }
 }

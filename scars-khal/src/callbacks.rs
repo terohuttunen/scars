@@ -18,6 +18,8 @@ mod private {
         pub unsafe fn _private_hardware_exception_handler(error: &dyn UnrecoverableError) -> !;
 
         pub unsafe fn _private_current_thread_context() -> *const ();
+
+        pub unsafe fn _private_kernel_service_call_handler();
     }
 }
 
@@ -43,6 +45,13 @@ pub trait KernelCallbacks<Context, Exception> {
     #[inline(always)]
     fn kernel_exception_handler(error: &dyn UnrecoverableError) -> ! {
         unsafe { private::_private_hardware_exception_handler(error) }
+    }
+
+    /// Called by the HAL when the service call executes at lowest interrupt priority.
+    /// Used for deferred kernel operations like event processing and context switching.
+    #[inline(always)]
+    unsafe fn kernel_service_call_handler() {
+        unsafe { private::_private_kernel_service_call_handler() }
     }
 }
 

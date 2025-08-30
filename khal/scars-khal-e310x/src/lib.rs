@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(sync_unsafe_cell)]
 use const_env::from_env;
 use core::arch::global_asm;
 use core::cell::SyncUnsafeCell;
@@ -65,14 +66,19 @@ impl InterruptController for E310x {
 
     #[inline(always)]
     fn get_interrupt_priority(interrupt_number: u16) -> u8 {
-        Self::instance().plic.priority[interrupt_number as usize].read().bits() as u8
+        Self::instance().plic.priority[interrupt_number as usize]
+            .read()
+            .bits() as u8
     }
 
     #[inline(always)]
     fn set_interrupt_priority(interrupt_number: u16, prio: u8) -> u8 {
         let restore_state = Self::acquire();
-        let previous_priority = Self::instance().plic.priority[interrupt_number as usize].read().bits() as u8;
-        Self::instance().plic.priority[interrupt_number as usize].write(|w| unsafe { w.bits(prio as u32) });
+        let previous_priority = Self::instance().plic.priority[interrupt_number as usize]
+            .read()
+            .bits() as u8;
+        Self::instance().plic.priority[interrupt_number as usize]
+            .write(|w| unsafe { w.bits(prio as u32) });
         Self::restore(restore_state);
         previous_priority
     }
@@ -84,7 +90,8 @@ impl InterruptController for E310x {
 
     #[inline(always)]
     fn set_interrupt_threshold(threshold: u8) {
-        Self::instance().plic
+        Self::instance()
+            .plic
             .threshold
             .write(|w| unsafe { w.bits(threshold as u32) });
     }
@@ -104,7 +111,8 @@ impl InterruptController for E310x {
     fn complete_interrupt(claim: Self::InterruptClaim) {
         Self::restore(false);
         Self::set_interrupt_threshold(claim.restore_threshold);
-        Self::instance().plic
+        Self::instance()
+            .plic
             .claim
             .write(|w| unsafe { w.bits(claim.interrupt_number as u32) })
     }
@@ -195,11 +203,18 @@ impl AlarmClockController for E310x {
         let restore_state = Self::acquire();
         // First set high-word to maximum value to prevent triggering the timer
         // with old high-word and new low-word.
-        Self::instance().clint.mtimecmph.write(|w| unsafe { w.bits(u32::MAX) });
+        Self::instance()
+            .clint
+            .mtimecmph
+            .write(|w| unsafe { w.bits(u32::MAX) });
         // Set new low-word
-        Self::instance().clint.mtimecmp.write(|w| unsafe { w.bits(at as u32) });
+        Self::instance()
+            .clint
+            .mtimecmp
+            .write(|w| unsafe { w.bits(at as u32) });
         // Set new high-word
-        Self::instance().clint
+        Self::instance()
+            .clint
             .mtimecmph
             .write(|w| unsafe { w.bits((at >> 32) as u32) });
         Self::restore(restore_state);
@@ -246,6 +261,20 @@ impl FlowController for E310x {
     fn set_current_thread_context(context: *const Self::Context) {
         RISCV32::set_current_thread_context(context)
     }
+
+    fn pend_service_call() {
+        // Use E310x CLINT for machine software interrupt
+        unsafe {
+            Self::instance().clint.msip.write(|w| w.bits(1));
+        }
+    }
+
+    fn clear_service_call() {
+        // Clear E310x CLINT machine software interrupt
+        unsafe {
+            Self::instance().clint.msip.write(|w| w.bits(0));
+        }
+    }
 }
 
 unsafe impl Sync for E310x {}
@@ -253,6 +282,7 @@ unsafe impl Sync for E310x {}
 #[unsafe(no_mangle)]
 pub fn init() {
     unsafe {
+        riscv::register::mie::set_msoft();
         start_kernel();
     }
 }

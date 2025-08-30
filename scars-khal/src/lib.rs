@@ -26,6 +26,7 @@
 //!   - Thread context management
 //!   - System call handling
 //!   - Error and exception handling
+//!   - Service call mechanism for deferred kernel operations
 //! 
 //! - [`HardwareAbstractionLayer`]: Combines all controllers into a single interface
 //! 
@@ -52,6 +53,11 @@
 //!   - Implemented by the kernel to handle unrecoverable errors
 //!   - Called from exception context
 //!   - Handles platform-independent error processing
+//! 
+//! - [`kernel_service_call_handler`]: Called by the HAL when a service call executes
+//!   - Implemented by the kernel to handle deferred operations  
+//!   - Called when execution flow allows (typically at lowest interrupt priority)
+//!   - Used for event processing and context switching
 //! 
 //! # System Startup
 //! 
@@ -583,6 +589,21 @@ pub trait FlowController: Sync {
     /// 
     /// * `context` - The context of the current thread.
     fn set_current_thread_context(context: *const Self::Context);
+
+    /// Pend a service call for deferred kernel operations.
+    /// 
+    /// This is an asynchronous mechanism for the kernel to defer operations
+    /// like event processing and context switching. The service call will
+    /// execute when the execution flow allows it (typically when interrupt
+    /// processing completes and execution returns to the lowest priority level).
+    fn pend_service_call();
+
+    /// Clear the pending service call.
+    /// 
+    /// Called by the kernel service call handler after processing is complete.
+    /// This may be called automatically by hardware or manually by software
+    /// depending on the platform implementation.
+    fn clear_service_call();
 }
 
 pub trait HardwareAbstractionLayer:

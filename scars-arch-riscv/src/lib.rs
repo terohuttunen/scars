@@ -77,6 +77,16 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
     if is_async {
         // Interrupt
         match exception_code {
+            // Machine software interrupt - used for service calls
+            3 => {
+                // Clear the software interrupt first
+                RISCV32::clear_service_call();
+                // SAFETY: Called from interrupt handler with interrupts disabled
+                unsafe {
+                    use scars_khal::callbacks::KernelCallbacks;
+                    RISCV32::kernel_service_call_handler();
+                }
+            }
             // Machine timer interrupt
             // SAFETY: Called from interrupt handler with interrupts disabled
             7 => unsafe { RISCV32::kernel_wakeup_handler() },
@@ -169,8 +179,6 @@ impl RISCFault {
     }
 }
 
-
-
 unsafe extern "C" {
     unsafe fn _start_first_thread(idle_context: *mut ()) -> !;
 }
@@ -252,5 +260,29 @@ impl FlowController for RISCV32 {
 
     fn set_current_thread_context(context: *const Self::Context) {
         CURRENT_THREAD_CONTEXT.store(context as *mut _, Ordering::SeqCst);
+    }
+
+    fn pend_service_call() {
+        // Use CLINT machine software interrupt for service calls
+        // MSIP register address is at CLINT base
+        const CLINT_BASE: usize = 0x0200_0000;
+        const MSIP_OFFSET: usize = 0x0000;
+        let msip_addr = (CLINT_BASE + MSIP_OFFSET) as *mut u32;
+        unsafe {
+            // Enable machine software interrupt if not already enabled
+            riscv::register::mie::set_msoft();
+            // Trigger the software interrupt
+            msip_addr.write_volatile(1);
+        }
+    }
+
+    fn clear_service_call() {
+        // Clear CLINT machine software interrupt
+        const CLINT_BASE: usize = 0x0200_0000;
+        const MSIP_OFFSET: usize = 0x0000;
+        let msip_addr = (CLINT_BASE + MSIP_OFFSET) as *mut u32;
+        unsafe {
+            msip_addr.write_volatile(0);
+        }
     }
 }
