@@ -158,3 +158,15 @@ pub(crate) fn current_thread_context() -> *const Context {
 pub(crate) fn set_current_thread_context(context: *const Context) {
     <kernel_hal::HAL as FlowController>::set_current_thread_context(context)
 }
+
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) fn pend_service_call() {
+    <kernel_hal::HAL as FlowController>::pend_service_call()
+}
+
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) fn clear_service_call() {
+    <kernel_hal::HAL as FlowController>::clear_service_call()
+}
