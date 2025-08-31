@@ -121,9 +121,6 @@ unsafe fn _private_kernel_syscall_handler(
     arg1: usize,
     arg2: usize,
 ) -> usize {
-    static SYSCALL_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
-        SyncUnsafeCell::new(RawInterruptHandler::new(0, Priority::interrupt(0)));
-
     let rval = 0;
     unsafe {
         interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || match id {
@@ -168,4 +165,17 @@ unsafe fn _private_kernel_syscall_handler(
         });
     }
     rval
+}
+
+#[unsafe(no_mangle)]
+pub(crate) unsafe fn _private_kernel_service_call_handler() {
+    unsafe {
+        // Anything that needs to be done within some context, i.e. anything that calls
+        // context-aware functions, must be done within an interrupt context. Service call
+        // is like an asynchronous syscall without any parameters or a return value. It
+        // shares the same interrupt handler as normal synchronous syscall. Service calls
+        // and synchronous syscalls are executed at same priority level, so they can not
+        // be nested, and access to interrupt context is unique.
+        interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {});
+    }
 }
