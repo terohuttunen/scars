@@ -1,15 +1,15 @@
 #![no_std]
 #![no_main]
-#![feature(sync_unsafe_cell)]
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(impl_trait_in_assoc_type)]
-use scars::{WaitEvents, Events, EventOptions};
+#![feature(type_alias_impl_trait)]
+
+use scars::Stack;
 use scars::prelude::*;
-use scars::sync::channel::CeilingSender;
-use scars::thread::ThreadRef;
+use scars::thread::{Thread, ThreadFn, ThreadRef};
 use scars::time::Duration;
+use scars::{EventOptions, Events, WaitEvents};
 use scars_test;
 
 scars_test::integration_test!();
@@ -34,49 +34,70 @@ const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRI
 const UNBLOCK_EVENT1: Events = 1u32;
 const UNBLOCK_EVENT2: Events = 2u32;
 
-#[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
-fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
-    let thread0_ref = unsafe { ThreadRef::current() };
-    thread1(sender.clone(), thread0_ref).start();
-    WaitEvents::with_options(UNBLOCK_EVENT1 | UNBLOCK_EVENT2, EventOptions::wait_all()).wait();  // Wait for all events
-    sender.send(0);
-    scars::delay(Duration::from_millis(1000));
-    scars_test::test_fail()
-}
+type Thread0F = impl ThreadFn;
+type Thread1F = impl ThreadFn;
+type Thread2F = impl ThreadFn;
 
-#[scars::thread(name = "thread1", priority = THREAD1_PRIORITY, stack_size = STACK_SIZE)]
-fn thread1(sender: CeilingSender<u32, CAPACITY, CEILING>, thread0_ref: ThreadRef) -> ! {
-    let thread1_ref = unsafe { ThreadRef::current() };
-    thread2(sender.clone(), thread0_ref, thread1_ref).start();
-    WaitEvents::with_options(UNBLOCK_EVENT1 | UNBLOCK_EVENT2, EventOptions::wait_all()).wait();  // Wait for all events
-    sender.send(1);
-    scars::delay(Duration::from_millis(1000));
-    scars_test::test_fail()
-}
+static THREAD0_STACK: Stack<STACK_SIZE> = Stack::new();
+static THREAD0: Thread<THREAD0_PRIORITY, Thread0F> = Thread::new("thread0");
 
-#[scars::thread(name = "thread2", priority = THREAD2_PRIORITY, stack_size = STACK_SIZE)]
-fn thread2(
-    sender: CeilingSender<u32, CAPACITY, CEILING>,
-    thread0_ref: ThreadRef,
-    thread1_ref: ThreadRef,
-) -> ! {
-    thread0_ref.send_events(UNBLOCK_EVENT1);
-    thread1_ref.send_events(UNBLOCK_EVENT1);
-    sender.send(2);
-    thread0_ref.send_events(UNBLOCK_EVENT2);
-    thread1_ref.send_events(UNBLOCK_EVENT2);
-    sender.send(3);
-    scars::delay(Duration::from_millis(1000));
-    scars_test::test_fail()
-}
+static THREAD1_STACK: Stack<STACK_SIZE> = Stack::new();
+static THREAD1: Thread<THREAD1_PRIORITY, Thread1F> = Thread::new("thread1");
+
+static THREAD2_STACK: Stack<STACK_SIZE> = Stack::new();
+static THREAD2: Thread<THREAD2_PRIORITY, Thread2F> = Thread::new("thread2");
 
 /// Block a thread waiting for event and release it with an event.
 /// Highest priority thread ready to run will be woken up first.
 #[test_case]
+#[define_opaque(Thread0F, Thread1F, Thread2F)]
 pub fn block_waiting_event() {
     let (sender, receiver) = make_channel!(u32, CAPACITY, CEILING);
 
-    thread0(sender).start();
+    THREAD0
+        .init(THREAD0_STACK.init())
+        .attach(move || {
+            let thread0_ref = unsafe { ThreadRef::current() };
+
+            let sender1 = sender.clone();
+            THREAD1
+                .init(THREAD1_STACK.init())
+                .attach(move || {
+                    let thread1_ref = unsafe { ThreadRef::current() };
+
+                    let sender2 = sender1.clone();
+                    THREAD2
+                        .init(THREAD2_STACK.init())
+                        .attach(move || {
+                            thread0_ref.send_events(UNBLOCK_EVENT1);
+                            thread1_ref.send_events(UNBLOCK_EVENT1);
+                            sender2.send(2);
+                            thread0_ref.send_events(UNBLOCK_EVENT2);
+                            thread1_ref.send_events(UNBLOCK_EVENT2);
+                            sender2.send(3);
+                            scars::delay(Duration::from_millis(1000));
+                            scars_test::test_fail()
+                        })
+                        .start();
+
+                    WaitEvents::with_options(
+                        UNBLOCK_EVENT1 | UNBLOCK_EVENT2,
+                        EventOptions::wait_all(),
+                    )
+                    .wait();
+                    sender1.send(1);
+                    scars::delay(Duration::from_millis(1000));
+                    scars_test::test_fail()
+                })
+                .start();
+
+            WaitEvents::with_options(UNBLOCK_EVENT1 | UNBLOCK_EVENT2, EventOptions::wait_all())
+                .wait();
+            sender.send(0);
+            scars::delay(Duration::from_millis(1000));
+            scars_test::test_fail()
+        })
+        .start();
 
     assert_eq!(receiver.recv(), 2);
     assert_eq!(receiver.recv(), 1);

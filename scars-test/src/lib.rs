@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#[allow(unused_imports)]
 use core::panic::PanicInfo;
 
 #[cfg(feature = "semihosting")]
@@ -8,7 +9,7 @@ use semihosting::{print, println};
 use rtt_target::{rprint as print, rprintln as println};
 
 unsafe extern "Rust" {
-   unsafe fn exit_scars(exit_code: i32) -> !;
+    unsafe fn exit_scars(exit_code: i32) -> !;
 }
 
 pub trait ScarsTest {
@@ -62,7 +63,7 @@ macro_rules! integration_test {
             feature = "khal-sim",
             ::scars::entry(name = "main", priority = 1, stack_size = 16384)
         )]
-        pub fn main() {
+        pub fn main() -> ! {
             test_main();
             scars_test::test_succeed();
         }

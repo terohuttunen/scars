@@ -153,12 +153,9 @@ unsafe impl Sync for PreemptLock {}
 static PREEMPT_LOCK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 mod sealed {
-    use crate::kernel::interrupt::RawInterruptHandler;
-    use crate::thread::RawThread;
-
     pub enum PreemptLockRestoreState {
-        Interrupt(*const RawInterruptHandler),
-        Thread(*const RawThread),
+        Interrupt(*const ()),
+        Thread(*const ()),
     }
 
     impl PreemptLockRestoreState {

@@ -44,7 +44,7 @@
 
 extern crate proc_macro;
 use proc_macro::TokenStream;
-use quote::{ToTokens, quote};
+use quote::quote;
 use syn::parse_macro_input;
 
 /// Derives the `UnrecoverableError` trait for a type with custom formatting.
@@ -180,10 +180,12 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
                     let field_names: Vec<_> = variant
                         .fields
                         .iter()
-                        .map(|field| field.ident.as_ref().map_or_else(
-                            || quote! {},
-                            |ident| quote! { #ident },
-                        ))
+                        .map(|field| {
+                            field
+                                .ident
+                                .as_ref()
+                                .map_or_else(|| quote! {}, |ident| quote! { #ident })
+                        })
                         .collect();
                     quote! { { #(#field_names),* } }
                 } else {
@@ -207,7 +209,8 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
                             if let Ok(index) = usize::from_str_radix(field_name, 10) {
                                 field_patterns[index].clone()
                             } else {
-                                let ident = syn::Ident::new(field_name, proc_macro2::Span::call_site());
+                                let ident =
+                                    syn::Ident::new(field_name, proc_macro2::Span::call_site());
                                 quote! { #ident }
                             }
                         })
@@ -259,7 +262,7 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
                 }
             }
         }
-        syn::Data::Struct(data) => {
+        syn::Data::Struct(_data) => {
             let mut custom_format = None;
 
             for attr in &input.attrs {

@@ -1,23 +1,28 @@
+pub mod event_queue;
+pub mod timers;
 mod work_queue;
 use crate::Instant;
 use crate::cell::{LockedCell, LockedPinRefCell, LockedRefCell, PinRefMut, RefMut};
+use crate::events::raw::RawEventHandler;
+use crate::interrupt::{
+    RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold,
+};
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, impl_linked};
 use crate::kernel::tracing;
 use crate::kernel::{
     RuntimeError, Stack, ThreadPriority,
     atomic_queue::{AtomicNode, AtomicQueue},
     exception::{KernelError, handle_kernel_error},
-    hal::{Context, set_alarm, set_current_thread_context, start_first_thread},
-    handle_runtime_error,
-    interrupt::{RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold},
-    syscall,
+    hal::{self, Context, set_alarm, set_current_thread_context, start_first_thread},
+    handle_runtime_error, syscall,
     waiter::{
-        SUSPENDABLE_PENDING_RESUME, SUSPENDABLE_PENDING_SUSPEND, SUSPENDABLE_PENDING_WAKEUP,
-        SleepQueueTag, Suspendable, SuspendableKind, WaitQueueHandle, WaitQueueTag,
+        SUSPENDABLE_PENDING_RECONFIGURE, SUSPENDABLE_PENDING_RESUME, SUSPENDABLE_PENDING_SUSPEND,
+        SUSPENDABLE_PENDING_WAKEUP, WaitQueueEntry, WaitQueueHandle, WaitQueueTag,
     },
 };
 use crate::printkln;
-use crate::priority::{AnyPriority, Priority, PriorityStatus};
+use crate::priority::{AnyPriority, AtomicPriorityStatus, Priority, PriorityStatus};
+use crate::sync::preempt_lock::is_preempt_allowed;
 use crate::sync::{
     InterruptLock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
     preempt_lock::PreemptLockKey,
@@ -32,9 +37,13 @@ use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
+use event_queue::PendingEventsQueue;
 use scars_khal::{ContextInfo, FlowController};
+pub(crate) use timers::RawTimer;
+pub use timers::{EventTimer, Timer, TimerHandler};
+use timers::{TimerQueue, TimerQueueTag};
 use work_queue::WorkQueue;
-pub use work_queue::WorkQueueNode;
+pub use work_queue::{PendingWorkEntry, PendingWorkHandler, RawPendingWorkEntry};
 
 use super::hal::current_thread_context;
 
@@ -46,7 +55,7 @@ unsafe extern "C" {
     static _isr_stack_end: u8;
 }
 
-pub enum ExecutionContext {
+pub(crate) enum ExecutionContext {
     Interrupt(Pin<&'static RawInterruptHandler>),
     Thread(Pin<&'static RawThread>),
 }
@@ -71,8 +80,8 @@ pub struct RawScheduler {
     // Threads that are suspended do not participate in thread scheduling.
     suspended_list: LinkedList<RawThread, ExecStateTag>,
 
-    // A wakeup-time sorted queue of suspendables that are waiting to be woken up at a specific time.
-    sleep_queue: LinkedList<Suspendable, SleepQueueTag>,
+    // A wakeup-time sorted queue of timers that are waiting to be woken up at a specific time.
+    timer_queue: TimerQueue,
 
     idle_thread: Pin<&'static RawThread>,
 
@@ -84,7 +93,7 @@ impl RawScheduler {
     pub(crate) fn new(idle_thread: &'static RawThread) -> RawScheduler {
         RawScheduler {
             ready_queue: LinkedList::new(),
-            sleep_queue: LinkedList::new(),
+            timer_queue: LinkedList::new(),
             suspended_list: LinkedList::new(),
             blocked_list: LinkedList::new(),
             idle_thread: Pin::static_ref(idle_thread),
@@ -119,12 +128,14 @@ impl RawScheduler {
         unsafe { self.map_unchecked_mut(|s| &mut s.suspended_list) }
     }
 
-    fn sleep_queue(self: Pin<&Self>) -> Pin<&LinkedList<Suspendable, SleepQueueTag>> {
-        unsafe { self.map_unchecked(|s| &s.sleep_queue) }
+    fn timer_queue(self: Pin<&Self>) -> Pin<&LinkedList<RawTimer, TimerQueueTag>> {
+        unsafe { self.map_unchecked(|s| &s.timer_queue) }
     }
 
-    fn sleep_queue_mut(self: Pin<&mut Self>) -> Pin<&mut LinkedList<Suspendable, SleepQueueTag>> {
-        unsafe { self.map_unchecked_mut(|s| &mut s.sleep_queue) }
+    pub(crate) fn timer_queue_mut(
+        self: Pin<&mut Self>,
+    ) -> Pin<&mut LinkedList<RawTimer, TimerQueueTag>> {
+        unsafe { self.map_unchecked_mut(|s| &mut s.timer_queue) }
     }
 
     fn current_thread_mut(self: Pin<&mut Self>) -> &mut Pin<&'static RawThread> {
@@ -234,7 +245,7 @@ impl RawScheduler {
         // If thread is waiting in a queue, reinsert to the wait queue
         match thread.wait_queue.get(pkey) {
             Some(wait_queue_handle) => unsafe {
-                wait_queue_handle.reinsert(pkey, thread.suspendable_ref());
+                wait_queue_handle.reinsert(pkey, thread.get_wait_entry());
             },
             None => (),
         }
@@ -253,31 +264,12 @@ impl RawScheduler {
         tracing::thread_ready_end(thread.as_thread_ref());
         self.suspended_list_mut().push_back(thread);
     }
-
-    fn insert_to_wakeup_queue(
-        self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        thread: Pin<&'static RawThread>,
-    ) {
-        thread.state.set(pkey, ThreadExecutionState::Blocked);
-        if thread.thread_id == self.idle_thread.thread_id {
-            panic!("Idle thread may not block");
-        }
-
-        tracing::thread_ready_end(thread.as_thread_ref());
-        let deadline = thread.suspendable.deadline();
-        self.sleep_queue_mut()
-            .insert_after(thread.suspendable_ref(), |queue_thread| {
-                queue_thread.deadline() <= deadline
-            });
-    }
 }
 
-// Suspendable operations. Suspendable is an abstraction for operations that can be suspended
-// with optional deadline, and resumed later.
+// Thread scheduling
 impl RawScheduler {
     // Resume thread due to wakeup while rescheduling
-    fn wakeup_thread(
+    pub(crate) fn wakeup_thread(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
         thread: Pin<&'static RawThread>,
@@ -289,7 +281,7 @@ impl RawScheduler {
         // Remove thread from a wait queue if it is waiting in one, or postpone the operation,
         // if removal is not safe to do from the current context.
         if let Some(wait_queue) = thread.wait_queue.get(pkey) {
-            let suspendable = thread.suspendable_ref();
+            let wait_entry = thread.get_wait_entry();
 
             // If the wait queue lock is a ceiling lock, and it is not safe to acquire
             // the lock from the current context, then the resuming operation is postponed
@@ -297,7 +289,7 @@ impl RawScheduler {
             if let Some(required_ceiling) = wait_queue.required_ceiling() {
                 if Scheduler::current_priority(pkey) > required_ceiling {
                     Scheduler::schedule_deferred_operation(
-                        suspendable.as_ref(),
+                        thread.get_pending_work(),
                         SUSPENDABLE_PENDING_WAKEUP,
                         Some(required_ceiling),
                     );
@@ -307,13 +299,15 @@ impl RawScheduler {
 
             unsafe {
                 // `remove` will use the queue lock
-                wait_queue.remove(pkey, suspendable);
+                wait_queue.remove(pkey, wait_entry);
             }
             thread.set_wait_queue(None, pkey);
         }
 
         // Set timeout flag if thread has current wait events (indicating it timed out)
-        let wait_events_ptr = thread.current_wait_events.load(core::sync::atomic::Ordering::SeqCst);
+        let wait_events_ptr = thread
+            .current_wait_events
+            .load(core::sync::atomic::Ordering::SeqCst);
         if !wait_events_ptr.is_null() {
             let wait_events = unsafe { &*wait_events_ptr };
             wait_events.set_timed_out();
@@ -330,126 +324,6 @@ impl RawScheduler {
         // Note: does not check for need to reschedule, as this is called from reschedule.
     }
 
-    fn wakeup_interrupt(
-        self: Pin<&mut Self>,
-        _pkey: PreemptLockKey<'_>,
-        interrupt: &'static RawInterruptHandler,
-    ) {
-        // Interrupts cannot go to sleep, so they cannot be woken up.
-        // Asynchronous tasks associated with the interrupt can go to sleep, and be woken up.
-        // Do not poll executor here, as we are holding the preemption lock.
-        interrupt.set_pending_executor_poll();
-    }
-
-    fn wakeup_suspendable(
-        self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        suspendable: Pin<&Suspendable>,
-    ) {
-        match suspendable.kind {
-            SuspendableKind::Thread(thread_ptr) => {
-                let thread = unsafe { Pin::new_unchecked(&*thread_ptr) };
-                self.wakeup_thread(pkey, thread)
-            }
-            SuspendableKind::Interrupt(interrupt_ptr) => {
-                let interrupt = unsafe { &*interrupt_ptr };
-                self.wakeup_interrupt(pkey, interrupt);
-            }
-            SuspendableKind::Async(_, ref waker) => {
-                waker.wake_by_ref();
-            }
-            SuspendableKind::None => (),
-        }
-
-        // Note: does not check for need to reschedule, as this is called from reschedule.
-    }
-
-    fn resume_suspendable_now(
-        self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        suspendable: Pin<&Suspendable>,
-    ) {
-        match suspendable.kind {
-            SuspendableKind::Thread(thread_ptr) => {
-                let thread = unsafe { Pin::new_unchecked(&*thread_ptr) };
-                self.resume_thread(pkey, thread);
-            }
-            SuspendableKind::Interrupt(interrupt) => {
-                let interrupt = unsafe { &*interrupt };
-                self.resume_interrupt(pkey, interrupt);
-            }
-            SuspendableKind::Async(_, ref waker) => {
-                waker.wake_by_ref();
-            }
-            SuspendableKind::None => (),
-        }
-    }
-
-    fn suspend_suspendable_now(
-        mut self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        suspendable: Pin<&Suspendable>,
-    ) {
-        match suspendable.kind {
-            SuspendableKind::Thread(_thread_ptr) => {
-                // No threads are put to the pending sleep queue yet.
-                unimplemented!();
-            }
-            SuspendableKind::Interrupt(interrupt) => {
-                let interrupt = unsafe { &*interrupt };
-                self.as_mut().schedule_interrupt_wakeup(pkey, interrupt);
-            }
-            SuspendableKind::Async(_, _) => {
-                // Asynchronous tasks cannot be suspended yet
-                unimplemented!()
-            }
-            SuspendableKind::None => (),
-        }
-
-        self.as_ref().reprogram_alarm(pkey);
-    }
-}
-
-// Interrupt scheduling
-impl RawScheduler {
-    fn schedule_interrupt_wakeup(
-        mut self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        interrupt: &'static RawInterruptHandler,
-    ) {
-        if interrupt.suspendable.in_sleep_queue() {
-            self.as_mut()
-                .sleep_queue_mut()
-                .remove(Pin::static_ref(&interrupt.suspendable));
-        }
-        let deadline = interrupt.suspendable.deadline();
-        self.as_mut()
-            .sleep_queue_mut()
-            .insert_after(Pin::static_ref(&interrupt.suspendable), |queue_interrupt| {
-                queue_interrupt.deadline() <= deadline
-            });
-        self.as_ref().reprogram_alarm(pkey);
-    }
-
-    fn resume_interrupt(
-        self: Pin<&mut Self>,
-        _pkey: PreemptLockKey<'_>,
-        interrupt: &'static RawInterruptHandler,
-    ) {
-        // Interrupts cannot block, so the interrupt handler function cannot be resumed.
-        // Asynchronous tasks associated with the interrupt can block, and be resumed.
-
-        if interrupt.suspendable.in_sleep_queue() {
-            self.sleep_queue_mut()
-                .remove(Pin::static_ref(&interrupt.suspendable));
-        }
-
-        interrupt.set_pending_executor_poll();
-    }
-}
-
-// Thread scheduling
-impl RawScheduler {
     // Resume thread due to notification. Will set pending reschedule flag if the resumed thread has
     // higher priority than the current thread.
     fn resume_thread(
@@ -460,7 +334,7 @@ impl RawScheduler {
         // Remove thread from a wait queue if it is waiting in one, or postpone the operation,
         // if removal is not safe to do from the current context.
         if let Some(wait_queue) = thread.wait_queue.get(pkey) {
-            let suspendable = thread.suspendable_ref();
+            let wait_entry = thread.get_wait_entry();
 
             // If the wait queue lock is a ceiling lock, and it is not safe to acquire
             // the lock from the current context, then the resuming operation is postponed
@@ -468,7 +342,7 @@ impl RawScheduler {
             if let Some(required_ceiling) = wait_queue.required_ceiling() {
                 if Scheduler::current_priority(pkey) > required_ceiling {
                     Scheduler::schedule_deferred_operation(
-                        suspendable.as_ref(),
+                        thread.get_pending_work(),
                         SUSPENDABLE_PENDING_RESUME,
                         Some(required_ceiling),
                     );
@@ -478,7 +352,7 @@ impl RawScheduler {
 
             unsafe {
                 // `remove` will use the queue lock
-                wait_queue.remove(pkey, suspendable);
+                wait_queue.remove(pkey, wait_entry);
             }
             thread.set_wait_queue(None, pkey);
         }
@@ -488,11 +362,9 @@ impl RawScheduler {
                 // Thread is already in ready queue or running
             }
             ThreadExecutionState::Blocked => {
-                // Remove from sleep queue if blocking operation has deadline
-                let suspendable = thread.suspendable_ref();
-                if suspendable.in_sleep_queue() {
-                    self.as_mut().sleep_queue_mut().remove(suspendable);
-                }
+                // Clear any wakeup deadline; this also removes the timer from
+                // the timer queue and reprograms the alarm.
+                thread.set_wakeup_deadline(pkey, self.as_mut(), None);
                 self.as_mut().blocked_list_mut().remove(thread);
                 self.as_mut().insert_to_ready_queue(pkey, thread);
             }
@@ -523,18 +395,8 @@ impl RawScheduler {
         thread: Pin<&'static RawThread>,
         timeout_opt: Option<u64>,
     ) {
-        match timeout_opt {
-            Some(timeout) => {
-                thread
-                    .suspendable
-                    .set_deadline(Some(crate::Instant { tick: timeout }));
-                self.as_mut().insert_to_wakeup_queue(pkey, thread);
-                self.as_ref().reprogram_alarm(pkey);
-            }
-            None => {
-                thread.suspendable.set_deadline(None);
-            }
-        }
+        let deadline = timeout_opt.map(|tick| crate::Instant { tick });
+        thread.set_wakeup_deadline(pkey, self.as_mut(), deadline);
 
         self.insert_to_blocked_queue(pkey, thread);
     }
@@ -627,10 +489,10 @@ impl RawScheduler {
         old
     }
 
-    fn reprogram_alarm(self: Pin<&Self>, _pkey: PreemptLockKey<'_>) {
-        match self.sleep_queue().head() {
+    pub(crate) fn reprogram_alarm(self: Pin<&Self>, pkey: PreemptLockKey<'_>) {
+        match self.timer_queue().head() {
             Some(sleeping_thread) => {
-                set_alarm(sleeping_thread.deadline().map(|d| d.tick));
+                set_alarm(sleeping_thread.get_deadline(pkey).map(|d| d.tick));
             }
             None => {
                 // Disable wakeup
@@ -653,8 +515,8 @@ impl RawScheduler {
         // Wakeup sleeping threads that should have been woken up
         let now = Instant::now();
         loop {
-            if let Some(sleeping_thread) = self.as_ref().sleep_queue().head() {
-                if let Some(wakeup_time) = sleeping_thread.deadline() {
+            if let Some(sleeping_thread) = self.as_ref().timer_queue().head() {
+                if let Some(wakeup_time) = sleeping_thread.get_deadline(pkey) {
                     if wakeup_time > now {
                         // No more threads to wake up
                         set_alarm(Some(wakeup_time.tick));
@@ -667,8 +529,8 @@ impl RawScheduler {
                 break;
             }
 
-            if let Some(suspended) = self.as_mut().sleep_queue_mut().pop_front() {
-                self.as_mut().wakeup_suspendable(pkey, suspended)
+            if let Some(suspended) = self.as_mut().timer_queue_mut().pop_front() {
+                self.as_mut().wakeup_timer(pkey, suspended)
             }
         }
 
@@ -830,9 +692,12 @@ static SCHEDULER: SyncUnsafeCell<MaybeUninit<Scheduler>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub struct Scheduler {
-    /// Schedulables that could not complete an operation because of a lock.
+    /// Work that could not be completed because of a lock.
     /// The operations will be completed when the preemption lock is released.
     deferred_work_queue: WorkQueue,
+
+    /// Event handlers with pending events that need processing
+    pending_events: PendingEventsQueue,
 
     // The kind of pending reschedule. Rescheduling may be triggered by different
     // events, but they are always executed either at the end of interrupt handling,
@@ -849,6 +714,7 @@ impl Scheduler {
     fn new(idle_thread: &'static RawThread) -> Scheduler {
         Scheduler {
             deferred_work_queue: WorkQueue::new(),
+            pending_events: PendingEventsQueue::new(),
             pending_reschedule_kind: AtomicUsize::new(RESCHEDULE_KIND_NONE),
             current_ceiling_priority: AtomicPriorityStatus::new(PriorityStatus::invalid()),
             raw: LockedPinRefCell::new(RawScheduler::new(idle_thread)),
@@ -902,51 +768,27 @@ impl Scheduler {
     }
 
     /// Get current ceiling priority from all held ceiling locks
+    #[allow(dead_code)]
     pub(crate) fn current_ceiling_priority() -> PriorityStatus {
-        Scheduler::instance().current_ceiling_priority.load(Ordering::Acquire)
+        Scheduler::instance()
+            .current_ceiling_priority
+            .load(Ordering::Acquire)
     }
 
     /// Update the current ceiling priority atomically
     pub(crate) fn update_ceiling_priority(new_ceiling: PriorityStatus) {
-        Scheduler::instance().current_ceiling_priority.store(new_ceiling, Ordering::Release);
+        Scheduler::instance()
+            .current_ceiling_priority
+            .store(new_ceiling, Ordering::Release);
     }
 
     /// Set ceiling priority, updating both global tracking and hardware threshold
     pub(crate) fn set_ceiling(ceiling: PriorityStatus) {
         // Update global ceiling priority tracking
         Self::update_ceiling_priority(ceiling);
-        
+
         // Update hardware interrupt threshold
         crate::interrupt::set_ceiling_threshold(ceiling);
-    }
-
-    /// Puts the interrupt handler into scheduler sleep queue to be polled later at given time.
-    pub(crate) fn schedule_interrupt_wakeup(
-        interrupt: &'static RawInterruptHandler,
-        wakeup_time: u64,
-    ) {
-        // TODO: setting the deadline should be legal only if not already set
-        interrupt
-            .suspendable
-            .set_deadline(Some(crate::Instant { tick: wakeup_time }));
-
-        match PreemptLock::try_with(|pkey| {
-            Scheduler::pin_instance()
-                .borrow_mut(pkey)
-                .as_mut()
-                .schedule_interrupt_wakeup(pkey, interrupt);
-        }) {
-            Ok(()) => (),
-            Err(_) => {
-                // Preemption lock is held by a thread or lower priority interrupt handler.
-                // Delayed insertion to sleep queue will be executed when the lock is released.
-                Scheduler::schedule_deferred_operation(
-                    Pin::static_ref(&interrupt.suspendable),
-                    SUSPENDABLE_PENDING_WAKEUP,
-                    None,
-                );
-            }
-        };
     }
 
     pub(crate) fn thread_priority_changed<'key>(
@@ -993,6 +835,13 @@ impl Scheduler {
         scheduler
             .pending_reschedule_kind
             .fetch_or(kind, Ordering::Relaxed);
+
+        // If preemption lock is being held, context switch is not allowed until
+        // preemption lock is released. Pending reschedule will be handled at
+        // that time.
+        if is_preempt_allowed() {
+            hal::pend_service_call();
+        }
     }
 
     pub(crate) fn is_reschedule_pending() -> bool {
@@ -1000,8 +849,8 @@ impl Scheduler {
         scheduler.pending_reschedule_kind.load(Ordering::Relaxed) != RESCHEDULE_KIND_NONE
     }
 
-    fn schedule_deferred_operation(
-        suspendable: Pin<&Suspendable>,
+    pub(crate) fn schedule_deferred_operation(
+        suspendable: Pin<&RawPendingWorkEntry>,
         mask: u32,
         required_ceiling: Option<Priority>,
     ) {
@@ -1062,36 +911,12 @@ impl Scheduler {
                 // Store unblocked thread in pending ready list instead, from which it will be
                 // moved to ready list when the preempt lock is released.
                 let _ = Scheduler::schedule_deferred_operation(
-                    thread.suspendable_ref(),
+                    thread.get_pending_work(),
                     SUSPENDABLE_PENDING_RESUME,
                     None,
                 );
             }
         };
-    }
-
-    // Thread or ISR context
-    #[allow(dead_code)]
-    pub(crate) fn resume_interrupt(interrupt: &'static RawInterruptHandler) {
-        match PreemptLock::try_with(|pkey| {
-            Scheduler::pin_instance()
-                .borrow_mut(pkey)
-                .as_mut()
-                .resume_interrupt(pkey, interrupt);
-        }) {
-            Ok(()) => (),
-            Err(_) => {
-                // Could not acquire pre-emption lock in ISR, because some thread or ongoing lower
-                // priority ISR holds the lock.
-                // Store unblocked thread in pending ready list instead, from which it will be
-                // moved to ready list when the preempt lock is released.
-                Scheduler::schedule_deferred_operation(
-                    Pin::static_ref(&interrupt.suspendable),
-                    SUSPENDABLE_PENDING_RESUME,
-                    None,
-                );
-            }
-        }
     }
 
     // Delay
@@ -1123,7 +948,7 @@ impl Scheduler {
             Err(_) => match maybe_thread {
                 Some(thread) => {
                     Scheduler::schedule_deferred_operation(
-                        thread.suspendable_ref(),
+                        thread.get_pending_work(),
                         SUSPENDABLE_PENDING_SUSPEND,
                         None,
                     );
@@ -1137,8 +962,12 @@ impl Scheduler {
 
     pub(crate) fn start_thread(mut thread: Pin<&'static mut RawThread>) {
         unsafe {
-            thread.as_mut().init();
+            let ptr: *mut RawThread = thread.as_mut().get_unchecked_mut();
+            RawThread::init_at(ptr);
+            //thread.as_mut().init_at();
         }
+
+        crate::printkln!("Starting thread {}", thread.name);
 
         // Thread mutability ends
         let thread = thread.into_ref();
@@ -1197,6 +1026,7 @@ impl Scheduler {
     }
 }
 
+#[allow(dead_code)]
 pub fn print_threads() {
     printkln!("NAME       PRI  STATUS ENTRY");
     PreemptLock::with(|pkey| {

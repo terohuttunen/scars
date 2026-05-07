@@ -1,4 +1,4 @@
-use super::{LocalExecutor, Task, TaskHandle};
+use super::{Task, TaskHandle};
 
 use core::cell::UnsafeCell;
 use core::future::Future;
@@ -41,25 +41,8 @@ pub struct TaskBuilder<F: Future + 'static> {
 }
 
 impl<F: Future> TaskBuilder<F> {
-    pub fn attach<C: FnOnce() -> F>(self, future: C) -> InitializedTask<F::Output> {
+    pub fn attach<C: FnOnce() -> F>(self, future: C) -> TaskHandle<F::Output> {
         let future = future();
-        // Task is initialized without executor
-        InitializedTask {
-            task_handle: self.task.init(future, LocalExecutor::None),
-        }
-    }
-}
-
-// Task is initialized and ready to be executed. Executor has not been yet assigned.
-pub struct InitializedTask<T> {
-    task_handle: TaskHandle<T>,
-}
-
-impl<T> InitializedTask<T> {
-    pub(crate) fn with_executor(mut self, executor: LocalExecutor) -> TaskHandle<T> {
-        unsafe {
-            self.task_handle.as_mut().set_executor(executor);
-        }
-        self.task_handle
+        self.task.init(future)
     }
 }

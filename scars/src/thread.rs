@@ -2,7 +2,7 @@ mod builder;
 mod raw_thread;
 mod reference;
 
-use crate::kernel::{Priority, list::LinkedListTag, stack::StackRefMut, waiter::Suspendable};
+use crate::kernel::{Priority, list::LinkedListTag, stack::StackRefMut};
 pub use builder::*;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -13,16 +13,10 @@ use static_cell::ConstStaticCell;
 
 #[macro_export]
 macro_rules! make_thread {
-    ($name: expr, $prio : expr, $stack_size : expr, $local_storage_size : expr, executor = true) => {{
-        let mut thread = $crate::make_thread!($name, $prio, $stack_size, $local_storage_size);
+    ($name: expr, $prio : expr, $stack_size : expr, executor = true) => {{
+        let mut thread = $crate::make_thread!($name, $prio, $stack_size);
         let executor = $crate::make_thread_executor!();
         thread.start_executor(executor);
-        thread
-    }};
-    ($name: expr, $prio : expr, $stack_size : expr, $local_storage_size : expr) => {{
-        let mut thread = $crate::make_thread!($name, $prio, $stack_size);
-        let local_storage = $crate::make_local_storage!($local_storage_size);
-        thread.set_local_storage(local_storage);
         thread
     }};
     ($name: expr, $prio : expr, $stack_size: expr) => {{
@@ -53,12 +47,16 @@ pub struct ThreadInfo {
     pub entry: *const (),
 }
 
-pub struct Thread<const PRIO: Priority, F: FnMut() + Send> {
+pub trait ThreadFn: FnMut() -> ! + Send + 'static {}
+
+impl<F: FnMut() -> ! + Send + 'static> ThreadFn for F {}
+
+pub struct Thread<const PRIO: Priority, F: ThreadFn> {
     thread: ConstStaticCell<RawThread>,
     closure: UnsafeCell<MaybeUninit<F>>,
 }
 
-impl<const PRIO: Priority, F: FnMut() + Send> Thread<PRIO, F> {
+impl<const PRIO: Priority, F: ThreadFn> Thread<PRIO, F> {
     pub const fn new(name: &'static str) -> Thread<PRIO, F> {
         Thread {
             thread: ConstStaticCell::new(RawThread::new(
@@ -77,10 +75,12 @@ impl<const PRIO: Priority, F: FnMut() + Send> Thread<PRIO, F> {
 
     pub fn init(&'static self, stack: StackRefMut) -> ThreadBuilder<PRIO, F> {
         let thread = self.thread.take();
-        thread.suspendable = Suspendable::new_thread(thread);
+        unsafe {
+            RawThread::init_at(thread as *mut _);
+        }
         let closure = unsafe { &mut *self.closure.get() };
         ThreadBuilder::new(thread, closure, stack)
     }
 }
 
-unsafe impl<const PRIO: Priority, F: FnMut() + Send> Sync for Thread<PRIO, F> {}
+unsafe impl<const PRIO: Priority, F: ThreadFn> Sync for Thread<PRIO, F> {}

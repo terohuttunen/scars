@@ -1,15 +1,15 @@
 #![no_std]
 #![no_main]
-#![feature(sync_unsafe_cell)]
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(impl_trait_in_assoc_type)]
-use scars::{WaitEvents, Events, EventOptions};
+#![feature(type_alias_impl_trait)]
+
+use scars::Stack;
 use scars::prelude::*;
-use scars::sync::channel::CeilingSender;
+use scars::thread::{Thread, ThreadFn};
 use scars::thread_suspend;
-use scars::time::Duration;
+use scars::{EventOptions, Events, WaitEvents};
 use scars_test;
 
 scars_test::integration_test!();
@@ -27,22 +27,29 @@ const CEILING: Priority = THREAD0_PRIORITY;
 
 const UNBLOCK_EVENT: Events = 1u32;
 
-#[scars::thread(name = "thread0", priority = THREAD0_PRIORITY, stack_size = STACK_SIZE)]
-fn thread0(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
-    let deadline = scars::time::Instant::now() + Duration::from_millis(10);
-    let mut context = WaitEvents::with_options(UNBLOCK_EVENT, EventOptions::wait_any());
-    let wait_result = context.wait_until(deadline);
-    assert!(wait_result.is_err());
-    sender.send(0);
-    thread_suspend(None);
-}
+type Thread0F = impl ThreadFn;
+
+static THREAD0_STACK: Stack<STACK_SIZE> = Stack::new();
+static THREAD0: Thread<THREAD0_PRIORITY, Thread0F> = Thread::new("thread0");
 
 /// Block a thread waiting for event and let it timeout
 #[test_case]
+#[define_opaque(Thread0F)]
 pub fn block_waiting_event() {
     let (sender, receiver) = make_channel!(u32, CAPACITY, CEILING);
 
-    thread0(sender).start();
+    THREAD0
+        .init(THREAD0_STACK.init())
+        .attach(move || {
+            let deadline = scars::time::Instant::now() + scars::time::Duration::from_millis(10);
+            let mut context = WaitEvents::with_options(UNBLOCK_EVENT, EventOptions::wait_any());
+            let wait_result = context.wait_until(deadline);
+            assert!(wait_result.is_err());
+            sender.send(0);
+            thread_suspend();
+            loop {}
+        })
+        .start();
 
     assert_eq!(receiver.recv(), 0);
 }

@@ -1,7 +1,8 @@
 use core::ptr::NonNull;
 
 use super::RawThread;
-use crate::kernel::scheduler::Scheduler;
+use crate::events::sender::{EventReceiver, EventSender};
+use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::priority::Priority;
 use core::pin::Pin;
 
@@ -30,6 +31,11 @@ impl ThreadRef {
         unsafe { self.0.as_ref().send_events(event) }
     }
 
+    /// Get a cheap, copyable sender that delivers events to this thread.
+    pub fn sender(&self) -> EventSender {
+        unsafe { self.0.as_ref().sender() }
+    }
+
     pub fn base_priority(&self) -> Priority {
         unsafe { self.0.as_ref().base_priority }
     }
@@ -40,8 +46,8 @@ impl ThreadRef {
 
     pub unsafe fn current() -> ThreadRef {
         match Scheduler::current_execution_context() {
-            crate::ExecutionContext::Thread(ctx) => ThreadRef::new_from_pin(ctx),
-            crate::ExecutionContext::Interrupt(_) => panic!("No current thread"),
+            ExecutionContext::Thread(ctx) => ThreadRef::new_from_pin(ctx),
+            ExecutionContext::Interrupt(_) => panic!("No current thread"),
         }
     }
 }

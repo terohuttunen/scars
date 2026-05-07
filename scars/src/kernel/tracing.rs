@@ -87,6 +87,7 @@ pub(crate) fn system_idle() {
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 pub(crate) fn isr_enter() {
     #[cfg(feature = "tracing")]
     unsafe {
@@ -95,6 +96,7 @@ pub(crate) fn isr_enter() {
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 pub(crate) fn isr_exit() {
     #[cfg(feature = "tracing")]
     unsafe {
@@ -103,6 +105,7 @@ pub(crate) fn isr_exit() {
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 pub(crate) fn isr_exit_to_scheduler() {
     #[cfg(feature = "tracing")]
     unsafe {

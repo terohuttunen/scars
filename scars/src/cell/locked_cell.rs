@@ -278,6 +278,8 @@ impl<'a, T: ?Sized> Clone for Ref<'a, T> {
 
 pub struct RefMut<'a, T: ?Sized> {
     reference: &'a mut T,
+    // Never accessed, but needed here for its drop
+    #[allow(dead_code)]
     borrow_ref: BorrowRef<'a>,
 }
 

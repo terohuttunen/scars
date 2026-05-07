@@ -157,7 +157,7 @@ impl AtomicOwner {
         }
     }
 
-    pub fn take_ownership(
+    pub(crate) fn take_ownership(
         &self,
         current_thread: Pin<&'static RawThread>,
     ) -> Result<(), Pin<&'static RawThread>> {
@@ -178,7 +178,7 @@ impl AtomicOwner {
             })
     }
 
-    pub fn release_ownership(
+    pub(crate) fn release_ownership(
         &self,
         current_thread: Pin<&'static RawThread>,
     ) -> Pin<&'static RawThread> {

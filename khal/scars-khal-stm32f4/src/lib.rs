@@ -149,7 +149,8 @@ impl InterruptController for STM32F4 {
         let interrupt: pac::Interrupt = unsafe { core::mem::transmute(interrupt_number) };
         let old_prio = Self::get_interrupt_priority(interrupt_number);
         critical_section::with(|cs| unsafe {
-            Self::instance().nvic
+            Self::instance()
+                .nvic
                 .borrow(cs)
                 .borrow_mut()
                 .set_priority(interrupt, cortex_prio);

@@ -87,7 +87,9 @@
 //! - `location` (enabled by default): Enables location tracking for errors
 //!
 
-pub use unrecoverable_error_macros::{UnrecoverableError, unrecoverable_error, unrecoverable_error_handler};
+pub use unrecoverable_error_macros::{
+    UnrecoverableError, unrecoverable_error, unrecoverable_error_handler,
+};
 
 /// A trait for unrecoverable errors.
 ///
@@ -151,12 +153,12 @@ pub trait UnrecoverableError: core::fmt::Debug + core::fmt::Display {
     /// }
     ///
     /// impl UnrecoverableError for WrappedError {
-    ///     fn source(&self) -> Option<&(dyn UnrecoverableError)> {
+    ///     fn source(&self) -> Option<&dyn UnrecoverableError> {
     ///         Some(&*self.source)
     ///     }
     /// }
     /// ```
-    fn source(&self) -> Option<&(dyn UnrecoverableError)> {
+    fn source(&self) -> Option<&dyn UnrecoverableError> {
         None
     }
 }
@@ -186,7 +188,6 @@ pub struct UnrecoverableErrorInfo<'a> {
     /// Optional location where the error occurred
     pub location: Option<&'a core::panic::Location<'a>>,
 }
-
 
 /// The default error handler that panics.
 #[linkage = "weak"]
@@ -240,8 +241,5 @@ pub fn handle_unrecoverable_error(error: &dyn UnrecoverableError) -> ! {
         error,
         location: Some(core::panic::Location::caller()),
     };
-    unsafe {
-        _unrecoverable_error_handler(&info)
-    }
+    unsafe { _unrecoverable_error_handler(&info) }
 }
-

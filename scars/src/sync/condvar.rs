@@ -1,9 +1,9 @@
-use crate::kernel::{interrupt::in_interrupt, waiter::WaitQueue};
 use crate::priority::Priority;
 use crate::sync::{
     CeilingLock, InterruptLock, MutexGuard, NestingLock, PreemptLock, ScopedLock, Unlock,
     mutex::guard_raw,
 };
+use crate::{interrupt::in_interrupt, kernel::waiter::WaitQueue};
 
 pub type Condvar = LockedCondvar<PreemptLock>;
 pub type CeilingCondvar<const CEILING: Priority> = LockedCondvar<CeilingLock<CEILING>>;

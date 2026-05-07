@@ -1,18 +1,21 @@
-use crate::kernel::{
-    RuntimeError,
-    hal::{clock_ticks, syscall},
-    interrupt::{
-        CriticalSection, RawInterruptHandler, in_interrupt, interrupt_context,
-        restore_current_interrupt, switch_current_interrupt,
-    },
-    list::LinkedList,
-    scheduler::Scheduler,
-    waiter::{Suspendable, WaitQueue, WaitQueueHandle, WaitQueueTag},
-};
+use crate::kernel::hal;
 use crate::priority::{AnyPriority, Priority};
 use crate::sync::{InterruptLock, NestingLock, interrupt_lock::InterruptLockKey};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
+use crate::{
+    interrupt::{
+        CriticalSection, RawInterruptHandler, in_interrupt, interrupt_context,
+        restore_current_interrupt, switch_current_interrupt,
+    },
+    kernel::{
+        RuntimeError,
+        hal::{clock_ticks, syscall},
+        list::LinkedList,
+        scheduler::Scheduler,
+        waiter::{WaitQueue, WaitQueueEntry, WaitQueueHandle, WaitQueueTag},
+    },
+};
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 use core::pin::Pin;
@@ -28,7 +31,6 @@ pub const SYSCALL_ID_DELAY_UNTIL: usize = 5;
 pub const SYSCALL_ID_RUNTIME_ERROR: usize = 6;
 pub const SYSCALL_ID_START_THREAD: usize = 7;
 pub const SYSCALL_ID_SUSPEND: usize = 8;
-pub const SYSCALL_ID_POLL_INTERRUPT_EXECUTOR: usize = 9;
 
 pub fn thread_yield() {
     let _ = syscall(SYSCALL_ID_YIELD, 0, 0, 0);
@@ -81,18 +83,9 @@ pub fn delay_until(time: Instant) {
     );
 }
 
-pub fn thread_suspend(thread: Option<&RawThread>) {
+pub(crate) fn thread_suspend(thread: Option<&RawThread>) {
     let thread_ptr = thread.map(|t| t as *const _ as usize).unwrap_or(0);
     let _ = syscall(SYSCALL_ID_SUSPEND, thread_ptr, 0, 0);
-}
-
-pub fn poll_interrupt_executor(interrupt: &RawInterruptHandler) {
-    syscall(
-        SYSCALL_ID_POLL_INTERRUPT_EXECUTOR,
-        interrupt as *const _ as usize,
-        0,
-        0,
-    );
 }
 
 struct UnrecoverableErrorWrapper<'a> {
@@ -114,6 +107,9 @@ pub(crate) fn start_thread(thread: &mut RawThread) {
     let _ = syscall(SYSCALL_ID_START_THREAD, thread as *mut _ as usize, 0, 0);
 }
 
+static SYSCALL_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
+    SyncUnsafeCell::new(RawInterruptHandler::new(Priority::interrupt(0)));
+
 #[unsafe(no_mangle)]
 unsafe fn _private_kernel_syscall_handler(
     id: usize,
@@ -123,45 +119,44 @@ unsafe fn _private_kernel_syscall_handler(
 ) -> usize {
     let rval = 0;
     unsafe {
-        interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || match id {
-            SYSCALL_ID_YIELD => {
-                Scheduler::yield_current_thread_isr();
+        interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {
+            match id {
+                SYSCALL_ID_YIELD => {
+                    Scheduler::yield_current_thread_isr();
+                }
+                SYSCALL_ID_WAIT => {
+                    let wait_queue = WaitQueueHandle::from_raw(arg0 as *const (), arg1 as *const _);
+                    Scheduler::wait_current_thread_isr(wait_queue);
+                }
+                SYSCALL_ID_WAIT_EVENT => {
+                    let wait_events = arg0 as *mut crate::WaitEvents;
+                    Scheduler::wait_current_thread_event_isr(wait_events, None);
+                }
+                SYSCALL_ID_WAIT_EVENT_UNTIL => {
+                    let wait_events = arg0 as *mut crate::WaitEvents;
+                    let time = (u64::from(arg1 as u32) << 32) + u64::from(arg2 as u32);
+                    Scheduler::wait_current_thread_event_isr(wait_events, Some(time));
+                }
+                SYSCALL_ID_DELAY_UNTIL => {
+                    let time = (u64::from(arg0 as u32) << 32) + u64::from(arg1 as u32);
+                    Scheduler::delay_thread_until(time);
+                }
+                SYSCALL_ID_RUNTIME_ERROR => {
+                    let wrapper = &*(arg0 as *const UnrecoverableErrorWrapper);
+                    crate::kernel::exception::handle_runtime_error(wrapper.error);
+                }
+                SYSCALL_ID_START_THREAD => {
+                    let thread: &'static mut RawThread = &mut *(arg0 as *mut RawThread);
+                    Scheduler::start_thread(Pin::static_mut(thread));
+                }
+                SYSCALL_ID_SUSPEND => {
+                    let maybe_thread = NonNull::new(arg0 as *mut RawThread)
+                        .map(|p| Pin::new_unchecked(p.as_ref()));
+                    Scheduler::suspend_thread(maybe_thread);
+                }
+                _ => panic!("Invalid syscall {:?}", id),
             }
-            SYSCALL_ID_WAIT => {
-                let wait_queue = WaitQueueHandle::from_raw(arg0 as *const (), arg1 as *const _);
-                Scheduler::wait_current_thread_isr(wait_queue);
-            }
-            SYSCALL_ID_WAIT_EVENT => {
-                let wait_events = arg0 as *mut crate::WaitEvents;
-                Scheduler::wait_current_thread_event_isr(wait_events, None);
-            }
-            SYSCALL_ID_WAIT_EVENT_UNTIL => {
-                let wait_events = arg0 as *mut crate::WaitEvents;
-                let time = (u64::from(arg1 as u32) << 32) + u64::from(arg2 as u32);
-                Scheduler::wait_current_thread_event_isr(wait_events, Some(time));
-            }
-            SYSCALL_ID_DELAY_UNTIL => {
-                let time = (u64::from(arg0 as u32) << 32) + u64::from(arg1 as u32);
-                Scheduler::delay_thread_until(time);
-            }
-            SYSCALL_ID_RUNTIME_ERROR => {
-                let wrapper = &*(arg0 as *const UnrecoverableErrorWrapper);
-                crate::kernel::exception::handle_runtime_error(wrapper.error);
-            }
-            SYSCALL_ID_START_THREAD => {
-                let thread: &'static mut RawThread = &mut *(arg0 as *mut RawThread);
-                Scheduler::start_thread(Pin::static_mut(thread));
-            }
-            SYSCALL_ID_SUSPEND => {
-                let maybe_thread =
-                    NonNull::new(arg0 as *mut RawThread).map(|p| Pin::new_unchecked(p.as_ref()));
-                Scheduler::suspend_thread(maybe_thread);
-            }
-            SYSCALL_ID_POLL_INTERRUPT_EXECUTOR => {
-                let interrupt = &*(arg0 as *const RawInterruptHandler);
-                interrupt.poll_executor();
-            }
-            _ => panic!("Invalid syscall {:?}", id),
+            Scheduler::execute_pending_reschedule();
         });
     }
     rval
@@ -173,9 +168,10 @@ pub(crate) unsafe fn _private_kernel_service_call_handler() {
         // Anything that needs to be done within some context, i.e. anything that calls
         // context-aware functions, must be done within an interrupt context. Service call
         // is like an asynchronous syscall without any parameters or a return value. It
-        // shares the same interrupt handler as normal synchronous syscall. Service calls
-        // and synchronous syscalls are executed at same priority level, so they can not
-        // be nested, and access to interrupt context is unique.
-        interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {});
+        // shares the same interrupt handler as syscall.
+        interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {
+            Scheduler::process_all_pending_events();
+            Scheduler::execute_pending_reschedule();
+        });
     }
 }

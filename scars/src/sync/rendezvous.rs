@@ -101,9 +101,10 @@ where
     ///
     /// A tuple containing the `Entry` and `Accept` instances.
     pub const fn split(&'static mut self) -> (LockedEntry<A, R, L, N>, LockedAccept<A, R, L, N>) {
-        (LockedEntry { rendezvous: self }, LockedAccept {
-            rendezvous: self,
-        })
+        (
+            LockedEntry { rendezvous: self },
+            LockedAccept { rendezvous: self },
+        )
     }
 }
 

@@ -10,6 +10,7 @@ use unrecoverable_error::{
 #[macro_export]
 macro_rules! runtime_error {
     ($kind:expr) => {{
+        #[allow(unused)]
         use $crate::kernel::exception::RuntimeError;
         $crate::kernel::syscall::runtime_error(&$kind);
     }};

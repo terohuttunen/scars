@@ -1,7 +1,7 @@
-use super::LocalExecutor;
+use super::ExecutorHandle;
 use crate::kernel::atomic_queue::*;
 use crate::kernel::list::{LinkedListTag, Node, impl_linked};
-use crate::kernel::waiter::{Suspendable, WaitQueueTag};
+use crate::kernel::waiter::{WaitQueueEntry, WaitQueueTag};
 use crate::time::Instant;
 use core::future::Future;
 use core::marker::PhantomData;
@@ -20,11 +20,15 @@ pub const ASYNC_TASK_STATE_RUNNING: u32 = 2;
 pub const ASYNC_TASK_STATE_FINISHED: u32 = 3;
 
 pub struct RawTask {
-    pub(crate) executor: LocalExecutor,
+    /// `None` between `Task::init` and `Executor::spawn`; populated by the
+    /// spawning executor before the task is pushed onto a queue. After spawn
+    /// the task can only be polled, woken, or slept by code reached through
+    /// the executor's queue, so reads can safely treat this as `Some`.
+    pub(crate) executor: Option<ExecutorHandle>,
     ready_list_link: Node<RawTask, TaskReadyListTag>,
     sleep_list_link: Node<RawTask, WaitQueueTag>,
     pending_ready_list_link: AtomicNode<RawTask, TaskReadyListTag>,
-    pub(crate) waiter: Suspendable,
+    pub(crate) waiter: WaitQueueEntry,
     pub(super) wakeup_time: Instant,
     task_ptr: *mut (),
     poll_fn: unsafe fn(*mut ()) -> bool,
@@ -59,7 +63,10 @@ impl RawTask {
 
     fn waker_wake(data: *const ()) {
         let raw = unsafe { &*(data as *const RawTask) };
-        raw.executor.resume_task(unsafe { Pin::new_unchecked(raw) });
+        raw.executor
+            .as_ref()
+            .expect("waker fired before task was spawned")
+            .notify();
     }
 
     fn waker_drop(_data: *const ()) {}
@@ -69,20 +76,28 @@ impl RawTask {
         task.wakeup_time = wakeup_time;
     }
 
-    // SAFETY: You are allowed to do this only when the task is spawned
-    // on the executor. This is to let the task know on which executor it
-    // is running.
-    pub(crate) unsafe fn set_executor(self: Pin<&mut Self>, executor: LocalExecutor) {
-        let task = unsafe { Pin::get_unchecked_mut(self) };
-        task.executor = executor;
+    /// Returns `Some` once the task has been spawned on an executor;
+    /// `None` between [`Task::init`] and the spawn call.
+    pub(crate) fn get_executor(&self) -> Option<&ExecutorHandle> {
+        self.executor.as_ref()
+    }
+
+    /// Install the executor handle. Called once by the executor's spawn path
+    /// before the task is pushed onto any queue.
+    pub(crate) unsafe fn set_executor(this: *mut Self, executor: ExecutorHandle) {
+        unsafe { (*this).executor = Some(executor) };
     }
 }
 
 impl Drop for RawTask {
     fn drop(&mut self) {
-        // Readying pending tasks will free the task from the atomic pending_ready_tasks
-        // list if it is there, allowing safe dropping of the AtomicQueueLink.
-        self.executor.resume_pending_tasks();
+        // If the task was spawned, drain its pending-ready list so the
+        // AtomicQueueLink can be torn down. A task that was attached but
+        // never spawned has no executor and nothing to drain.
+        if let Some(executor) = self.executor.as_ref() {
+            let raw = unsafe { &*executor.raw() };
+            raw.resume_pending_tasks();
+        }
     }
 }
 
@@ -91,22 +106,22 @@ impl_linked!(sleep_list_link, RawTask, WaitQueueTag);
 impl_atomic_linked!(pending_ready_list_link, RawTask, TaskReadyListTag);
 
 pub struct TaskVTable {
-    // control_block(AsyncTask<F>)
-    control_block: fn(*mut ()) -> *mut RawTask,
+    // raw(Task<F>)
+    raw: fn(*mut ()) -> *mut RawTask,
 
-    // poll(AsyncTask<F>)
+    // poll(Task<F>)
     poll: unsafe fn(*mut ()) -> bool,
 
-    // try_read_output(AsyncTask<F>, Poll<F::Output>, &Waker)
+    // try_read_output(Task<F>, Poll<F::Output>, &Waker)
     try_read_output: unsafe fn(*mut (), *mut (), &Waker) -> (),
 
-    // drop_handle(AsyncTask<F>)
+    // drop_handle(Task<F>)
     drop_handle: fn(*mut ()) -> (),
 }
 
 pub struct Task<F: Future> {
     state: AtomicU32,
-    control_block: MaybeUninit<RawTask>,
+    raw: MaybeUninit<RawTask>,
     future: MaybeUninit<F>,
     output: MaybeUninit<F::Output>,
     _pinned: core::marker::PhantomPinned,
@@ -116,7 +131,7 @@ impl<F: Future> Task<F> {
     pub const INITIALIZER: Task<F> = Task::<F>::new();
 
     const ASYNC_TASK_VTABLE: TaskVTable = TaskVTable {
-        control_block: Self::control_block,
+        raw: Self::raw,
         poll: Self::vpoll,
         try_read_output: Self::try_read_output,
         drop_handle: Self::drop_handle,
@@ -125,33 +140,25 @@ impl<F: Future> Task<F> {
     pub const fn new() -> Task<F> {
         Task {
             state: AtomicU32::new(ASYNC_TASK_STATE_FREE),
-            control_block: MaybeUninit::uninit(),
+            raw: MaybeUninit::uninit(),
             future: MaybeUninit::uninit(),
             output: MaybeUninit::uninit(),
             _pinned: core::marker::PhantomPinned,
         }
     }
 
-    pub fn init(self: Pin<&mut Self>, future: F, executor: LocalExecutor) -> TaskHandle<F::Output> {
+    pub fn init(self: Pin<&mut Self>, future: F) -> TaskHandle<F::Output> {
         unsafe {
             let task = Pin::get_unchecked_mut(self);
 
-            let waker = Waker::from_raw(RawWaker::new(
-                task.control_block.as_ptr() as *const (),
-                &RawTask::TASK_WAKER_VTABLE,
-            ));
-
             let task_ptr = task as *mut _ as *mut ();
 
-            // The task inherits current executor task priority
-            let priority = executor.priority();
-
-            task.control_block.write(RawTask {
-                executor,
+            task.raw.write(RawTask {
+                executor: None,
                 ready_list_link: Node::new(),
                 sleep_list_link: Node::new(),
                 pending_ready_list_link: AtomicNode::new(),
-                waiter: Suspendable::new_async(priority, waker),
+                waiter: WaitQueueEntry::new(),
                 wakeup_time: Instant::ZERO,
                 task_ptr,
                 poll_fn: Self::vpoll,
@@ -189,14 +196,14 @@ impl<F: Future> Task<F> {
             ASYNC_TASK_STATE_RUNNING => {
                 // Drop control block and future
                 unsafe {
-                    task.control_block.assume_init_read();
+                    task.raw.assume_init_read();
                     task.future.assume_init_read();
                 }
             }
             ASYNC_TASK_STATE_FINISHED => {
                 // Drop control block, future and output
                 unsafe {
-                    task.control_block.assume_init_read();
+                    task.raw.assume_init_read();
                     task.future.assume_init_read();
                     task.output.assume_init_read();
                 }
@@ -207,18 +214,18 @@ impl<F: Future> Task<F> {
         }
     }
 
-    fn control_block(data: *mut ()) -> *mut RawTask {
+    fn raw(data: *mut ()) -> *mut RawTask {
         let task = unsafe { &mut *(data as *mut Task<F>) };
         assert!(task.state.load(Ordering::Relaxed) != ASYNC_TASK_STATE_UNINIT);
-        task.control_block.as_mut_ptr()
+        task.raw.as_mut_ptr()
     }
 
     fn poll(&mut self) -> bool {
-        let control_block = unsafe { self.control_block.assume_init_mut() };
+        let raw = unsafe { self.raw.assume_init_mut() };
         let future = unsafe { self.future.assume_init_mut() };
         let future = unsafe { Pin::new_unchecked(future) };
 
-        let waker = control_block.waker();
+        let waker = raw.waker();
 
         let mut context = Context::from_waker(&waker);
 
@@ -231,7 +238,7 @@ impl<F: Future> Task<F> {
                     .store(ASYNC_TASK_STATE_FINISHED, Ordering::Relaxed);
 
                 // If a task is waiting for this task to join, wake it
-                if let Some(waker) = control_block.on_result_waker.take() {
+                if let Some(waker) = raw.on_result_waker.take() {
                     waker.wake();
                 }
 
@@ -255,14 +262,14 @@ impl<F: Future> Task<F> {
                 // Output is available
                 *output = Poll::Ready(unsafe { task.output.assume_init_read() });
                 unsafe {
-                    task.control_block.assume_init_read();
+                    task.raw.assume_init_read();
                     task.future.assume_init_read();
                 }
                 task.state.store(ASYNC_TASK_STATE_FREE, Ordering::Relaxed);
             }
             _ => {
                 // Output is not available, register waker
-                let control_block = unsafe { task.control_block.assume_init_mut() };
+                let control_block = unsafe { task.raw.assume_init_mut() };
                 control_block.on_result_waker = Some(waker.clone());
                 *output = Poll::Pending;
             }
@@ -270,18 +277,24 @@ impl<F: Future> Task<F> {
     }
 }
 
-pub(super) struct RawTaskHandle {
+pub struct RawTaskHandle {
     pub(crate) task_ptr: *mut (),
     pub(crate) vtable: &'static TaskVTable,
 }
 
 impl RawTaskHandle {
     pub fn as_ref(&self) -> Pin<&'_ RawTask> {
-        unsafe { Pin::new_unchecked(&*(self.vtable.control_block)(self.task_ptr)) }
+        unsafe { Pin::new_unchecked(&*(self.vtable.raw)(self.task_ptr)) }
     }
 
     pub fn as_mut(&mut self) -> Pin<&'_ mut RawTask> {
-        unsafe { Pin::new_unchecked(&mut *(self.vtable.control_block)(self.task_ptr)) }
+        unsafe { Pin::new_unchecked(&mut *(self.vtable.raw)(self.task_ptr)) }
+    }
+
+    /// Pointer to the embedded `RawTask`. Used by executor `spawn` paths to
+    /// write the executor handle before queueing.
+    pub(crate) fn raw_task_ptr(&self) -> *mut RawTask {
+        (self.vtable.raw)(self.task_ptr)
     }
 
     pub fn poll(&self) -> bool {

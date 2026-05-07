@@ -1,7 +1,13 @@
+use crate::Scheduler;
+use crate::Stack;
 use crate::priority::Priority;
 use crate::sync::PreemptLock;
-use crate::thread::{InitializedThread, RawThread, ThreadBuilder, ThreadExecutionState};
-use crate::{make_local_storage, make_thread, make_thread_executor, thread};
+use crate::task::ThreadExecutor;
+use crate::thread::{
+    RawThread, Thread, ThreadBuilder, ThreadExecutionState, ThreadFn, ThreadHandle, ThreadRef,
+};
+use crate::{make_thread, thread};
+use static_cell::StaticCell;
 
 const IDLE_THREAD_NAME: &'static str = "[idle]";
 const IDLE_THREAD_PRIO: Priority = Priority::Thread(0);
@@ -39,21 +45,27 @@ fn default_idle_thread_hook() {
     crate::idle();
 }
 
+type IdleFn = impl ThreadFn;
+
+#[define_opaque(IdleFn)]
 pub(crate) fn init_idle_thread() -> &'static RawThread {
     crate::printkln!("Init idle thread");
-    let mut idle_thread = idle();
+
+    static IDLE_STACK: Stack<IDLE_THREAD_STACK_SIZE> = Stack::new();
+    static IDLE_THREAD: Thread<IDLE_THREAD_PRIO, IdleFn> = Thread::new(IDLE_THREAD_NAME);
+
+    let mut idle_thread = IDLE_THREAD.init(IDLE_STACK.init()).attach(|| idle());
     idle_thread.modify(|t| {
         PreemptLock::with(|pkey| {
             t.state.set(pkey, ThreadExecutionState::Running);
         })
     });
 
-    let idle_thread = idle_thread.finish();
+    let idle_thread = idle_thread.get_ref();
 
     unsafe { idle_thread.as_ref() }
 }
 
-#[thread(name = IDLE_THREAD_NAME, priority = IDLE_THREAD_PRIO, stack_size = IDLE_THREAD_STACK_SIZE)]
 fn idle() -> ! {
     #[cfg(not(test))]
     unsafe {
@@ -62,11 +74,16 @@ fn idle() -> ! {
 
     #[cfg(test)]
     {
-        let local_storage = make_local_storage!(1);
-        let executor = make_thread_executor!();
-        let mut test_thread = test();
-        test_thread.set_local_storage(local_storage);
-        test_thread.start_executor(executor);
+        static THREAD_EXECUTOR: StaticCell<ThreadExecutor> = StaticCell::new();
+        static THREAD_STACK: crate::Stack<IDLE_THREAD_STACK_SIZE> = Stack::new();
+        static TEST_THREAD: crate::Thread<TEST_THREAD_PRIO, fn() -> !> = Thread::new("test");
+
+        let executor = THREAD_EXECUTOR.init_with(|| ThreadExecutor::new());
+        let test_thread = TEST_THREAD.init(THREAD_STACK.init()).attach(test);
+        let test_thread_ref = test_thread.get_ref();
+        // SAFETY: test thread is 'static (created from a static cell).
+        let raw_thread: &'static crate::thread::RawThread = unsafe { test_thread_ref.as_ref() };
+        raw_thread.local_storage().head().publish(executor);
         test_thread.start();
     }
 
@@ -76,7 +93,6 @@ fn idle() -> ! {
 }
 
 #[cfg(test)]
-#[thread(priority = TEST_THREAD_PRIO, stack_size = IDLE_THREAD_STACK_SIZE)]
 fn test() -> ! {
     crate::test_main();
     scars_test::test_succeed();

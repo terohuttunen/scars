@@ -1,5 +1,5 @@
-use crate::sync::mutex::CeilingMutex;
 use crate::Priority;
+use crate::sync::mutex::CeilingMutex;
 use core::ops::Deref;
 
 #[macro_export]

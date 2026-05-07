@@ -1,4 +1,4 @@
-use crate::kernel::hal::{clock_ticks, TICK_FREQ_HZ};
+use crate::kernel::hal::{TICK_FREQ_HZ, clock_ticks};
 use core::cmp::Ordering;
 use core::ops::{Add, Mul, Sub};
 

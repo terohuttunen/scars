@@ -1,13 +1,13 @@
 use crate::Priority;
 use crate::cell::{LockedPinRefCell, PinRefCell};
+use crate::events::raw::RawEventHandler;
 use crate::in_interrupt;
 use crate::kernel::atomic_queue::{AtomicNode, impl_atomic_linked};
-use crate::kernel::interrupt::RawInterruptHandler;
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, Node, impl_linked};
-use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler, WorkQueueNode};
+use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
 use crate::sync::{CeilingLock, NestingLock, PreemptLock, preempt_lock::PreemptLockKey};
 use crate::syscall;
-use crate::task::task::RawTask;
+use crate::task::raw_task::RawTask;
 use crate::thread::RawThread;
 use crate::time::Instant;
 use core::cell::Cell;
@@ -20,148 +20,61 @@ pub struct WaitQueueTag {}
 
 impl LinkedListTag for WaitQueueTag {}
 
-pub struct SleepQueueTag {}
-
-impl LinkedListTag for SleepQueueTag {}
-
 pub(crate) const SUSPENDABLE_PENDING_RESUME: u32 = 1;
 pub(crate) const SUSPENDABLE_PENDING_WAKEUP: u32 = 2;
 pub(crate) const SUSPENDABLE_PENDING_SUSPEND: u32 = 4;
+pub(crate) const SUSPENDABLE_PENDING_RECONFIGURE: u32 = 8;
 
-pub enum SuspendableKind {
-    None,
-    Thread(*const RawThread),
-    Interrupt(*const RawInterruptHandler),
-    Async(Priority, Waker),
-}
-
-/// Suspendable represents a thread, interrupt handler, or async task that can wait in a WaitQueue,
-/// or wait for a timeout in the kernel sleep queue.
-pub struct Suspendable {
-    pub(crate) kind: SuspendableKind,
-
-    /// Time when the Suspendable should be woken up from sleep. This is used to
-    /// implement timeouts or delays. TODO: this is safe to modify only when
-    /// not part of a list.
-    deadline: Cell<Option<Instant>>,
+pub struct WaitQueueEntry {
+    priority: Priority,
 
     /// Link for the WaitQueue.
     pub(crate) wait_queue_link: Node<Self, WaitQueueTag>,
 
-    /// Link for the kernel sleep queue.
-    pub(crate) sleep_queue_link: Node<Self, SleepQueueTag>,
-
-    /// When a lock cannot be acquired, operations on the Suspendable are postponed.
-    /// This link is used to insert the Suspendable into the deferred work queue.
-    pub(crate) deferred_work_queue_link: WorkQueueNode,
-
-    /// Mask of operations that could not be completed because of locks
-    pub(crate) pending_mask: AtomicU32,
-
-    /// The ceiling priority that is required to complete the operations.
-    pub(crate) required_ceiling: Cell<Option<Priority>>,
+    on_resume: fn(*const ()),
+    arg: *const (),
 }
 
-impl Suspendable {
-    pub const fn new() -> Suspendable {
-        Suspendable {
-            kind: SuspendableKind::None,
-            deadline: Cell::new(None),
+impl WaitQueueEntry {
+    pub const fn new() -> WaitQueueEntry {
+        WaitQueueEntry {
+            priority: Priority::MIN,
             wait_queue_link: Node::new(),
-            sleep_queue_link: Node::new(),
-            deferred_work_queue_link: AtomicNode::new(),
-            pending_mask: AtomicU32::new(0),
-            required_ceiling: Cell::new(None),
+            on_resume: |_| {},
+            arg: core::ptr::null(),
         }
     }
 
-    pub fn init_thread(self: Pin<&mut Self>, thread_ptr: *const RawThread) {
-        let this = unsafe { self.get_unchecked_mut() };
-        this.kind = SuspendableKind::Thread(thread_ptr);
-    }
-
-    pub const fn new_thread(thread: *const RawThread) -> Suspendable {
-        Suspendable {
-            kind: SuspendableKind::Thread(thread),
-            deadline: Cell::new(None),
-            wait_queue_link: Node::new(),
-            sleep_queue_link: Node::new(),
-            deferred_work_queue_link: AtomicNode::new(),
-            pending_mask: AtomicU32::new(0),
-            required_ceiling: Cell::new(None),
-        }
-    }
-
-    pub const fn new_interrupt(interrupt: *const RawInterruptHandler) -> Suspendable {
-        Suspendable {
-            kind: SuspendableKind::Interrupt(interrupt),
-            deadline: Cell::new(None),
-            wait_queue_link: Node::new(),
-            sleep_queue_link: Node::new(),
-            deferred_work_queue_link: AtomicNode::new(),
-            pending_mask: AtomicU32::new(0),
-            required_ceiling: Cell::new(None),
-        }
-    }
-
-    pub const fn new_async(priority: Priority, waker: Waker) -> Suspendable {
-        Suspendable {
-            kind: SuspendableKind::Async(priority, waker),
-            deadline: Cell::new(None),
-            wait_queue_link: Node::new(),
-            sleep_queue_link: Node::new(),
-            deferred_work_queue_link: AtomicNode::new(),
-            pending_mask: AtomicU32::new(0),
-            required_ceiling: Cell::new(None),
-        }
+    /// Wire `owner` as the receiver of the on-resume callback. The
+    /// generic trampoline is monomorphized per `H`.
+    pub fn init_for<H: WaitQueueEntryHandler>(&mut self, owner: &'static H) {
+        self.on_resume = waiter_trampoline::<H>;
+        self.arg = owner as *const H as *const ();
     }
 
     pub fn notify(&self) {
-        match &self.kind {
-            SuspendableKind::None => (),
-            SuspendableKind::Thread(thread) => unsafe { (&**thread).resume() },
-            SuspendableKind::Interrupt(_interrupt) => (), //interrupt.notify(),
-            SuspendableKind::Async(_, waker) => waker.wake_by_ref(),
-        }
+        (self.on_resume)(self.arg);
     }
 
-    pub fn priority(&self, pkey: PreemptLockKey<'_>) -> Priority {
-        match &self.kind {
-            SuspendableKind::None => Priority::Thread(0),
-            SuspendableKind::Thread(thread) => unsafe { (&**thread).priority.get(pkey) },
-            SuspendableKind::Interrupt(interrupt) => unsafe { (&**interrupt).base_priority() },
-            SuspendableKind::Async(priority, _) => *priority,
-        }
-    }
-
-    pub fn in_sleep_queue(&self) -> bool {
-        self.sleep_queue_link.in_list()
-    }
-
-    pub fn has_deadline(&self) -> bool {
-        self.deadline.get().is_some()
-    }
-
-    pub fn set_deadline(&self, deadline: Option<Instant>) {
-        self.deadline.set(deadline);
-    }
-
-    pub fn deadline(&self) -> Option<Instant> {
-        self.deadline.get()
-    }
-
-    pub fn set_pending(&self, mask: u32) {
-        self.pending_mask.fetch_or(mask, Ordering::Relaxed);
-    }
-
-    pub fn set_required_ceiling(&self, ceiling: Option<Priority>) {
-        self.required_ceiling.set(ceiling);
+    pub fn priority(&self, _pkey: PreemptLockKey<'_>) -> Priority {
+        self.priority
     }
 }
 
-impl_linked!(wait_queue_link, Suspendable, WaitQueueTag);
-impl_linked!(sleep_queue_link, Suspendable, SleepQueueTag);
-impl_atomic_linked!(deferred_work_queue_link, Suspendable, ExecStateTag);
+impl_linked!(wait_queue_link, WaitQueueEntry, WaitQueueTag);
+
+/// Owner of a [`WaitQueueEntry`]. Implemented by types whose entries
+/// participate in a wait queue and need to be notified when removed
+/// (resumed). Mirrors [`TimerHandler`](crate::kernel::scheduler::TimerHandler)
+/// and [`PendingWorkHandler`](crate::kernel::scheduler::PendingWorkHandler).
+pub trait WaitQueueEntryHandler: Sized + 'static {
+    fn on_resume(this: &'static Self);
+}
+
+fn waiter_trampoline<H: WaitQueueEntryHandler>(arg: *const ()) {
+    let this: &'static H = unsafe { &*(arg as *const H) };
+    H::on_resume(this);
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct WaitQueueHandle {
@@ -169,16 +82,17 @@ pub(crate) struct WaitQueueHandle {
     vtable: &'static WaitQueueVTable,
 }
 
+#[allow(dead_code)]
 impl WaitQueueHandle {
-    pub unsafe fn insert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+    pub unsafe fn insert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
         unsafe { (self.vtable.insert)(self.queue, pkey, suspendable.get_ref()) }
     }
 
-    pub unsafe fn remove(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+    pub unsafe fn remove(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
         unsafe { (self.vtable.remove)(self.queue, pkey, suspendable.get_ref()) }
     }
 
-    pub unsafe fn reinsert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+    pub unsafe fn reinsert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
         unsafe { (self.vtable.reinsert)(self.queue, pkey, suspendable.get_ref()) }
     }
 
@@ -198,15 +112,16 @@ impl WaitQueueHandle {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) struct WaitQueueVTable {
-    insert: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable),
-    remove: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable),
-    reinsert: unsafe fn(*const (), PreemptLockKey<'_>, *const Suspendable), // reinsert after priority change
+    insert: unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry),
+    remove: unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry),
+    reinsert: unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry), // reinsert after priority change
     required_ceiling: fn(*const ()) -> Option<Priority>,
 }
 
 pub struct WaitQueue<L: NestingLock> {
-    queue: LockedPinRefCell<LinkedList<Suspendable, WaitQueueTag>, L>,
+    queue: LockedPinRefCell<LinkedList<WaitQueueEntry, WaitQueueTag>, L>,
 }
 
 impl<L: NestingLock> WaitQueue<L> {
@@ -223,7 +138,7 @@ impl<L: NestingLock> WaitQueue<L> {
         }
     }
 
-    fn insert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+    fn insert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
         L::try_with(|key| {
             let key = L::upcast_key(key);
             let priority = suspendable.priority(pkey);
@@ -237,7 +152,7 @@ impl<L: NestingLock> WaitQueue<L> {
         .unwrap_or_else(|_| unreachable!());
     }
 
-    fn remove(self: Pin<&Self>, _pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+    fn remove(self: Pin<&Self>, _pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
         L::try_with(|key| {
             let key = L::upcast_key(key);
             let queue = unsafe { self.map_unchecked(|s| &s.queue) };
@@ -246,7 +161,7 @@ impl<L: NestingLock> WaitQueue<L> {
         .unwrap_or_else(|_| unreachable!());
     }
 
-    fn reinsert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&Suspendable>) {
+    fn reinsert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
         L::try_with(|key| {
             let key = L::upcast_key(key);
             let priority = suspendable.priority(pkey);
@@ -263,20 +178,20 @@ impl<L: NestingLock> WaitQueue<L> {
     unsafe fn insert_unsafe(
         queue: *const (),
         pkey: PreemptLockKey<'_>,
-        suspendable: *const Suspendable,
+        suspendable: *const WaitQueueEntry,
     ) {
         let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
-        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
+        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const WaitQueueEntry)) };
         queue.insert(pkey, suspendable);
     }
 
     unsafe fn remove_unsafe(
         queue: *const (),
         pkey: PreemptLockKey<'_>,
-        suspendable: *const Suspendable,
+        suspendable: *const WaitQueueEntry,
     ) {
         let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
-        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
+        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const WaitQueueEntry)) };
         if suspendable.wait_queue_link.in_list() {
             queue.remove(pkey, suspendable);
         }
@@ -285,10 +200,10 @@ impl<L: NestingLock> WaitQueue<L> {
     unsafe fn reinsert_unsafe(
         queue: *const (),
         pkey: PreemptLockKey<'_>,
-        suspendable: *const Suspendable,
+        suspendable: *const WaitQueueEntry,
     ) {
         let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
-        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const Suspendable)) };
+        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const WaitQueueEntry)) };
         queue.reinsert(pkey, suspendable);
     }
 
@@ -303,7 +218,7 @@ impl<L: NestingLock> WaitQueue<L> {
                     let key = L::upcast_key(key);
                     let mut queue = unsafe { Pin::new_unchecked(&self.queue) }.borrow_mut(key);
 
-                    queue.as_mut().push_back(thread.suspendable_ref());
+                    queue.as_mut().push_back(thread.get_wait_entry());
                     let (queue_ptr, vtable) = self.to_raw();
                     let handle = unsafe { WaitQueueHandle::from_raw(queue_ptr, vtable) };
 
@@ -386,7 +301,7 @@ impl<L: NestingLock> WaitQueue<L> {
 }
 
 pub struct AsyncWaiterQueue {
-    queue: PinRefCell<LinkedList<Suspendable, WaitQueueTag>>,
+    queue: PinRefCell<LinkedList<WaitQueueEntry, WaitQueueTag>>,
 }
 
 impl AsyncWaiterQueue {

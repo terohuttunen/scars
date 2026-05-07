@@ -1,14 +1,15 @@
 #![no_std]
 #![no_main]
-#![feature(sync_unsafe_cell)]
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-#![feature(impl_trait_in_assoc_type)]
+#![feature(type_alias_impl_trait)]
+
 use core::sync::atomic::{AtomicBool, Ordering};
+use scars::Stack;
 use scars::prelude::*;
 use scars::sync::CeilingLock;
-use scars::sync::channel::CeilingSender;
+use scars::thread::{Thread, ThreadFn};
 use scars::time::Duration;
 use scars_test;
 
@@ -35,48 +36,58 @@ fn idle() {
     IDLE_HAS_RUN.store(true, Ordering::SeqCst);
 }
 
-#[scars::thread(name = "low", priority = LOW_PRIORITY, stack_size = STACK_SIZE)]
-fn low_thread(
-    sender0: CeilingSender<u32, CAPACITY, CEILING>,
-    medium_sender: CeilingSender<u32, CAPACITY, CEILING>,
-) -> ! {
-    let lock: CeilingLock<CEILING> = CeilingLock::new();
+type LowThreadF = impl ThreadFn;
+type MediumThreadF = impl ThreadFn;
 
-    // Low priority thread raises its priority with a ceiling lock
-    let pinned = core::pin::pin!(lock);
-    let guard = pinned.as_ref().lock();
+static LOW_STACK: Stack<STACK_SIZE> = Stack::new();
+static LOW_THREAD: Thread<LOW_PRIORITY, LowThreadF> = Thread::new("low");
 
-    // Medium priority thread cannot start because of the ceiling lock
-    medium_thread(medium_sender.clone()).start();
-    // Low priority thread goes to sleep, but idle thread will
-    // execute instead of medium priority thread because low priority
-    // thread is holding the lock while sleeping.
-    assert!(!IDLE_HAS_RUN.load(Ordering::SeqCst));
-    scars::delay(Duration::from_millis(50));
-    assert!(IDLE_HAS_RUN.load(Ordering::SeqCst));
-    sender0.send(2);
-    drop(guard);
-    // Medium priority thread can run now, and then low priority continues
-    sender0.send(0);
-    loop {
-        scars::delay(Duration::from_secs(1));
-    }
-}
-
-#[scars::thread(name = "medium", priority = MEDIUM_PRIORITY, stack_size = STACK_SIZE)]
-fn medium_thread(sender: CeilingSender<u32, CAPACITY, CEILING>) -> ! {
-    sender.send(1);
-    loop {
-        scars::delay(Duration::from_secs(1));
-    }
-}
+static MEDIUM_STACK: Stack<STACK_SIZE> = Stack::new();
+static MEDIUM_THREAD: Thread<MEDIUM_PRIORITY, MediumThreadF> = Thread::new("medium");
 
 /// Is possible for a thread to sleep and hold the lock
 #[test_case]
+#[define_opaque(LowThreadF, MediumThreadF)]
 pub fn ceiling_lock_owned_yield() {
     let (sender0, receiver) = make_channel!(u32, CAPACITY, MEDIUM_PRIORITY);
 
-    low_thread(sender0.clone(), sender0.clone()).start();
+    let medium_sender = sender0.clone();
+
+    LOW_THREAD
+        .init(LOW_STACK.init())
+        .attach(move || {
+            let lock: CeilingLock<CEILING> = CeilingLock::new();
+
+            // Low priority thread raises its priority with a ceiling lock
+            let pinned = core::pin::pin!(lock);
+            let guard = pinned.as_ref().lock();
+
+            let medium_sender_inner = medium_sender.clone();
+            MEDIUM_THREAD
+                .init(MEDIUM_STACK.init())
+                .attach(move || {
+                    medium_sender_inner.send(1);
+                    loop {
+                        scars::delay(Duration::from_secs(1));
+                    }
+                })
+                .start();
+
+            // Low priority thread goes to sleep, but idle thread will
+            // execute instead of medium priority thread because low priority
+            // thread is holding the lock while sleeping.
+            assert!(!IDLE_HAS_RUN.load(Ordering::SeqCst));
+            scars::delay(Duration::from_millis(50));
+            assert!(IDLE_HAS_RUN.load(Ordering::SeqCst));
+            sender0.send(2);
+            drop(guard);
+            // Medium priority thread can run now, and then low priority continues
+            sender0.send(0);
+            loop {
+                scars::delay(Duration::from_secs(1));
+            }
+        })
+        .start();
 
     assert_eq!(receiver.recv(), 2);
     assert_eq!(receiver.recv(), 1);

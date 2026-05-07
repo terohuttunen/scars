@@ -37,11 +37,12 @@ impl<const SIZE: usize> Stack<SIZE> {
             byte.write(CANARY_BYTE);
         }
         let canary = unsafe { &mut *(canary_slice as *mut [MaybeUninit<u8>] as *mut [u8]) };
-        
+
         for byte in stack_slice.iter_mut() {
             byte.write(0);
         }
-        let initialized_stack = unsafe { &mut *(stack_slice as *mut [MaybeUninit<u8>] as *mut [u8]) };
+        let initialized_stack =
+            unsafe { &mut *(stack_slice as *mut [MaybeUninit<u8>] as *mut [u8]) };
 
         // Make sure that the stack top and bottom are properly aligned
         let (_prefix, stack, _suffix) = unsafe { initialized_stack.align_to_mut::<StackElement>() };

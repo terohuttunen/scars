@@ -1,21 +1,21 @@
 use super::{INVALID_THREAD_ID, InheritanceLockListTag, LockListTag, ThreadInfo, ThreadRef};
 use crate::cell::{LockedCell, LockedPinRefCell};
-use crate::events::{AtomicEvents, Events, WaitEvents};
+use crate::events::{AtomicEvents, Events, WaitEvents, sender::EventReceiver};
+use crate::kernel::waiter::{WaitQueueEntry, WaitQueueEntryHandler};
 use crate::kernel::{
-    Priority,
-    hal::Context,
+    Priority, hal,
     list::{LinkedList, Node, impl_linked},
     scheduler::ExecStateTag,
+    scheduler::RawScheduler,
     scheduler::Scheduler,
+    scheduler::{PendingWorkEntry, PendingWorkHandler, RawPendingWorkEntry, Timer, TimerHandler},
     stack::StackRefMut,
-    waiter::{Suspendable, WaitQueueHandle},
+    waiter::WaitQueueHandle,
 };
 use crate::priority::PriorityStatus;
-use crate::sync::{
-    InheritanceLock, OnceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey,
-};
-use crate::task::ThreadExecutor;
-use crate::tls::{LocalCell, LocalStorage};
+use crate::sync::{InheritanceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
+use crate::time::Instant;
+use crate::tls::LocalStorage;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr;
@@ -47,37 +47,36 @@ pub enum ThreadExecutionState {
 
 #[repr(align(16))]
 #[repr(C)]
-pub struct RawThread {
+pub(crate) struct RawThread {
     pub thread_id: u32,
 
     // Thread name
     pub name: &'static str,
 
-    pub(crate) main_fn: *const (),
+    pub main_fn: *const (),
 
-    pub(crate) stack: MaybeUninit<StackRefMut>,
+    pub stack: MaybeUninit<StackRefMut>,
 
     // Thread base priority
     pub base_priority: Priority,
 
     // Nesting ceiling lock priority
-    pub(crate) nesting_lock_priority: LockedCell<PriorityStatus, PreemptLock>,
+    pub nesting_lock_priority: LockedCell<PriorityStatus, PreemptLock>,
 
-    pub(crate) inherited_priority: LockedCell<PriorityStatus, PreemptLock>,
+    pub inherited_priority: LockedCell<PriorityStatus, PreemptLock>,
 
     // Effective priority of the thread. This is the maximum of the base priority and the
     // priority of any lock held by the thread.
-    pub(crate) priority: LockedCell<Priority, PreemptLock>,
+    pub priority: LockedCell<Priority, PreemptLock>,
 
     // List of scoped ceiling locks which this thread is the current owner of. Ordered in descending
     // ceiling priority order so that list head is always one of the highest priority
     // locks.
-    pub(crate) ceiling_locks:
-        LockedPinRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
+    pub ceiling_locks: LockedPinRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
 
     // List of inheritance locks which this thread is the current owner of. Ordered in no particular
     // order.
-    pub(crate) inheritance_locks:
+    pub inheritance_locks:
         LockedPinRefCell<LinkedList<InheritanceLock, InheritanceLockListTag>, PreemptLock>,
 
     // Thread state that tells in which queue the thread currently is
@@ -85,26 +84,29 @@ pub struct RawThread {
     //  Ready: In ready queue
     //  Running: Currently running, not in any queue
     //  Blocked: In blocked queue
-    pub(crate) state: LockedCell<ThreadExecutionState, PreemptLock>,
+    pub state: LockedCell<ThreadExecutionState, PreemptLock>,
 
     // Intrusive linked list entry for inserting the thread into ready, suspended, or blocked queue
-    pub(crate) exec_queue_link: Node<RawThread, ExecStateTag>,
+    pub exec_queue_link: Node<Self, ExecStateTag>,
 
-    pub(crate) suspendable: Suspendable,
+    pub wait_entry: WaitQueueEntry,
+    pub timer: Timer<Self>,
+
+    pub pending_work: PendingWorkEntry<Self>,
 
     // Holds reference to the wait queue that the thread is waiting on, if any.
-    pub(crate) wait_queue: LockedCell<Option<WaitQueueHandle>, PreemptLock>,
+    pub wait_queue: LockedCell<Option<WaitQueueHandle>, PreemptLock>,
 
     // Event system fields
-    pub(crate) pending_events: AtomicEvents,
-    pub(crate) current_wait_events: AtomicPtr<WaitEvents>,
+    pub pending_events: AtomicEvents,
+    pub current_wait_events: AtomicPtr<WaitEvents>,
 
-    pub(crate) local_storage: OnceLock<LocalStorage>,
+    pub local_storage: LocalStorage,
 
     /// Thread context holds the KHAL defined thread information such as
     /// trap frame on embedded targets, or pthreads thread in simulator.
     /// The context is initialized when the thread is started.
-    pub(crate) context: MaybeUninit<Context>,
+    pub context: MaybeUninit<hal::Context>,
 }
 
 impl RawThread {
@@ -126,18 +128,46 @@ impl RawThread {
             ceiling_locks: LockedPinRefCell::new(LinkedList::new()),
             inheritance_locks: LockedPinRefCell::new(LinkedList::new()),
             exec_queue_link: Node::new(),
-            suspendable: Suspendable::new(),
+            wait_entry: WaitQueueEntry::new(),
+            timer: Timer::new(),
+            pending_work: PendingWorkEntry::new(),
             wait_queue: LockedCell::new(None),
             pending_events: AtomicEvents::new(0),
             current_wait_events: AtomicPtr::new(ptr::null_mut()),
-            local_storage: OnceLock::new(),
+            local_storage: LocalStorage::new(),
             context: MaybeUninit::uninit(),
         }
     }
 
-    pub unsafe fn init(self: Pin<&mut Self>) {
-        let thread_ptr = &*self as *const RawThread;
-        self.suspendable_mut().init_thread(thread_ptr);
+    pub unsafe fn init_at(this: *mut Self) {
+        unsafe {
+            (*this).wait_entry.init_for::<RawThread>(&*this);
+        }
+    }
+
+    /// Set the wakeup deadline for this thread's timer. Pass `None` to
+    /// disable. The expiration handler is the [`TimerHandler`] impl below.
+    pub(crate) fn set_wakeup_deadline(
+        self: Pin<&'static Self>,
+        pkey: PreemptLockKey<'_>,
+        scheduler: Pin<&mut RawScheduler>,
+        deadline: Option<Instant>,
+    ) {
+        self.get_timer().arm(pkey, scheduler, self, deadline);
+    }
+
+    pub(crate) fn get_timer(self: Pin<&Self>) -> Pin<&Timer<RawThread>> {
+        unsafe { self.map_unchecked(|t| &t.timer) }
+    }
+
+    pub(crate) fn get_wait_entry(self: Pin<&Self>) -> Pin<&WaitQueueEntry> {
+        unsafe { self.map_unchecked(|t| &t.wait_entry) }
+    }
+
+    pub(crate) fn get_pending_work(self: Pin<&Self>) -> Pin<&RawPendingWorkEntry> {
+        let typed: Pin<&PendingWorkEntry<RawThread>> =
+            unsafe { self.map_unchecked(|t| &t.pending_work) };
+        typed.raw()
     }
 
     pub unsafe fn start(&'static mut self) {
@@ -150,6 +180,7 @@ impl RawThread {
         crate::thread_start(self);
     }
 
+    #[allow(dead_code)]
     pub fn get_info(&self, pkey: PreemptLockKey<'_>) -> ThreadInfo {
         let stack_addr = unsafe { self.stack.assume_init_ref() }.bottom_ptr() as *const ();
         let stack_size = unsafe { self.stack.assume_init_ref() }.alloc_size();
@@ -161,14 +192,6 @@ impl RawThread {
             stack_size,
             entry: self.main_fn,
         }
-    }
-
-    pub fn suspendable_ref(self: Pin<&Self>) -> Pin<&Suspendable> {
-        unsafe { Pin::new_unchecked(&self.get_ref().suspendable) }
-    }
-
-    pub fn suspendable_mut(self: Pin<&mut Self>) -> Pin<&mut Suspendable> {
-        unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().suspendable) }
     }
 
     pub fn as_thread_ref(self: Pin<&'static Self>) -> ThreadRef {
@@ -363,26 +386,48 @@ impl RawThread {
         self.pending_events.load(Ordering::SeqCst)
     }
 
-    pub fn local_storage(&self) -> Option<&LocalStorage> {
-        self.local_storage.get()
+    #[allow(dead_code)]
+    pub fn local_storage(&self) -> &LocalStorage {
+        &self.local_storage
     }
+}
 
-    pub fn local_storage_mut(&mut self) -> Option<&mut LocalStorage> {
-        self.local_storage.get_mut()
+impl WaitQueueEntryHandler for RawThread {
+    fn on_resume(this: &'static Self) {
+        this.resume();
     }
+}
 
-    pub(crate) fn set_local_storage(
-        &self,
-        local_storage: LocalStorage,
-    ) -> Result<(), LocalStorage> {
-        self.local_storage.set(local_storage)
+impl TimerHandler for RawThread {
+    fn on_expire(
+        this: Pin<&'static Self>,
+        mut sched: Pin<&mut RawScheduler>,
+        pkey: PreemptLockKey<'_>,
+    ) {
+        sched.as_mut().wakeup_thread(pkey, this);
     }
+}
 
-    pub fn start_executor(&mut self, executor: &'static LocalCell<ThreadExecutor>) {
-        let thread_ref = unsafe { ThreadRef::from_ptr(self as *const _) };
-        self.local_storage_mut()
-            .unwrap()
-            .raw_put_init_with(executor, || ThreadExecutor::new(thread_ref));
+impl PendingWorkHandler for RawThread {
+    fn complete(
+        _this: Pin<&'static Self>,
+        _pkey: PreemptLockKey<'_>,
+        _sched: Pin<&mut RawScheduler>,
+        _ops: u32,
+    ) {
+        // Stub: deferred work for threads is not yet wired up.
+    }
+}
+
+impl EventReceiver for RawThread {
+    fn send_events(&'static self, events: Events) {
+        Self::send_events(self, events)
+    }
+    fn has_pending_events(&self) -> bool {
+        self.peek_pending_events() != 0
+    }
+    fn base_priority(&self) -> Priority {
+        self.base_priority
     }
 }
 

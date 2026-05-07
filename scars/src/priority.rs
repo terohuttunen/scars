@@ -382,25 +382,6 @@ impl AtomicPriority {
     }
 }
 
-const fn from_pair(pair: (Priority, Priority)) -> u32 {
-    unsafe { core::mem::transmute::<(Priority, Priority), u32>(pair) }
-}
-
-const fn to_pair(value: u32) -> (Priority, Priority) {
-    unsafe { core::mem::transmute::<u32, (Priority, Priority)>(value) }
-}
-
-const fn from_status_pair(pair: (PriorityStatus, PriorityStatus)) -> u32 {
-    pair.0.into_any() as u16 as u32 | ((pair.1.into_any() as u16 as u32) << 16)
-}
-
-const fn to_status_pair(value: u32) -> (PriorityStatus, PriorityStatus) {
-    (
-        PriorityStatus::from_any(value as i16),
-        PriorityStatus::from_any((value >> 16) as i16),
-    )
-}
-
 #[repr(transparent)]
 pub struct AtomicPriorityStatus(AtomicI16);
 

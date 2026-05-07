@@ -117,7 +117,6 @@ pub(crate) fn start_first_thread(idle_context: *mut Context) -> ! {
 }
 
 #[allow(dead_code)]
-#[inline(always)]
 #[unsafe(export_name = "exit_scars")]
 pub fn exit(exit_code: i32) -> ! {
     <kernel_hal::HAL as FlowController>::on_exit(exit_code)

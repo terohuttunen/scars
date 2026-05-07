@@ -2,7 +2,6 @@
 pub(crate) mod clock;
 pub mod exception;
 pub(crate) mod idle;
-pub mod interrupt;
 pub(crate) mod scheduler;
 pub(crate) mod stack;
 

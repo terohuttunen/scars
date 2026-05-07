@@ -52,7 +52,7 @@ impl<T> PinRefCell<T> {
     }
 
     #[inline]
-    pub fn borrow(self: Pin<&Self>) -> PinRef<T> {
+    pub fn borrow(self: Pin<&Self>) -> PinRef<'_, T> {
         let reference = unsafe { Pin::map_unchecked(self, |s| &*s.value.get()) };
         let borrow_ref = BorrowRef::new_immutable(&self.get_ref().borrow);
 

@@ -1,7 +1,7 @@
 use super::TryLockError;
+use crate::interrupt::RawInterruptHandler;
 use crate::kernel::{
     Priority,
-    interrupt::RawInterruptHandler,
     list::{Node, impl_linked},
     scheduler::{ExecutionContext, Scheduler},
 };
