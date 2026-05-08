@@ -2,9 +2,6 @@
 #![no_std]
 #![feature(adt_const_params)]
 #![feature(associated_type_defaults)]
-#![feature(maybe_uninit_fill)]
-#![feature(maybe_uninit_uninit_array_transpose)]
-#![feature(impl_trait_in_assoc_type)]
 #![cfg_attr(test, no_main)]
 #![feature(custom_test_frameworks)]
 #![test_runner(scars_test::test_runner)]
@@ -18,6 +15,7 @@ pub mod api;
 pub mod cell;
 pub mod events;
 pub mod interrupt;
+pub mod local;
 pub mod priority;
 pub mod sync;
 pub mod task;
