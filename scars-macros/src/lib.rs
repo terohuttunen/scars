@@ -2,13 +2,14 @@ extern crate proc_macro;
 use darling;
 use darling::FromMeta;
 use darling::ast::NestedMeta;
-use darling::util::parse_expr::preserve_str_literal;
 use proc_macro::TokenStream;
 use quote::{ToTokens, TokenStreamExt, format_ident, quote};
 use syn::{
-    AttrStyle, Attribute, ExprLit, Signature, Token, Visibility, braced, bracketed,
+    AttrStyle, Attribute, Signature, Token, Visibility, braced, bracketed,
     parse::{Parse, ParseStream},
-    parse_macro_input, token,
+    parse_macro_input,
+    spanned::Spanned,
+    token,
 };
 
 /// Function signature and body.
@@ -75,50 +76,82 @@ impl ToTokens for ItemFn {
     }
 }
 
-#[derive(Debug, FromMeta)]
-struct EntryArgs {
-    #[darling(with = preserve_str_literal, map = "Some")]
-    name: Option<syn::Expr>,
-    priority: Option<syn::Expr>,
-    stack_size: syn::Expr,
-}
-
 #[proc_macro_attribute]
-pub fn entry(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn init(args: TokenStream, item: TokenStream) -> TokenStream {
+    if !args.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[scars::init] does not accept arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let item = parse_macro_input!(item as ItemFn);
-    let attr_args = match NestedMeta::parse_meta_list(args.into()) {
-        Ok(v) => v,
-        Err(e) => {
-            return TokenStream::from(darling::Error::from(e).write_errors());
-        }
-    };
-    let args = match EntryArgs::from_list(&attr_args) {
-        Ok(v) => v,
-        Err(e) => {
-            return TokenStream::from(e.write_errors());
-        }
-    };
-    // Thread name is the provided name, or the function name by default.
-    let thread_name = args.name.clone().unwrap_or(syn::Expr::Lit(ExprLit {
-        attrs: Vec::new(),
-        lit: syn::Lit::Str(syn::LitStr::new(
-            &item.sig.ident.to_string(),
-            item.sig.ident.span(),
-        )),
-    }));
-    let thread_priority = args.priority.clone().unwrap_or(syn::Expr::Lit(ExprLit {
-        attrs: Vec::new(),
-        lit: syn::Lit::Int(syn::LitInt::new("1", item.sig.ident.span())),
-    }));
-    let thread_stack_size = &args.stack_size;
-    let main_fn_ident = &item.sig.ident;
+    let sig = &item.sig;
+    let span = sig.ident.span();
+
+    if sig.asyncness.is_some() {
+        return syn::Error::new(span, "#[scars::init] function must not be async")
+            .to_compile_error()
+            .into();
+    }
+    if sig.generics.params.len() > 0 {
+        return syn::Error::new(span, "#[scars::init] function must not be generic")
+            .to_compile_error()
+            .into();
+    }
+    if sig.generics.where_clause.is_some() {
+        return syn::Error::new(span, "#[scars::init] function must not have a where-clause")
+            .to_compile_error()
+            .into();
+    }
+    if sig.abi.is_some() {
+        return syn::Error::new(span, "#[scars::init] function must not specify an abi")
+            .to_compile_error()
+            .into();
+    }
+    if !sig.inputs.is_empty() {
+        return syn::Error::new(span, "#[scars::init] function must take no arguments")
+            .to_compile_error()
+            .into();
+    }
+    if let Some(variadic) = &sig.variadic {
+        return syn::Error::new(
+            variadic.dots.span(),
+            "#[scars::init] function must not be variadic",
+        )
+        .to_compile_error()
+        .into();
+    }
+    match &sig.output {
+        syn::ReturnType::Default => {}
+        syn::ReturnType::Type(_, ty) => match &**ty {
+            syn::Type::Tuple(t) if t.elems.is_empty() => {}
+            syn::Type::Never(_) => {
+                return syn::Error::new(
+                    ty.span(),
+                    "#[scars::init] function must return so the idle thread can enter its loop; spawn a thread for application logic",
+                )
+                .to_compile_error()
+                .into();
+            }
+            _ => {
+                return syn::Error::new(ty.span(), "#[scars::init] function must return `()`")
+                    .to_compile_error()
+                    .into();
+            }
+        },
+    }
+
+    let fn_ident = &sig.ident;
     quote! {
         #item
-        #[unsafe(export_name = "_start_main_thread")]
-        pub fn _start_main_thread() {
-               static MAIN_THREAD_STACK: ::scars::Stack<{#thread_stack_size}> = ::scars::Stack::new();
-               static MAIN_THREAD: ::scars::Thread<{::scars::Priority::thread({#thread_priority})}, fn() -> !> = ::scars::Thread::new({#thread_name});
-               MAIN_THREAD.init(MAIN_THREAD_STACK.init()).attach(#main_fn_ident).start();
+
+        #[unsafe(export_name = "_scars_app_init")]
+        pub fn _scars_app_init() {
+            let _: fn() = #fn_ident;
+            #fn_ident();
         }
     }
     .into()

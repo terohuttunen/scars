@@ -5,6 +5,7 @@
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(type_alias_impl_trait)]
+use scars::Stack;
 use scars::events::Events;
 use scars::khal::{Interrupt, Peripherals, pac::EXTI};
 use scars::sync::channel::CeilingSender;
@@ -12,28 +13,31 @@ use scars::task::{
     self, EventHandlerExecutor, LocalExecutor, Sleep, WaitForEvents,
     task_pool::TaskPool,
 };
+use scars::thread::{Thread, ThreadFn};
 use scars::{
     Priority,
     interrupt::{InterruptHandler, InterruptHandlerFn},
     make_channel,
-    thread::ThreadFn,
 };
 
 const EXTI0_INTERRUPT_PRIO: Priority = Priority::interrupt(1);
 const CEILING_PRIO: Priority = EXTI0_INTERRUPT_PRIO;
 const CHANNEL_CAPACITY: usize = 16;
+const MAIN_PRIORITY: Priority = Priority::thread(1);
+const MAIN_STACK_SIZE: usize = 4096;
 
 /// Event sent when button is pressed
 const BUTTON_PRESSED: Events = 1 << 0;
 
 type F = impl InterruptHandlerFn;
 type G = impl ::core::future::Future;
+type MainF = impl ThreadFn;
 
 static EXTI0_POOL: TaskPool<G, 10> = TaskPool::new();
 
-#[scars::entry(name = "main", priority = 1, stack_size = 4096)]
-#[define_opaque(F, G)]
-fn main() -> ! {
+#[scars::init]
+#[define_opaque(F, G, MainF)]
+fn init() {
     let Peripherals { SYSCFG, EXTI, .. } = Peripherals::take().unwrap();
 
     // Source EXTI0 interrupt from PA0 GPIO
@@ -87,8 +91,15 @@ fn main() -> ! {
 
     exti0.enable();
 
-    loop {
-        let count = receiver.recv();
-        scars::printkln!("==> Button event {:?} received", count);
-    }
+    static MAIN_STACK: Stack<MAIN_STACK_SIZE> = Stack::new();
+    static MAIN_THREAD: Thread<MAIN_PRIORITY, MainF> = Thread::new("main");
+    let _ = MAIN_THREAD
+        .init(MAIN_STACK.init())
+        .attach(move || {
+            loop {
+                let count = receiver.recv();
+                scars::printkln!("==> Button event {:?} received", count);
+            }
+        })
+        .start();
 }

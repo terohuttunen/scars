@@ -52,20 +52,3 @@ pub fn test_fail() -> ! {
     unsafe { exit_scars(1) }
 }
 
-#[macro_export]
-macro_rules! integration_test {
-    () => {
-        #[cfg_attr(
-            not(feature = "khal-sim"),
-            ::scars::entry(name = "main", priority = 1, stack_size = 1024)
-        )]
-        #[cfg_attr(
-            feature = "khal-sim",
-            ::scars::entry(name = "main", priority = 1, stack_size = 16384)
-        )]
-        pub fn main() -> ! {
-            test_main();
-            scars_test::test_succeed();
-        }
-    };
-}

@@ -1,8 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(custom_test_frameworks)]
-#![test_runner(scars_test::test_runner)]
-#![reexport_test_harness_main = "test_main"]
 #![feature(type_alias_impl_trait)]
 
 use scars::Stack;
@@ -12,8 +9,6 @@ use scars::thread::{Thread, ThreadFn};
 use scars::time::Duration;
 use scars_test;
 
-scars_test::integration_test!();
-
 #[cfg(not(feature = "khal-sim"))]
 const STACK_SIZE: usize = 1024 * 2;
 #[cfg(feature = "khal-sim")]
@@ -22,6 +17,7 @@ const STACK_SIZE: usize = 16384;
 const THREAD0_PRIORITY: Priority = Priority::thread(3);
 const THREAD1_PRIORITY: Priority = Priority::thread(5);
 const THREAD2_PRIORITY: Priority = Priority::thread(4);
+const CHECKER_PRIORITY: Priority = Priority::thread(1);
 
 const CAPACITY: usize = 14;
 const CEILING: Priority = THREAD0_PRIORITY.max(THREAD1_PRIORITY).max(THREAD2_PRIORITY);
@@ -32,6 +28,7 @@ static CVAR: CeilingCondvar<CEILING> = CeilingCondvar::new();
 type Thread0F = impl ThreadFn;
 type Thread1F = impl ThreadFn;
 type Thread2F = impl ThreadFn;
+type CheckerF = impl ThreadFn;
 
 static THREAD0_STACK: Stack<STACK_SIZE> = Stack::new();
 static THREAD0: Thread<THREAD0_PRIORITY, Thread0F> = Thread::new("thread0");
@@ -42,11 +39,14 @@ static THREAD1: Thread<THREAD1_PRIORITY, Thread1F> = Thread::new("thread1");
 static THREAD2_STACK: Stack<STACK_SIZE> = Stack::new();
 static THREAD2: Thread<THREAD2_PRIORITY, Thread2F> = Thread::new("thread2");
 
+static CHECKER_STACK: Stack<STACK_SIZE> = Stack::new();
+static CHECKER_THREAD: Thread<CHECKER_PRIORITY, CheckerF> = Thread::new("checker");
+
 /// Block two threads with different priorities and verify that the
 /// higher priority thread is started first when the threads are notified.
-#[test_case]
-#[define_opaque(Thread0F, Thread1F, Thread2F)]
-pub fn block_unblock_thread() {
+#[scars::init]
+#[define_opaque(Thread0F, Thread1F, Thread2F, CheckerF)]
+fn init() {
     let (sender, receiver) = make_channel!(u32, CAPACITY, CEILING);
 
     THREAD0
@@ -86,10 +86,16 @@ pub fn block_unblock_thread() {
         })
         .start();
 
-    *LOCK.lock() = true;
-    CVAR.notify_all();
+    CHECKER_THREAD
+        .init(CHECKER_STACK.init())
+        .attach(move || {
+            *LOCK.lock() = true;
+            CVAR.notify_all();
 
-    assert_eq!(receiver.recv(), 1);
-    assert_eq!(receiver.recv(), 2);
-    assert_eq!(receiver.recv(), 0);
+            assert_eq!(receiver.recv(), 1);
+            assert_eq!(receiver.recv(), 2);
+            assert_eq!(receiver.recv(), 0);
+            scars_test::test_succeed()
+        })
+        .start();
 }

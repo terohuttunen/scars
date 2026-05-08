@@ -11,6 +11,74 @@ description = "RTOS for hard real-time applications"
 
 [lib]
 
+[[test]]
+name = "block"
+harness = false
+
+[[test]]
+name = "event_handler01"
+harness = false
+
+[[test]]
+name = "event_handler02"
+harness = false
+
+[[test]]
+name = "events01"
+harness = false
+
+[[test]]
+name = "events02"
+harness = false
+
+[[test]]
+name = "events03"
+harness = false
+
+[[test]]
+name = "inheritance01"
+harness = false
+
+[[test]]
+name = "locking01"
+harness = false
+
+[[test]]
+name = "locking02"
+harness = false
+
+[[test]]
+name = "locking03"
+harness = false
+
+[[test]]
+name = "locking04"
+harness = false
+
+[[test]]
+name = "locking05"
+harness = false
+
+[[test]]
+name = "locking06"
+harness = false
+
+[[test]]
+name = "make_task"
+harness = false
+
+[[test]]
+name = "nopreempt"
+harness = false
+
+[[test]]
+name = "preempt"
+harness = false
+
+[[test]]
+name = "yield"
+harness = false
+
 [dependencies]
 bit_field = "0.10.2"
 bitflags = { version = "2.4", default-features = false }

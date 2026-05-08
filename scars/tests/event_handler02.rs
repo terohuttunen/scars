@@ -1,8 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(custom_test_frameworks)]
-#![test_runner(scars_test::test_runner)]
-#![reexport_test_harness_main = "test_main"]
 #![feature(type_alias_impl_trait)]
 
 use core::pin::Pin;
@@ -15,8 +12,6 @@ use scars::thread::{Thread, ThreadFn};
 use scars::time::{Duration, Instant};
 use scars_test;
 
-scars_test::integration_test!();
-
 #[cfg(not(feature = "khal-sim"))]
 const STACK_SIZE: usize = 1024 * 2;
 #[cfg(feature = "khal-sim")]
@@ -24,6 +19,7 @@ const STACK_SIZE: usize = 16384;
 
 const THREAD_PRIORITY: Priority = Priority::thread(3);
 const HANDLER_PRIORITY: Priority = Priority::interrupt(1);
+const CHECKER_PRIORITY: Priority = Priority::thread(1);
 
 const CAPACITY: usize = 4;
 const CEILING: Priority = HANDLER_PRIORITY;
@@ -34,6 +30,7 @@ const DEADLINE_MS: u64 = 50;
 
 type Thread0F = impl ThreadFn;
 type HandlerF = impl EventHandlerFn;
+type CheckerF = impl ThreadFn;
 
 static THREAD0_STACK: Stack<STACK_SIZE> = Stack::new();
 static THREAD0: Thread<THREAD_PRIORITY, Thread0F> = Thread::new("thread0");
@@ -41,13 +38,16 @@ static THREAD0: Thread<THREAD_PRIORITY, Thread0F> = Thread::new("thread0");
 static HANDLER0: EventHandler<HANDLER_PRIORITY, HandlerF> = EventHandler::new();
 static TIMER0: EventTimer = EventTimer::new();
 
+static CHECKER_STACK: Stack<STACK_SIZE> = Stack::new();
+static CHECKER_THREAD: Thread<CHECKER_PRIORITY, CheckerF> = Thread::new("checker");
+
 /// An [`EventTimer`] armed to deliver events to an [`EventHandler`] runs
 /// the handler closure after its deadline without any thread sending the
 /// events directly. The handler closure forwards a sentinel back via a
 /// channel; the test asserts the sentinel arrives.
-#[test_case]
-#[define_opaque(Thread0F, HandlerF)]
-pub fn handler_runs_after_deadline() {
+#[scars::init]
+#[define_opaque(Thread0F, HandlerF, CheckerF)]
+fn init() {
     let (sender, receiver) = make_channel!(u32, CAPACITY, CEILING);
 
     let handler_sender = sender.clone();
@@ -73,5 +73,11 @@ pub fn handler_runs_after_deadline() {
         })
         .start();
 
-    assert_eq!(receiver.recv(), HANDLER_REPORT);
+    CHECKER_THREAD
+        .init(CHECKER_STACK.init())
+        .attach(move || {
+            assert_eq!(receiver.recv(), HANDLER_REPORT);
+            scars_test::test_succeed()
+        })
+        .start();
 }

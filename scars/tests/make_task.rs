@@ -1,8 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(custom_test_frameworks)]
-#![test_runner(scars_test::test_runner)]
-#![reexport_test_harness_main = "test_main"]
 #![feature(type_alias_impl_trait)]
 
 use scars::Stack;
@@ -10,8 +7,6 @@ use scars::prelude::*;
 use scars::thread::{Thread, ThreadFn};
 use scars::time::{Duration, Instant};
 use scars_test;
-
-scars_test::integration_test!();
 
 #[cfg(not(feature = "khal-sim"))]
 const STACK_SIZE: usize = 1024;
@@ -35,9 +30,9 @@ static THREAD1: Thread<THREAD1_PRIORITY, Thread1F> = Thread::new("thread1");
 static THREAD2_STACK: Stack<STACK_SIZE> = Stack::new();
 static THREAD2: Thread<THREAD2_PRIORITY, Thread2F> = Thread::new("thread2");
 
-#[test_case]
+#[scars::init]
 #[define_opaque(Thread0F, Thread1F, Thread2F)]
-pub fn make_thread() {
+fn init() {
     let thread0 = THREAD0.init(THREAD0_STACK.init());
     assert_eq!(thread0.name(), "thread0");
     assert_eq!(thread0.base_priority(), THREAD0_PRIORITY);
@@ -75,5 +70,4 @@ pub fn make_thread() {
 
     thread0_handle.start();
     thread1_handle.start();
-    assert!(false);
 }

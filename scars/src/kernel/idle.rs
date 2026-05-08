@@ -31,7 +31,7 @@ mod internal {
 
 unsafe extern "Rust" {
     #[cfg(not(test))]
-    unsafe fn _start_main_thread();
+    unsafe fn _scars_app_init();
 }
 
 #[allow(unused)]
@@ -69,7 +69,7 @@ pub(crate) fn init_idle_thread() -> &'static RawThread {
 fn idle() -> ! {
     #[cfg(not(test))]
     unsafe {
-        _start_main_thread();
+        _scars_app_init();
     }
 
     #[cfg(test)]

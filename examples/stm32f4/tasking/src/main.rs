@@ -32,16 +32,12 @@ fn consumer_thread(receiver: Receiver<u64, CHANNEL_CAPACITY, CEILING_PRIORITY>) 
     }
 }
 
-#[scars::entry(stack_size = 4096)]
-fn main() -> ! {
+#[scars::init]
+fn init() {
     let (sender, receiver) = make_channel!(u64, CHANNEL_CAPACITY, CEILING_PRIORITY);
 
     let count: u64 = 0;
     producer_thread(count, sender).start();
 
     consumer_thread(receiver).start();
-
-    loop {
-        scars::idle();
-    }
 }

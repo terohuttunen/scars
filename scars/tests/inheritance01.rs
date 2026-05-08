@@ -1,8 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(custom_test_frameworks)]
-#![test_runner(scars_test::test_runner)]
-#![reexport_test_harness_main = "test_main"]
 #![feature(type_alias_impl_trait)]
 
 use core::pin::Pin;
@@ -13,8 +10,6 @@ use scars::sync::InheritanceLock;
 use scars::thread::{Thread, ThreadFn};
 use scars::time::Duration;
 use scars_test;
-
-scars_test::integration_test!();
 
 #[cfg(not(feature = "khal-sim"))]
 const STACK_SIZE: usize = 1024;
@@ -30,12 +25,15 @@ const HIGH_PRIORITY: Priority = Priority::thread(5);
 // Medium priority thread
 const MEDIUM_PRIORITY: Priority = Priority::thread(4);
 
+const CHECKER_PRIORITY: Priority = Priority::thread(1);
+
 static LOCK1: InheritanceLock = InheritanceLock::new();
 static STATE: AtomicU32 = AtomicU32::new(0);
 
 type LowThreadF = impl ThreadFn;
 type MediumThreadF = impl ThreadFn;
 type HighThreadF = impl ThreadFn;
+type CheckerF = impl ThreadFn;
 
 static LOW_STACK: Stack<STACK_SIZE> = Stack::new();
 static LOW_THREAD: Thread<LOW_PRIORITY, LowThreadF> = Thread::new("low");
@@ -46,13 +44,16 @@ static MEDIUM_THREAD: Thread<MEDIUM_PRIORITY, MediumThreadF> = Thread::new("medi
 static HIGH_STACK: Stack<STACK_SIZE> = Stack::new();
 static HIGH_THREAD: Thread<HIGH_PRIORITY, HighThreadF> = Thread::new("high");
 
+static CHECKER_STACK: Stack<STACK_SIZE> = Stack::new();
+static CHECKER_THREAD: Thread<CHECKER_PRIORITY, CheckerF> = Thread::new("checker");
+
 /// Check that a high priority thread trying to acquire an inheritance lock
 /// will increase the priority of the low priority thread that is holding the lock.
 /// Also tests that medium priority thread cannot preempt a low priority thread that
 /// has inherited the high priority.
-#[test_case]
-#[define_opaque(LowThreadF, MediumThreadF, HighThreadF)]
-pub fn inheritance_lock_priority_increase() {
+#[scars::init]
+#[define_opaque(LowThreadF, MediumThreadF, HighThreadF, CheckerF)]
+fn init() {
     LOW_THREAD
         .init(LOW_STACK.init())
         .attach(move || {
@@ -111,5 +112,11 @@ pub fn inheritance_lock_priority_increase() {
         })
         .start();
 
-    assert_eq!(STATE.load(Ordering::SeqCst), 3);
+    CHECKER_THREAD
+        .init(CHECKER_STACK.init())
+        .attach(move || {
+            assert_eq!(STATE.load(Ordering::SeqCst), 3);
+            scars_test::test_succeed()
+        })
+        .start();
 }
