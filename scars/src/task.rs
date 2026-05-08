@@ -2,15 +2,16 @@ pub mod executor;
 pub mod raw_task;
 pub mod task_pool;
 use crate::events::Events;
+use crate::local::LocalStorage;
 use crate::time::{Duration, Instant};
-use crate::tls::LocalStorage;
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+pub use crate::local::LocalExecutor;
 pub use executor::{
     EventHandlerExecutor, EventHandlerExecutorBuilder, EventHandlerExecutorHandle, ExecutorHandle,
-    LocalExecutor, ThreadExecutor,
+    ThreadExecutor,
 };
 pub use raw_task::{RawTask, Task, TaskHandle, TaskReadyListTag};
 pub use task_pool::TaskPool;

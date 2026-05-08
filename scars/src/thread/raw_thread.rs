@@ -15,7 +15,7 @@ use crate::kernel::{
 use crate::priority::PriorityStatus;
 use crate::sync::{InheritanceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
 use crate::time::Instant;
-use crate::tls::LocalStorage;
+use crate::local::LocalStorage;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr;

@@ -7,10 +7,10 @@
 use super::{InterruptNumber, vector::InterruptVector};
 use crate::events::raw::RawEventHandler;
 use crate::kernel::list::LinkedList;
+use crate::local::LocalStorage;
 use crate::priority::{AtomicPriority, AtomicPriorityStatus, Priority, PriorityStatus};
 use crate::sync::{ceiling_lock::RawCeilingLock, interrupt_lock::InterruptLockKey};
 use crate::thread::LockListTag;
-use crate::tls::LocalStorage;
 
 use core::cell::{Cell, UnsafeCell};
 use core::pin::Pin;

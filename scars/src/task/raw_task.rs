@@ -331,7 +331,7 @@ impl<T> TaskHandle<T> {
         }
     }
 
-    pub(super) fn as_raw(&self) -> &'_ RawTaskHandle {
+    pub(crate) fn as_raw(&self) -> &'_ RawTaskHandle {
         &self.raw
     }
 

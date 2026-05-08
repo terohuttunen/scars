@@ -9,10 +9,10 @@ use super::{
     sender::{EventReceiver, EventSender},
 };
 use crate::events::Events;
+use crate::local::{LocalStorage, SharedStorage, SharedStorageProvider};
 use crate::priority::Priority;
 use crate::sync::interrupt_lock::InterruptLock;
 use crate::task::{ExecutorHandle, JoinHandle, TaskHandle};
-use crate::tls::{LocalStorage, SharedStorage, SharedStorageProvider};
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;

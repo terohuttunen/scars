@@ -4,9 +4,9 @@
 //! interrupt handlers
 
 use super::{InterruptHandler, InterruptHandlerFn, InterruptNumber, RawInterruptHandler};
+use crate::local::{ConstLocalCell, LocalCell, LocalStorage, SharedStorage, SharedStorageProvider};
 use crate::priority::Priority;
 use crate::sync::interrupt_lock::InterruptLock;
-use crate::tls::{ConstLocalCell, LocalCell, LocalStorage, SharedStorage, SharedStorageProvider};
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;

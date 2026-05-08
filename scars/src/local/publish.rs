@@ -62,7 +62,8 @@
 //! }
 //! ```
 
-use super::{LocalCell, StorageListHead};
+use super::cell::LocalCell;
+use super::list::StorageListHead;
 
 /// Error reported by [`PublishCtx`] operations.
 #[derive(Debug, Clone, Copy)]
@@ -262,7 +263,7 @@ impl<'a> PublishCtx<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tls::{ConstLocalCell, LocalCell};
+    use crate::local::{ConstLocalCell, LocalCell};
 
     // Distinct types per test so the per-binary thread-local namespace
     // cannot interact with these private heads.
