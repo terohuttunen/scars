@@ -17,10 +17,10 @@ cortex-m = { version = "0.7.7", features = ["critical-section-single-core", "inl
 cortex-m-rt = "0.7.3"
 scars-khal = { path = "../../scars-khal" }
 scars-arch-cortex-m = { path = "../../scars-arch-cortex-m" }
-static_cell = "1.2.0"
+static_cell = "2.1.0"
 const_env = "0.1.2"
 critical-section = { version = "1.1.1" }
-rtt-target = "0.5.0"
+rtt-target = "0.6.2"
 
 
 [dependencies.stm32f4]
