@@ -258,7 +258,7 @@ pub fn task(args: TokenStream, item: TokenStream) -> TokenStream {
 
         #item
 
-        #vis fn #fn_ident(#outer_args) -> Option<::scars::task::InitializedTask<#return_type>> {
+        #vis fn #fn_ident(#outer_args) -> Option<::scars::task::TaskHandle<#return_type>> {
             use ::scars::task::TaskPool;
             trait _TaskClosure {
                 type F: ::core::future::Future<Output = #return_type>;
