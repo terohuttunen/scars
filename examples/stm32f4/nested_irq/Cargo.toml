@@ -1,0 +1,16 @@
+[package]
+name = "nested_irq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+scars = { path = "../../../scars" }
+cortex-m = "0.7.7"
+
+[dependencies.stm32f4xx-hal]
+version = "0.23.0"
+features = ["stm32f429"]
+
+[features]
+default = ["khal-stm32f4"]
+khal-stm32f4 = ["scars/khal-stm32f4"]
