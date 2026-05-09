@@ -1,43 +1,43 @@
+//! Rendezvous-style synchronization: a synchronized remote procedure
+//! call between two threads.
+//!
+//! A rendezvous splits into two halves via `split()`. The caller side
+//! ([`LockedEntry::entry`]) hands an argument to the callee side and
+//! blocks until the callee returns a value. The callee side
+//! ([`LockedAccept::accept`]) blocks until an argument arrives, runs a
+//! closure on it, and stores the closure's return value for the
+//! caller side to pick up.
+//!
+//! Use [`make_rendezvous!`] to construct a `(LockedEntry,
+//! LockedAccept)` pair. With a `ceiling` argument the underlying
+//! mutexes use [`CeilingLock`]; without it they use [`InheritanceLock`]
+//! plus [`PreemptLock`].
+//!
+//! ```ignore
+//! use scars::sync::rendezvous::make_rendezvous;
+//!
+//! let (entry, accept) = make_rendezvous!(3);
+//!
+//! // Move `entry` into a thread that will issue the call:
+//! let join = some_thread.spawn(move || {
+//!     let result = entry.entry(42);
+//!     scars::printkln!("Result: {}", result);
+//! });
+//!
+//! // Service the call in this thread:
+//! accept.accept(|arg| arg * 2);
+//! ```
+
 use crate::Priority;
-/// This module provides synchronization primitives for rendezvous-style communication.
-///
-/// The `Rendezvous` struct allows two threads to synchronize and exchange data. It acts as a
-/// synchronized remote procedure call into another thread's context.
-///
-/// The `Entry` struct represents the entry point for one of the threads. It provides a method
-/// called `entry` that allows the thread to provide an argument and wait for the result.
-///
-/// The `Accept` struct represents the entry point for the other thread. It provides a method
-/// called `accept` that allows the thread to wait for the argument, compute the result using a
-/// closure, and return the result.
-///
-/// # Example
-///
-/// ```Rust
-/// use scars::sync::rendezvous::{Rendezvous, Entry, Accept};
-///
-/// // Create a rendezvous with a ceiling priority of 3
-/// let (entry, accept) = make_rendezvous!(3);
-///
-/// // Create a task with priority 3
-/// let thread = make_thread!("thread", 3, 1024);
-///
-/// // Start the thread to execute the entry
-/// thread.start(move || {
-///     let result = entry.entry(42);
-///     println!("Result: {}", result);
-/// });
-///
-/// // Execute the accept in the current thread
-/// let result = accept.accept(|arg| arg * 2);
-/// assert_eq!(result, 84);
-/// ```
 use crate::sync::{
     CeilingLock, InheritanceLock, NestingLock, PreemptLock, ScopedLock, Unlock,
     condvar::LockedCondvar, mutex::LockedMutex,
 };
 
-/// Creates a new statically allocated `Rendezvous` with the specified ceiling priority.
+/// Allocates a static `Rendezvous` and returns a `(LockedEntry,
+/// LockedAccept)` pair. With a `$prio` argument the rendezvous uses
+/// [`CeilingLock<$prio>`]; without one it uses [`InheritanceLock`]
+/// plus [`PreemptLock`].
 #[macro_export]
 macro_rules! make_rendezvous {
     ($prio:expr) => {{
@@ -65,8 +65,10 @@ pub type CeilingRendezvous<A, R, const CEILING: Priority> =
 
 pub type Rendezvous<A, R> = LockedRendezvous<A, R, InheritanceLock, PreemptLock>;
 
-/// Represents a rendezvous synchronization primitive. It allows two threads to synchronize and
-/// exchange data. It acts as a synchronized remote procedure call into another thread's context.
+/// Two-thread RPC channel parameterised over its mutex lock type `L`
+/// and the nesting-lock kind `N` used by the internal condvar. Use
+/// the [`Rendezvous`] / [`CeilingRendezvous`] aliases for the
+/// supported configurations.
 pub struct LockedRendezvous<A, R, L: ScopedLock, N: NestingLock>
 where
     A: Send + 'static,
@@ -82,11 +84,6 @@ where
     A: Send + 'static,
     R: Send + 'static,
 {
-    /// Creates a new `Rendezvous` instance.
-    ///
-    /// # Returns
-    ///
-    /// A new `Rendezvous` instance.
     pub const fn new() -> LockedRendezvous<A, R, L, N> {
         LockedRendezvous {
             arg: LockedMutex::new(None),
@@ -95,11 +92,8 @@ where
         }
     }
 
-    /// Splits the `Rendezvous` instance into an `Entry` and an `Accept` instance.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing the `Entry` and `Accept` instances.
+    /// Splits the rendezvous into the caller-side and callee-side
+    /// halves.
     pub const fn split(&'static mut self) -> (LockedEntry<A, R, L, N>, LockedAccept<A, R, L, N>) {
         (
             LockedEntry { rendezvous: self },
@@ -108,10 +102,8 @@ where
     }
 }
 
-/// Represents the entry point for one of the threads. It provides a method called `entry` that
-/// allows the thread to provide an argument and wait for the result. The `Entry` struct is
-/// created by calling the `split` method on a `Rendezvous` instance. The `Entry` struct is
-/// `Send` because it is intended to be passed to another thread.
+/// Caller-side handle of a rendezvous. Hand the argument to
+/// [`entry`](Self::entry) and block until the callee returns a value.
 pub struct LockedEntry<A, R, L: ScopedLock + 'static, N: NestingLock + 'static>
 where
     A: Send + 'static,
@@ -126,7 +118,8 @@ where
     R: Send + 'static,
     for<'b> L::Guard<'b>: Unlock,
 {
-    /// Provides an argument and waits for the result.
+    /// Hands `arg` to the callee side and blocks until it stores a
+    /// result.
     pub fn entry(&self, arg: A) -> R {
         // Provide argument
         let mut arg_guard = self.rendezvous.arg.lock();
@@ -157,11 +150,9 @@ where
 {
 }
 
-/// Represents the entry point for the other thread. It provides a method called `accept` that
-/// allows the thread to wait for the argument, compute the result using a closure, and return
-/// the result. The `Accept` struct is created by calling the `split` method on a `Rendezvous`
-/// instance. The `Accept` struct is `Send` because it is intended to be passed to another
-/// thread.
+/// Callee-side handle of a rendezvous. Wait for an argument with
+/// [`accept`](Self::accept), run a closure on it, and stash the
+/// closure's result for the caller side to retrieve.
 pub struct LockedAccept<A, R, L: ScopedLock + 'static, N: NestingLock + 'static>
 where
     A: Send + 'static,
@@ -176,8 +167,9 @@ where
     R: Send + 'static,
     for<'b> L::Guard<'b>: Unlock,
 {
-    /// Waits for the argument, computes the result using a closure, and returns the result to
-    /// the other thread.
+    /// Blocks until the caller side issues an argument, runs `closure`
+    /// on it, and stores the closure's return value for the caller's
+    /// `entry` call to receive.
     pub fn accept<F: FnMut(A) -> R>(&self, mut closure: F) {
         // Wait for closure argument
         let arg_guard = self.rendezvous.arg.lock();
