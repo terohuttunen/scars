@@ -242,6 +242,21 @@ pub fn clear_service_call() {
     }
 }
 
+/// Lower PendSV to the lowest hardware priority. Must be called once
+/// during HAL init before any context switch is requested.
+///
+/// Cortex-M's reset value for PendSV's priority byte is 0 (highest),
+/// which would let PendSV preempt every other ISR mid-handler — the
+/// scheduler relies on context switches happening only after every
+/// other exception has finished. Writing `0xFF` selects the lowest
+/// priority regardless of how many priority bits the implementation
+/// supports (the unused low bits are ignored).
+pub fn init_pendsv_priority(scb: &mut cortex_m::peripheral::SCB) {
+    unsafe {
+        scb.set_priority(cortex_m::peripheral::scb::SystemHandler::PendSV, 0xFF);
+    }
+}
+
 #[macro_export]
 macro_rules! impl_flow_controller {
     ($struct_name:ident) => {

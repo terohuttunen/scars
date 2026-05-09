@@ -94,7 +94,7 @@ impl HardwareAbstractionLayer for STM32F4 {
             FPU,
             NVIC,
             SYST,
-            SCB,
+            mut SCB,
             ..
         } = unsafe { cortex_m::Peripherals::steal() };
 
