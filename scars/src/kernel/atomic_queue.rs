@@ -10,16 +10,29 @@ use unrecoverable_error::{UnrecoverableError, unrecoverable_error};
 #[derive(Debug, UnrecoverableError)]
 pub enum AtomicQueueError {
     ItemAlreadyInQueue,
-    ItemNotInQueue,
 }
 
-/// Intrusive Lock-free FIFO queue
+/// Intrusive lock-free MPSC FIFO queue (Vyukov's algorithm).
 ///
-/// Implementation notes:
-///  - The sequence of atomic operations is based on the Michael-Scott algorithm.
+/// Multiple producers may push concurrently. At most one consumer may
+/// pop at a time.
+///
+/// A node that has been popped may be pushed again immediately. `push`
+/// resets the new node's `next` to `null`, atomically swaps it in as
+/// the producer-end head, then writes `prev.next = new`; the linkage
+/// store always targets a different node from `new`.
+///
+/// `pop` returns `None` between a producer's `XCHG` and its linkage
+/// store. Producers must follow every push with a wake-up notification
+/// to the consumer (e.g. `pend_service_call`); the consumer then runs
+/// again once the linkage is visible.
 pub(crate) struct AtomicQueue<T, N: LinkedListTag> {
+    /// Permanent sentinel; remains in the chain across all states.
     sentinel: AtomicNode<T, N>,
+    /// Producer-end pointer. `swap`-updated on push; the prior value
+    /// is the predecessor whose `next` is then linked to the new node.
     head: AtomicPtr<AtomicNode<T, N>>,
+    /// Consumer cursor. Read and written only by the single consumer.
     tail: AtomicPtr<AtomicNode<T, N>>,
     _phantom: PhantomData<(*const AtomicNode<T, N>, N)>,
     _pin: PhantomPinned,
@@ -38,11 +51,10 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
         }
     }
 
-    /// Initializes the queue if it's not already initialized
+    /// Initializes the queue if it's not already initialized. Both
+    /// head and tail start out pointing at the sentinel.
     fn init_once(&'static self) {
         let sentinel_ptr: *mut AtomicNode<T, N> = &self.sentinel as *const _ as *mut _;
-        // In empty queue, head and tail point to the sentinel.
-        // Head and tail are null only if the queue is not initialized.
         let _ = self.head.compare_exchange(
             core::ptr::null_mut(),
             sentinel_ptr,
@@ -57,16 +69,13 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
         );
     }
 
-    // Checks if the queue is empty.
-    // It's empty if head's next pointer is null.
+    /// True when no data nodes are queued.
     pub fn is_empty(&'static self) -> bool {
         self.init_once();
-
-        let head_ptr = self.head.load(Ordering::Acquire);
-        // SAFETY: head always points to a valid sentinel node.
-        let head_node = unsafe { &*head_ptr };
-        // The queue is empty if the node after head (the sentinel) is null.
-        head_node.next.load(Ordering::Acquire).is_null()
+        let sentinel_ptr: *mut AtomicNode<T, N> = &self.sentinel as *const _ as *mut _;
+        // Head equals sentinel iff no producer has installed a node
+        // since the last full drain.
+        self.head.load(Ordering::Acquire) == sentinel_ptr
     }
 
     pub fn push_back<'item>(&'static self, item: Pin<&'item T>)
@@ -78,7 +87,8 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
         }
     }
 
-    // Enqueues an item at the tail of the queue.
+    /// Atomically enqueue `item`. Returns `ItemAlreadyInQueue` if the
+    /// node is currently linked.
     pub fn try_push_back<'item>(&'static self, item: Pin<&'item T>) -> Result<(), AtomicQueueError>
     where
         T: AtomicQueueNode<N>,
@@ -90,135 +100,83 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
 
         if new_node
             .owned
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
             return Err(AtomicQueueError::ItemAlreadyInQueue);
         }
 
-        // Ensure next is null initially
         new_node
             .next
             .store(core::ptr::null_mut(), Ordering::Relaxed);
 
-        loop {
-            let tail_ptr = self.tail.load(Ordering::Acquire);
-            // SAFETY: tail always points to a valid node (sentinel or actual item).
-            let tail_node = unsafe { &*tail_ptr };
-            let next_ptr = tail_node.next.load(Ordering::Acquire);
-
-            // Is tail pointer up-to-date?
-            // Check if the tail we loaded still matches the current tail.
-            if tail_ptr != self.tail.load(Ordering::Acquire) {
-                continue; // Tail has been updated by another thread, retry.
-            }
-
-            if next_ptr.is_null() {
-                // Tail is pointing to the last node. Try to link the new node.
-                if tail_node
-                    .next
-                    .compare_exchange(
-                        core::ptr::null_mut(),
-                        new_node_ptr,
-                        Ordering::SeqCst,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // Successfully linked the new node. Try to advance the tail pointer.
-                    // It's ok if this fails, another thread might have already done it.
-                    let _ = self.tail.compare_exchange(
-                        tail_ptr,
-                        new_node_ptr,
-                        Ordering::SeqCst,
-                        Ordering::Relaxed,
-                    );
-                    return Ok(()); // Enqueue successful
-                }
-            } else {
-                // Tail pointer is lagging behind the actual last node.
-                // Try to advance the tail pointer to the next node.
-                // It's ok if this fails, another thread might have already done it.
-                let _ = self.tail.compare_exchange(
-                    tail_ptr,
-                    next_ptr,
-                    Ordering::SeqCst,
-                    Ordering::Relaxed,
-                );
-                // Retry the loop regardless of CAS success/failure
-            }
+        let prev = self.head.swap(new_node_ptr, Ordering::AcqRel);
+        // SAFETY: `prev` is either the sentinel or a previously-pushed
+        // node still anchored in the chain. The release store
+        // synchronises with the consumer's acquire load of `next`.
+        unsafe {
+            (*prev).next.store(new_node_ptr, Ordering::Release);
         }
+        Ok(())
     }
 
-    // Dequeues an item from the head of the queue.
+    /// Dequeues the front item.
+    ///
+    /// Single-consumer: at most one caller at a time. May return
+    /// `None` while a producer is between its `swap` and its linkage
+    /// store, even if items are queued.
     pub fn pop_front<'item>(&'static self) -> Option<Pin<&'item T>>
     where
         T: AtomicQueueNode<N>,
     {
         self.init_once();
+        let sentinel_ptr: *mut AtomicNode<T, N> = &self.sentinel as *const _ as *mut _;
 
-        loop {
-            let head_ptr = self.head.load(Ordering::Acquire);
-            // SAFETY: head always points to a valid node (sentinel or actual item).
-            let head_node = unsafe { &*head_ptr };
-            let tail_ptr = self.tail.load(Ordering::Acquire);
-            let next_ptr = head_node.next.load(Ordering::Acquire);
+        let mut tail = self.tail.load(Ordering::Relaxed);
+        let mut next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
-            // Is head pointer up-to-date?
-            // Check if the head we loaded still matches the current head.
-            if head_ptr != self.head.load(Ordering::Acquire) {
-                continue; // Head changed, retry
+        if tail == sentinel_ptr {
+            if next.is_null() {
+                return None;
             }
-
-            if head_ptr == tail_ptr {
-                // Head and tail pointing to the same node.
-                if next_ptr.is_null() {
-                    // Queue is empty (or potentially tail is lagging, but next being null confirms empty after sentinel).
-                    return None;
-                } else {
-                    // Tail is lagging behind head. Try to advance tail.
-                    let _ = self.tail.compare_exchange(
-                        tail_ptr,
-                        next_ptr,
-                        Ordering::SeqCst,
-                        Ordering::Relaxed,
-                    );
-                    // Retry the loop after attempting to advance tail.
-                    continue;
-                }
-            } else {
-                // Head and tail are different. Read value before CAS.
-                // Ensure next_ptr is not null, otherwise it's an invalid state (should have been caught by head == tail check).
-                if next_ptr.is_null() {
-                    // This case should logically not happen if head != tail in a correct MS queue.
-                    // Could indicate memory corruption or race condition logic error elsewhere.
-                    // Spin or panic depending on safety requirements. For now, retry.
-                    continue;
-                }
-
-                // Try to move head to the next node.
-                if self
-                    .head
-                    .compare_exchange(head_ptr, next_ptr, Ordering::SeqCst, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    // Successfully moved head. head_ptr now points to the dequeued node (which was the *original* head's next).
-                    // SAFETY: next_ptr was confirmed non-null and points to a valid node structure
-                    // because it came from a loaded AtomicPtr that was successfully CAS'd.
-                    // The node it points to contains a valid T because it was previously enqueued.
-                    let dequeued_node = unsafe { &*next_ptr };
-                    if dequeued_node
-                        .owned
-                        .compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed)
-                        .is_err()
-                    {
-                        unrecoverable_error!(AtomicQueueError::ItemNotInQueue);
-                    }
-                    return Some(dequeued_node.get_item()); // Return the item from the *new* head.
-                }
-                // CAS failed, head was modified by another thread. Retry the loop.
-            }
+            self.tail.store(next, Ordering::Relaxed);
+            tail = next;
+            next = unsafe { (*tail).next.load(Ordering::Acquire) };
         }
+
+        if !next.is_null() {
+            self.tail.store(next, Ordering::Relaxed);
+            // SAFETY: `tail` is a data node — the sentinel-skip above
+            // guarantees it.
+            unsafe { (*tail).owned.store(false, Ordering::Release) };
+            return Some(unsafe { (*tail).get_item() });
+        }
+
+        let head = self.head.load(Ordering::Acquire);
+        if tail != head {
+            // Producer mid-push: head was swapped, linkage not yet
+            // visible.
+            return None;
+        }
+
+        // Single data node remains and it equals head; re-inject the
+        // sentinel so `tail.next` becomes non-null and the advance below
+        // succeeds.
+        self.sentinel
+            .next
+            .store(core::ptr::null_mut(), Ordering::Relaxed);
+        let prev = self.head.swap(sentinel_ptr, Ordering::AcqRel);
+        unsafe {
+            (*prev).next.store(sentinel_ptr, Ordering::Release);
+        }
+
+        let next2 = unsafe { (*tail).next.load(Ordering::Acquire) };
+        if !next2.is_null() {
+            self.tail.store(next2, Ordering::Relaxed);
+            unsafe { (*tail).owned.store(false, Ordering::Release) };
+            return Some(unsafe { (*tail).get_item() });
+        }
+        None
     }
 }
 
@@ -447,5 +405,27 @@ mod tests {
         // Check queue is empty after all pops
         assert!(QUEUE.pop_front().is_none());
         assert!(QUEUE.is_empty());
+    }
+
+    /// A node that was just popped must be pushable again immediately.
+    #[test_case]
+    fn test_repush_after_pop() {
+        ITEM1
+            .node
+            .next
+            .store(core::ptr::null_mut(), Ordering::Relaxed);
+        ITEM1.node.owned.store(false, Ordering::Relaxed);
+
+        static QUEUE: AtomicQueue<TestData, TestTag> = AtomicQueue::new();
+        let item1_pin = Pin::static_ref(&ITEM1);
+
+        for _ in 0..3 {
+            QUEUE.push_back(item1_pin);
+            assert!(!QUEUE.is_empty());
+            let popped = QUEUE.pop_front().expect("must pop the item we just pushed");
+            assert!(core::ptr::eq(popped.get_ref(), &ITEM1));
+            assert!(QUEUE.is_empty());
+            assert!(QUEUE.pop_front().is_none());
+        }
     }
 }
