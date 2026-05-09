@@ -7,7 +7,7 @@ examples_dir = "examples/stm32f4"
 
 [linker]
 script = "khal/scars-khal-stm32f4/default.lds"
-rustflags = ["-Cllvm-args=-float-abi=hard", "-Ctarget-cpu=cortex-m4"]
+rustflags = ["-Ctarget-cpu=cortex-m4", "-Ctarget-feature=+vfp4"]
 
 [runner]
 program = "probe-rs"

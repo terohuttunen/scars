@@ -335,6 +335,7 @@ global_asm!(
 
 global_asm!(
     ".cfi_sections .debug_frame
+     .fpu vfpv4-d16
      .section ._switch_context.user, \"ax\"
      .global _switch_context
      .type _switch_context,%function
@@ -346,11 +347,10 @@ global_asm!(
     "beq    0f",
     // Save callee saved registers
     "stmia  r0, {{r4-r11, lr}}",
-    //"add    r2, r0, #11*4",
-    //"tst    lr, #0x10",
-    //"it     eq",
-    //"vstmiaeq r2, {{s16-s31}}",
-
+    "add    r2, r0, #11*4",
+    "tst    lr, #0x10",
+    "it     eq",
+    "vstmiaeq r2, {{s16-s31}}",
     // Store process stack pointer to context
     "mrs    r2, psp",
     "str    r2, [r0, #9 * 4]",
@@ -363,11 +363,10 @@ global_asm!(
     "msr    psp, r2",
     // Restore callee saved registers
     "ldmia  r1, {{r4-r11, lr}}",
-    //"add    r2, r1, #11*4",
-    //"tst    lr, #0x10",
-    //"it     eq",
-    //"vldmiaeq r2, {{s16-s31}}",
-
+    "add    r2, r1, #11*4",
+    "tst    lr, #0x10",
+    "it     eq",
+    "vldmiaeq r2, {{s16-s31}}",
     // Restore basepri
     "ldr    r2, [r1, #10 * 4]",
     "msr    basepri, r2",
