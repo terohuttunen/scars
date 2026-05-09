@@ -7,7 +7,7 @@ edition = "2024"
 scars = { path = "../../../scars" }
 
 [dependencies.stm32f4xx-hal]
-version = "0.20.0"
+version = "0.23.0"
 features = ["stm32f429"]
 
 [features]

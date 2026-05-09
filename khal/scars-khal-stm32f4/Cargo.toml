@@ -24,11 +24,11 @@ rtt-target = "0.6.2"
 
 
 [dependencies.stm32f4]
-version = "0.15.1"
+version = "0.16.0"
 features = ["stm32f429"]
 
 [dependencies.stm32f4xx-hal]
-version = "0.20.0"
+version = "0.23.0"
 features = ["stm32f429"]
 
 [dev-dependencies]

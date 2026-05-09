@@ -20,7 +20,7 @@ pub use stm32f4xx_hal::pac::Interrupt;
 pub use stm32f4xx_hal::{
     pac,
     prelude::*,
-    rcc::{APB1, Clocks, Enable, Rcc, RccBus},
+    rcc::{APB1, Clocks, Config, Enable, Rcc, RccBus},
     timer::{Event, Timer},
 };
 
@@ -48,31 +48,31 @@ impl STM32F4 {
         // Prescaler for low-word timer TIM2 targeting 10MHz timer tick
         //  prescaler = core clock frequency / timer clock frequency - 1
         //  prescaler = 90MHz / 10MHz - 1 = 8
-        self.tim2.psc.write(|w| w.psc().bits(8));
+        self.tim2.psc().write(|w| w.psc().set(8));
         // Auto-reload is 0xffff_ffff by default
-        self.tim2.egr.write(|w| w.ug().set_bit());
+        self.tim2.egr().write(|w| w.ug().set_bit());
 
         // Set TIM2 master mode to Update
-        self.tim2.cr2.modify(|_r, w| w.mms().update());
+        self.tim2.cr2().modify(|_r, w| w.mms().update());
 
-        self.tim2.smcr.modify(|_, w| w.ts().itr0());
+        self.tim2.smcr().modify(|_, w| w.ts().itr0());
 
         // Trigger interrupt when cnt > compare
         self.tim2
             .ccmr1_output()
             .write(|w| w.oc1m().active_on_match());
 
-        self.tim2.dier.write(|w| w.cc1ie().enabled());
+        self.tim2.dier().write(|w| w.cc1ie().enabled());
 
         // TIM5 uses TIM2 as prescaler
-        self.tim5.psc.write(|w| w.psc().bits(0));
+        self.tim5.psc().write(|w| w.psc().set(0));
 
         // Set TIM5 slave mode to Encoder mode 1
-        self.tim5.smcr.modify(|_r, w| w.sms().ext_clock_mode());
+        self.tim5.smcr().modify(|_r, w| w.sms().ext_clock_mode());
 
         // Start timers by settings CEN = 1
-        self.tim5.cr1.modify(|_r, w| w.cen().enabled());
-        self.tim2.cr1.modify(|_r, w| w.cen().enabled());
+        self.tim5.cr1().modify(|_r, w| w.cen().enabled());
+        self.tim2.cr1().modify(|_r, w| w.cen().enabled());
     }
 }
 
@@ -85,7 +85,10 @@ impl HardwareAbstractionLayer for STM32F4 {
 
     unsafe fn init(hal: *mut Self) {
         let pac::Peripherals {
-            TIM2, TIM5, RCC, ..
+            TIM2,
+            TIM5,
+            mut RCC,
+            ..
         } = unsafe { pac::Peripherals::steal() };
 
         let cortex_m::Peripherals {
@@ -96,14 +99,14 @@ impl HardwareAbstractionLayer for STM32F4 {
             ..
         } = unsafe { cortex_m::Peripherals::steal() };
 
-        pac::TIM2::enable(&RCC);
-        pac::TIM5::enable(&RCC);
+        pac::TIM2::enable(&mut RCC);
+        pac::TIM5::enable(&mut RCC);
 
         unsafe { pac::NVIC::unmask(pac::Interrupt::TIM2) };
 
-        let rcc = RCC.constrain();
+        scars_arch_cortex_m::init_pendsv_priority(&mut SCB);
 
-        let clocks = rcc.cfgr.use_hse(8.MHz()).sysclk(180.MHz()).freeze();
+        let clocks = RCC.freeze(Config::hse(8.MHz()).sysclk(180.MHz())).clocks;
 
         unsafe {
             *hal = STM32F4 {
@@ -145,7 +148,7 @@ impl InterruptController for STM32F4 {
     }
 
     fn set_interrupt_priority(interrupt_number: u16, prio: u8) -> u8 {
-        let cortex_prio = NVIC_PRIO_MAX - prio;
+        let cortex_prio = (NVIC_PRIO_MAX - prio) << NVIC_PRIO_SHIFT;
         let interrupt: pac::Interrupt = unsafe { core::mem::transmute(interrupt_number) };
         let old_prio = Self::get_interrupt_priority(interrupt_number);
         critical_section::with(|cs| unsafe {
@@ -222,9 +225,9 @@ impl AlarmClockController for STM32F4 {
     fn clock_ticks() -> u64 {
         let restore_state = Self::acquire();
         loop {
-            let high = Self::instance().tim5.cnt.read().bits();
-            let low = Self::instance().tim2.cnt.read().bits();
-            let new_high = Self::instance().tim5.cnt.read().bits();
+            let high = Self::instance().tim5.cnt().read().bits();
+            let low = Self::instance().tim2.cnt().read().bits();
+            let new_high = Self::instance().tim5.cnt().read().bits();
             if new_high == high {
                 Self::restore(restore_state);
                 return ((high as u64) << 32) + low as u64;
@@ -240,20 +243,20 @@ impl AlarmClockController for STM32F4 {
         let compare_high = (at >> 32) as u32;
         let compare_low = (at & 0xffff_ffff) as u32;
 
-        Self::instance().tim2.ccr1().write(|w| w.bits(compare_low));
-        Self::instance().tim5.ccr1().write(|w| w.bits(compare_high));
+        Self::instance().tim2.ccr1().write(|w| w.set(compare_low));
+        Self::instance().tim5.ccr1().write(|w| w.set(compare_high));
 
-        let low_cnt = Self::instance().tim2.cnt.read().bits();
-        let high_cnt = Self::instance().tim5.cnt.read().bits();
-        if high_cnt == compare_high && Self::instance().tim2.cnt.read().bits() > compare_low {
+        let low_cnt = Self::instance().tim2.cnt().read().bits();
+        let high_cnt = Self::instance().tim5.cnt().read().bits();
+        if high_cnt == compare_high && Self::instance().tim2.cnt().read().bits() > compare_low {
             // If there was no overflow in tim5, but tim2 cnt is greater than compare_low,
             // trigger interrupt.
-            Self::instance().tim2.egr.write(|w| w.cc1g().set_bit());
+            Self::instance().tim2.egr().write(|w| w.cc1g().set_bit());
         } else if high_cnt > compare_high {
             // If there was overflow of low count to high count in tim5,
             // or if tim5 cnt was already greater than compare_high,
             // trigger interrupt.
-            Self::instance().tim2.egr.write(|w| w.cc1g().set_bit());
+            Self::instance().tim2.egr().write(|w| w.cc1g().set_bit());
         }
         Self::restore(restore_state);
     }

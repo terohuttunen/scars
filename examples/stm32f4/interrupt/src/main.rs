@@ -41,13 +41,13 @@ fn init() {
     let Peripherals { SYSCFG, EXTI, .. } = Peripherals::take().unwrap();
 
     // Source EXTI0 interrupt from PA0 GPIO
-    SYSCFG.exticr1.write(|w| unsafe { w.exti0().bits(0) });
+    SYSCFG.exticr1().write(|w| unsafe { w.exti0().bits(0) });
 
     // Enable EXTI0 interrupt in EXTI
-    EXTI.imr.write(|w| w.mr0().set_bit());
+    EXTI.imr().write(|w| w.mr0().set_bit());
 
     // Trigger interrupt from rising edge
-    EXTI.rtsr.write(|w| w.tr0().set_bit());
+    EXTI.rtsr().write(|w| w.tr0().set_bit());
 
     let (sender, receiver) = make_channel!(u32, CHANNEL_CAPACITY, CEILING_PRIO);
     let mut count: u32 = 0;
@@ -82,8 +82,8 @@ fn init() {
         .with_shared_storage(&executor)
         .attach(move || {
             scars::printkln!("EXTI0 interrupt received");
-            // Clear EXTI0 interrupt flag
-            EXTI.pr.write(|w| w.pr0().set_bit());
+            // Clear EXTI0 interrupt flag (write-1-to-clear)
+            EXTI.pr().write(|w| w.pr0().clear_bit_by_one());
 
             // Send event to wake up waiting tasks
             LocalExecutor::get().send_events(BUTTON_PRESSED);

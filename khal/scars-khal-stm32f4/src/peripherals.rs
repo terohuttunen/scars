@@ -173,16 +173,6 @@ pub struct Peripherals {
     pub I2C2: I2C2,
     #[doc = "I2C1"]
     pub I2C1: I2C1,
-    #[doc = "FPU"]
-    pub FPU: FPU,
-    #[doc = "STK"]
-    pub STK: STK,
-    #[doc = "NVIC_STIR"]
-    pub NVIC_STIR: NVIC_STIR,
-    #[doc = "FPU_CPACR"]
-    pub FPU_CPACR: FPU_CPACR,
-    #[doc = "SCB_ACTRL"]
-    pub SCB_ACTRL: SCB_ACTRL,
 }
 impl Peripherals {
     #[doc = r"Returns all the peripherals *once*"]
@@ -286,11 +276,6 @@ impl Peripherals {
             I2C3: pp.I2C3,
             I2C2: pp.I2C2,
             I2C1: pp.I2C1,
-            FPU: pp.FPU,
-            STK: pp.STK,
-            NVIC_STIR: pp.NVIC_STIR,
-            FPU_CPACR: pp.FPU_CPACR,
-            SCB_ACTRL: pp.SCB_ACTRL,
         }
     }
 }
