@@ -8,41 +8,50 @@ with a built-in async executor, supporting RISC-V, ARM Cortex-M, and a pthreads-
 
 ## Build and Test Commands
 
-### Building
+All build/test/run/flash commands go through the workspace `xtask` crate.
+Boards are declared as TOML manifests under `boards/`, each binding a target
+triple, scars features, linker script, env, and runner. `xtask` projects
+those into per-invocation cargo environment variables, so a single triple
+can host multiple boards.
+
 ```bash
-# For RISC-V E310x
-cargo build --release --package=scars --features=khal-e310x --target=riscv32imac-unknown-none-elf
+# List configured boards
+cargo xtask boards
 
-# For STM32F4
-cargo build --release --package=scars --features=khal-stm32f4 --target=thumbv7em-none-eabihf
+# Check / build a single board (or `all`)
+cargo xtask check --board sim
+cargo xtask build --board e310x-qemu
+cargo xtask build --board all
 
-# For Simulator
-cargo build --release --package=scars --features=khal-sim --target=x86_64-unknown-linux-gnu
+# Run integration tests (probe-rs boards skipped under `all` unless --include-hw)
+cargo xtask test --board sim
+cargo xtask test --board e310x-qemu
+cargo xtask test --board sim some_filter
+
+# Run / flash an example
+cargo xtask run   --board stm32f429i-disco --example interrupt
+cargo xtask flash --board stm32f429i-disco --example interrupt
 ```
 
-### Testing
-```bash
-# Run RISC-V tests (QEMU)
-cargo test --release --package=scars --features=khal-e310x --target=riscv32imac-unknown-none-elf
+Direct `cargo build/test --target=…` at the repo root is **not** supported:
+the linker script and runner now live in board manifests, not
+`.cargo/config.toml`. Always go through `cargo xtask`.
 
-# Run simulator tests
-cargo test --release --package=scars --features=khal-sim --target=x86_64-unknown-linux-gnu
+### Adding a board
 
-# Run STM32F4 tests
-cargo test --release --package=scars --features=khal-stm32f4 --target=thumbv7em-none-eabihf
+1. Drop a `boards/<name>.toml` next to the existing ones; mirror the closest
+   sibling.
+2. If the board needs a new KHAL crate, add it under `khal/` and wire the
+   `khal-<name>` feature in `scars/Cargo.toml`.
+3. The board's manifest `name` must match its filename.
 
-# Run a single test
-cargo test --release --package=scars --features=khal-sim --target=x86_64-unknown-linux-gnu test_name
-```
+### Adding an example
 
-### Examples
-```bash
-# Run simulator examples
-cargo run --release --package=sim-examples --bin=example_name
-
-# Run STM32F4 examples
-cargo run --release --package=stm32f4-examples --bin=example_name --target=thumbv7em-none-eabihf
-```
+Examples live under `examples/<board-family>/<slug>/`. The crate's
+`package.name` **must equal the directory name** — `xtask run --board X
+--example <slug>` resolves the slug to that crate. To avoid stale state, also
+ensure `examples_dir` in the relevant `boards/<name>.toml` points at the right
+family directory.
 
 ## Architecture
 

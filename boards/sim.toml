@@ -1,0 +1,6 @@
+name = "sim"
+target = "x86_64-unknown-linux-gnu"
+package = "scars"
+features = ["khal-sim"]
+test_runner = "native"
+examples_dir = "examples/sim"

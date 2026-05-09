@@ -1,0 +1,25 @@
+name = "e310x-qemu"
+target = "riscv32imac-unknown-none-elf"
+package = "scars"
+features = ["khal-e310x"]
+test_runner = "qemu"
+examples_dir = "examples/e310x"
+
+[linker]
+script = "khal/scars-khal-e310x/default.lds"
+
+[env]
+MTIME_FREQ_HZ = "10_000_000"
+
+[runner]
+program = "qemu-system-riscv32"
+args = [
+    "-machine", "sifive_e",
+    "-cpu", "sifive-e31",
+    "-semihosting-config", "enable=on,chardev=stdio0",
+    "-bios", "none",
+    "-chardev", "stdio,id=stdio0",
+    "-display", "none",
+    "-gdb", "tcp::1234",
+    "-kernel",
+]

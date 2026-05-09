@@ -13,6 +13,22 @@ members = [
     "examples/stm32f4/tasking",
     "examples/sim/hello",
     "unrecoverable-error",
+    "unrecoverable-error-macros",
+    "xtask"]
+default-members = [
+    "khal/scars-khal-e310x",
+    "khal/scars-khal-stm32f4",
+    "khal/scars-khal-sim",
+    "scars",
+    "scars-khal",
+    "scars-arch-riscv",
+    "scars-arch-cortex-m",
+    "scars-test",
+    "scars-macros",
+    "examples/stm32f4/interrupt",
+    "examples/stm32f4/tasking",
+    "examples/sim/hello",
+    "unrecoverable-error",
     "unrecoverable-error-macros"]
 resolver = "2"
 
@@ -38,3 +54,11 @@ incremental = false
 lto = 'fat'
 opt-level = 3
 panic = "abort"
+
+[profile.release.package.xtask]
+codegen-units = 16
+opt-level = 1
+
+[profile.dev.package.xtask]
+codegen-units = 16
+opt-level = 1
