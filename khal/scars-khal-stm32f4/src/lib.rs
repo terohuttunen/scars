@@ -2,7 +2,6 @@
 #![feature(ptr_sub_ptr)]
 #![feature(sync_unsafe_cell)]
 pub mod peripherals;
-use core::arch::global_asm;
 use core::cell::RefCell;
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
@@ -267,43 +266,45 @@ impl_flow_controller!(STM32F4);
 unsafe impl Sync for STM32F4 {}
 
 // Timer TIM2 interrupt handler
-global_asm!(
-    ".cfi_sections .debug_frame
-     .section .TIM2.user, \"ax\"
-     .global TIM2
-     .type TIM2,%function
-     .thumb_func",
-    ".cfi_startproc
-    TIM2:",
-    "ldr    r0,=CURRENT_THREAD_CONTEXT",
-    "ldr    r0, [r0]",
-    // Clear TIM2 interrupt bits in SR register
-    "movw   r1, 0x0010",
-    "movt   r1, 0x4000",
-    "mov    r2, #0",
-    "str    r2, [r1]",
-    // Read TIM5 CNT register
-    "movw   r1, 0x0C24",
-    "movt   r1, 0x4000",
-    "ldr    r2, [r1]",
-    // Read TIM5 CCR1
-    "movw   r1, 0x0C34",
-    "movt   r1, 0x4000",
-    "ldr    r3, [r1]",
-    // If TIM5 CNT < TIM5 CCR1 (compare register), then the timer has not yet reached the
-    // 64bit compare value, and this interrupt from TIM2 can be ignored.
-    "cmp    r2, r3",
-    "it     lt",
-    "bxlt   lr",
-    "push   {{r0, lr}}",
-    "bl     _private_kernel_wakeup_handler",
-    "pop    {{r0, lr}}",
-    "ldr    r1,=CURRENT_THREAD_CONTEXT",
-    "ldr    r1, [r1]",
-    "b      _switch_context",
-    ".cfi_endproc
-     .size TIM2, . - TIM2",
-);
+/// TIM2 IRQ — STM32F4's monotonic-clock alarm. Reads the chained
+/// TIM2/TIM5 64-bit counter against the 64-bit compare and either
+/// returns early (low-word fired but high word not yet at compare) or
+/// enters `_private_kernel_wakeup_handler` to fire expired kernel
+/// timers.
+#[unsafe(naked)]
+#[unsafe(export_name = "TIM2")]
+#[unsafe(link_section = ".TIM2.user")]
+pub unsafe extern "C" fn tim2() {
+    core::arch::naked_asm!(
+        "ldr    r0, =CURRENT_THREAD_CONTEXT",
+        "ldr    r0, [r0]",
+        // Clear TIM2 interrupt bits in SR register
+        "movw   r1, 0x0010",
+        "movt   r1, 0x4000",
+        "mov    r2, #0",
+        "str    r2, [r1]",
+        // Read TIM5 CNT register
+        "movw   r1, 0x0C24",
+        "movt   r1, 0x4000",
+        "ldr    r2, [r1]",
+        // Read TIM5 CCR1
+        "movw   r1, 0x0C34",
+        "movt   r1, 0x4000",
+        "ldr    r3, [r1]",
+        // If TIM5 CNT < TIM5 CCR1 (compare register), then the timer has
+        // not yet reached the 64bit compare value, and this interrupt
+        // from TIM2 can be ignored.
+        "cmp    r2, r3",
+        "it     lt",
+        "bxlt   lr",
+        "push   {{r0, lr}}",
+        "bl     _private_kernel_wakeup_handler",
+        "pop    {{r0, lr}}",
+        "ldr    r1, =CURRENT_THREAD_CONTEXT",
+        "ldr    r1, [r1]",
+        "b      _switch_context",
+    );
+}
 
 #[entry]
 fn init() -> ! {

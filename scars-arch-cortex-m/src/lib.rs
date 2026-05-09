@@ -1,5 +1,5 @@
 #![no_std]
-use core::arch::{asm, global_asm};
+use core::arch::{asm, naked_asm};
 use core::sync::atomic::AtomicPtr;
 use cortex_m::register::basepri;
 use cortex_m_rt::exception;
@@ -309,93 +309,91 @@ macro_rules! impl_flow_controller {
     };
 }
 
-global_asm!(
-    ".cfi_sections .debug_frame
-     .section .SVCall.user, \"ax\"
-     .global SVCall
-     .type SVCall,%function
-     .thumb_func",
-    ".cfi_startproc
-    SVCall:",
-    "push   {{r0, lr}}",
-    "ldr    lr,=CURRENT_THREAD_CONTEXT",
-    "ldr    lr, [lr]",
-    "str    lr, [sp]",
-    "bl     _private_kernel_syscall_handler",
-    // Copy syscall return value in r0 to thread stack
-    "mrs    r1, psp",
-    "str    r0, [r1]",
-    "pop    {{r0, lr}}",
-    "ldr    r1,=CURRENT_THREAD_CONTEXT",
-    "ldr    r1, [r1]",
-    "b      _switch_context",
-    ".cfi_endproc
-     .size SVCall, . - SVCall",
-);
+/// SVC exception handler. The function signature is fictional —
+/// SVCall receives state through the exception frame on PSP, not via
+/// the C ABI — but a typed naked symbol gives LLVM the right metadata
+/// and lets cortex-m-rt's vector table pick it up.
+#[unsafe(naked)]
+#[unsafe(export_name = "SVCall")]
+#[unsafe(link_section = ".SVCall.user")]
+pub unsafe extern "C" fn svcall() {
+    naked_asm!(
+        "push   {{r0, lr}}",
+        "ldr    lr, =CURRENT_THREAD_CONTEXT",
+        "ldr    lr, [lr]",
+        "str    lr, [sp]",
+        "bl     _private_kernel_syscall_handler",
+        // Copy syscall return value in r0 to thread stack
+        "mrs    r1, psp",
+        "str    r0, [r1]",
+        "pop    {{r0, lr}}",
+        "ldr    r1, =CURRENT_THREAD_CONTEXT",
+        "ldr    r1, [r1]",
+        "b      _switch_context",
+    );
+}
 
-global_asm!(
-    ".cfi_sections .debug_frame
-     .fpu vfpv4-d16
-     .section ._switch_context.user, \"ax\"
-     .global _switch_context
-     .type _switch_context,%function
-     .thumb_func",
-    ".cfi_startproc
-    _switch_context:",
-    "cmp    r0, r1",
-    "it     eq",
-    "beq    0f",
-    // Save callee saved registers
-    "stmia  r0, {{r4-r11, lr}}",
-    "add    r2, r0, #11*4",
-    "tst    lr, #0x10",
-    "it     eq",
-    "vstmiaeq r2, {{s16-s31}}",
-    // Store process stack pointer to context
-    "mrs    r2, psp",
-    "str    r2, [r0, #9 * 4]",
-    // Store basepri register to context
-    "mrs    r2, basepri",
-    "str    r2, [r0, #10 * 4]",
-    // Restore new context
-    // Restore psp from context 'sp'
-    "ldr    r2, [r1, #9 * 4]",
-    "msr    psp, r2",
-    // Restore callee saved registers
-    "ldmia  r1, {{r4-r11, lr}}",
-    "add    r2, r1, #11*4",
-    "tst    lr, #0x10",
-    "it     eq",
-    "vldmiaeq r2, {{s16-s31}}",
-    // Restore basepri
-    "ldr    r2, [r1, #10 * 4]",
-    "msr    basepri, r2",
-    "dsb",
-    "isb",
-    "0:",
-    "bx     lr",
-    ".cfi_endproc
-     .size _switch_context, . - _switch_context",
-);
+/// Context-switch primitive entered from `b _switch_context` at the
+/// tail of every exception handler. `r0` is the outgoing thread's
+/// `Context*`, `r1` the incoming one. Returns via `bx lr` performing
+/// the parent exception's `EXC_RETURN`.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = "._switch_context.user")]
+pub unsafe extern "C" fn _switch_context(_old: *mut Context, _new: *const Context) {
+    naked_asm!(
+        ".fpu vfpv4-d16",
+        "cmp    r0, r1",
+        "it     eq",
+        "beq    0f",
+        // Save callee saved registers
+        "stmia  r0, {{r4-r11, lr}}",
+        "add    r2, r0, #11*4",
+        "tst    lr, #0x10",
+        "it     eq",
+        "vstmiaeq r2, {{s16-s31}}",
+        // Store process stack pointer to context
+        "mrs    r2, psp",
+        "str    r2, [r0, #9 * 4]",
+        // Store basepri register to context
+        "mrs    r2, basepri",
+        "str    r2, [r0, #10 * 4]",
+        // Restore new context
+        // Restore psp from context 'sp'
+        "ldr    r2, [r1, #9 * 4]",
+        "msr    psp, r2",
+        // Restore callee saved registers
+        "ldmia  r1, {{r4-r11, lr}}",
+        "add    r2, r1, #11*4",
+        "tst    lr, #0x10",
+        "it     eq",
+        "vldmiaeq r2, {{s16-s31}}",
+        // Restore basepri
+        "ldr    r2, [r1, #10 * 4]",
+        "msr    basepri, r2",
+        "dsb",
+        "isb",
+        "0:",
+        "bx     lr",
+    );
+}
 
-// All interrupts are by default handled by the common interrupt handler
-global_asm!(
-    ".cfi_sections .debug_frame
-     .section .DefaultHandler.user, \"ax\"
-     .global DefaultHandler
-     .type DefaultHandler,%function
-     .thumb_func",
-    ".cfi_startproc
-    DefaultHandler:",
-    "ldr    r0,=CURRENT_THREAD_CONTEXT",
-    "ldr    r0, [r0]",
-    "push   {{r0, lr}}",
-    "bl     _private_kernel_interrupt_handler",
-    "pop    {{r0, lr}}",
-    "bx      lr",
-    ".cfi_endproc
-     .size DefaultHandler, . - DefaultHandler",
-);
+/// Common entry for any IRQ that doesn't have its own dedicated
+/// handler. Routes through `_private_kernel_interrupt_handler` which
+/// looks up the per-IRQ closure registered via `InterruptHandler`.
+#[unsafe(naked)]
+#[unsafe(export_name = "DefaultHandler")]
+#[unsafe(link_section = ".DefaultHandler.user")]
+pub unsafe extern "C" fn default_handler() {
+    naked_asm!(
+        "ldr    r0, =CURRENT_THREAD_CONTEXT",
+        "ldr    r0, [r0]",
+        "push   {{r0, lr}}",
+        "bl     _private_kernel_interrupt_handler",
+        "pop    {{r0, lr}}",
+        "bx     lr",
+    );
+}
 
 #[exception]
 unsafe fn HardFault(_frame: &::cortex_m_rt::ExceptionFrame) -> ! {
@@ -432,22 +430,21 @@ unsafe fn DebugMonitor() -> ! {
     loop {}
 }
 
-global_asm!(
-    ".cfi_sections .debug_frame
-     .section .PendSV.user, \"ax\"
-     .global PendSV
-     .type PendSV,%function
-     .thumb_func",
-    ".cfi_startproc
-    PendSV:",
-    "ldr    r0,=CURRENT_THREAD_CONTEXT",
-    "ldr    r0, [r0]",
-    "push   {{r0, lr}}",
-    "bl     _private_kernel_service_call_handler",
-    "pop    {{r0, lr}}",
-    "ldr    r1,=CURRENT_THREAD_CONTEXT",
-    "ldr    r1, [r1]",
-    "b      _switch_context",
-    ".cfi_endproc
-     .size PendSV, . - PendSV",
-);
+/// PendSV handler — the kernel's deferred-work / context-switch
+/// trampoline. Pended via `pend_service_call`; runs at the lowest
+/// hardware priority so all other ISRs finish first.
+#[unsafe(naked)]
+#[unsafe(export_name = "PendSV")]
+#[unsafe(link_section = ".PendSV.user")]
+pub unsafe extern "C" fn pendsv() {
+    naked_asm!(
+        "ldr    r0, =CURRENT_THREAD_CONTEXT",
+        "ldr    r0, [r0]",
+        "push   {{r0, lr}}",
+        "bl     _private_kernel_service_call_handler",
+        "pop    {{r0, lr}}",
+        "ldr    r1, =CURRENT_THREAD_CONTEXT",
+        "ldr    r1, [r1]",
+        "b      _switch_context",
+    );
+}
