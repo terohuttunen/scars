@@ -5,6 +5,18 @@
 //! - `#[fault_handler]`: Marks a function as the error handler
 //! - `fault!`: Macro for raising faults
 //!
+//! Two formatting backends, selected by feature on this crate (forwarded
+//! from `scars-fault`):
+//!
+//! - `defmt` (embedded targets): the derive emits `defmt::Format` plus the
+//!   dyn-safe `Fault::defmt_format` shim. Format strings flow through
+//!   `defmt::write!`.
+//! - `display` (host/sim targets): the derive emits `core::fmt::Display`.
+//!   Format strings flow through `core::write!`.
+//!
+//! The two features are mutually exclusive — picking both is a build error
+//! in `scars-fault`.
+//!
 //! # Custom Error Formatting
 //!
 //! The derive macro supports custom formatting for both structs and enums:
@@ -47,10 +59,26 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse_macro_input;
 
-/// Derives the `Fault` trait for a type with custom formatting.
+#[derive(Clone, Copy)]
+enum Backend {
+    Defmt,
+    Display,
+}
+
+#[cfg(all(feature = "defmt", not(feature = "display")))]
+const BACKEND: Backend = Backend::Defmt;
+#[cfg(all(feature = "display", not(feature = "defmt")))]
+const BACKEND: Backend = Backend::Display;
+#[cfg(all(feature = "defmt", feature = "display"))]
+compile_error!("scars-fault-macros: features `defmt` and `display` are mutually exclusive");
+#[cfg(not(any(feature = "defmt", feature = "display")))]
+compile_error!("scars-fault-macros: enable one of features `defmt` or `display`");
+
+/// Derives the `Fault` trait and a matching formatting impl for a type.
 ///
-/// This macro can be used on structs and enums to implement the `Fault` trait.
-/// It requires that the type already implements `Debug` and `Display`.
+/// Under the `defmt` backend the derive emits a `defmt::Format` impl plus
+/// the dyn-safe `Fault::defmt_format` shim. Under the `display` backend it
+/// emits a `core::fmt::Display` impl.
 ///
 /// # Custom Formatting
 ///
@@ -92,46 +120,6 @@ use syn::parse_macro_input;
 ///     Debug { value: Vec<u8> },
 /// }
 /// ```
-///
-/// # Examples
-///
-/// Basic usage:
-///
-/// ```rust
-/// use scars_fault::Fault;
-///
-/// #[derive(Debug, Fault)]
-/// struct MyError;
-/// ```
-///
-/// With custom formatting:
-///
-/// ```rust
-/// use scars_fault::Fault;
-///
-/// #[derive(Debug, Fault)]
-/// #[fault("Error in {module}: {message}")]
-/// struct ModuleError<'a> {
-///     module: &'a str,
-///     message: &'a str,
-/// }
-/// ```
-///
-/// Enum with custom formatting:
-///
-/// ```rust
-/// use scars_fault::Fault;
-///
-/// #[derive(Debug, Fault)]
-/// enum NetworkError<'a> {
-///     #[fault("Connection failed to {host}:{port}")]
-///     ConnectionFailed { host: &'a str, port: u16 },
-///     #[fault("Timeout after {ms}ms")]
-///     Timeout { ms: u32 },
-///     #[fault("Invalid response: {status:?}")]
-///     InvalidResponse { status: Vec<u8> },
-/// }
-/// ```
 #[proc_macro_derive(Fault, attributes(fault))]
 pub fn derive_fault(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
@@ -140,7 +128,7 @@ pub fn derive_fault(input: TokenStream) -> TokenStream {
     let generics = &input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let expanded = match &input.data {
+    let format_body = match &input.data {
         syn::Data::Enum(data) => {
             let mut format_arms = Vec::new();
 
@@ -228,37 +216,34 @@ pub fn derive_fault(input: TokenStream) -> TokenStream {
                         .replace_all(&modified_format_str, "{:?}")
                         .to_string();
 
+                    let write = backend_write(&modified_format_str, &ordered_field_patterns);
                     if field_patterns.len() > 0 {
                         format_arms.push(quote! {
-                            #struct_or_enum_name::#variant_name #variant_pattern => write!(f, #modified_format_str, #(#ordered_field_patterns),*),
+                            #struct_or_enum_name::#variant_name #variant_pattern => #write,
                         });
                     } else {
                         format_arms.push(quote! {
-                            #struct_or_enum_name::#variant_name => write!(f, #modified_format_str),
+                            #struct_or_enum_name::#variant_name => #write,
                         });
                     }
                 } else {
+                    let variant_name_str = variant_name.to_string();
+                    let write = backend_write(&variant_name_str, &[]);
                     if field_patterns.len() > 0 {
                         format_arms.push(quote! {
-                            #struct_or_enum_name::#variant_name #variant_pattern => write!(f, stringify!(#variant_name)),
+                            #struct_or_enum_name::#variant_name #variant_pattern => #write,
                         });
                     } else {
                         format_arms.push(quote! {
-                            #struct_or_enum_name::#variant_name => write!(f, stringify!(#variant_name)),
+                            #struct_or_enum_name::#variant_name => #write,
                         });
                     }
                 }
             }
 
             quote! {
-                impl #impl_generics Fault for #struct_or_enum_name #ty_generics #where_clause {}
-
-                impl #impl_generics core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
-                    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                        match self {
-                            #(#format_arms)*
-                        }
-                    }
+                match self {
+                    #(#format_arms)*
                 }
             }
         }
@@ -305,67 +290,79 @@ pub fn derive_fault(input: TokenStream) -> TokenStream {
                     .replace_all(&modified_format_str, "{:?}")
                     .to_string();
 
-                quote! {
-                    impl #impl_generics Fault for #struct_or_enum_name #ty_generics #where_clause {}
-
-                    impl #impl_generics core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
-                        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                            write!(f, #modified_format_str, #(#field_patterns),*)
-                        }
-                    }
-                }
+                backend_write(&modified_format_str, &field_patterns)
             } else {
-                quote! {
-                    impl #impl_generics Fault for #struct_or_enum_name #ty_generics #where_clause {}
-
-                    impl #impl_generics core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
-                        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                            write!(f, stringify!(#struct_or_enum_name))
-                        }
-                    }
-                }
+                let name_str = struct_or_enum_name.to_string();
+                backend_write(&name_str, &[])
             }
         }
         _ => unreachable!(),
     };
 
-    TokenStream::from(expanded)
+    let trait_impls = match BACKEND {
+        Backend::Defmt => quote! {
+            impl #impl_generics ::scars_fault::Fault for #struct_or_enum_name #ty_generics #where_clause {
+                fn defmt_format(&self, __fmt: ::scars_fault::__defmt::Formatter<'_>) {
+                    #format_body
+                }
+            }
+
+            impl #impl_generics ::scars_fault::__defmt::Format for #struct_or_enum_name #ty_generics #where_clause {
+                fn format(&self, __fmt: ::scars_fault::__defmt::Formatter<'_>) {
+                    <Self as ::scars_fault::Fault>::defmt_format(self, __fmt)
+                }
+            }
+        },
+        Backend::Display => quote! {
+            impl #impl_generics ::scars_fault::Fault for #struct_or_enum_name #ty_generics #where_clause {}
+
+            impl #impl_generics ::core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
+                fn fmt(&self, __fmt: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                    #format_body
+                }
+            }
+        },
+    };
+
+    TokenStream::from(trait_impls)
+}
+
+fn backend_write(format_str: &str, args: &[proc_macro2::TokenStream]) -> proc_macro2::TokenStream {
+    match BACKEND {
+        Backend::Defmt => {
+            if args.is_empty() {
+                quote! { ::scars_fault::__defmt::write!(__fmt, #format_str) }
+            } else {
+                quote! { ::scars_fault::__defmt::write!(__fmt, #format_str, #(#args),*) }
+            }
+        }
+        Backend::Display => {
+            if args.is_empty() {
+                quote! { ::core::write!(__fmt, #format_str) }
+            } else {
+                quote! { ::core::write!(__fmt, #format_str, #(#args),*) }
+            }
+        }
+    }
 }
 
 /// Marks a function as the fault handler.
 ///
-/// This attribute macro marks a function as the handler for faults.
-/// The function must have the signature `fn(&FaultInfo) -> !`.
+/// The function must have the signature `fn(&FaultInfo) -> !`. The macro
+/// re-exports it under the symbol `_fault_handler`, overriding the weak
+/// default provided by `scars-fault`.
 ///
 /// # Examples
 ///
-/// Using the fully qualified path:
-///
-/// ```rust
-/// use scars_fault::{Fault, FaultInfo};
+/// ```rust,ignore
+/// use scars_fault::{Fault, FaultInfo, fault_handler};
 ///
 /// #[fault_handler]
 /// fn my_handler(info: &FaultInfo) -> ! {
 ///     if let Some(location) = info.location {
 ///         // Log error with location
 ///     }
-///     // Terminate the program
-///     core::process::exit(1);
-/// }
-/// ```
-///
-/// Using the type directly:
-///
-/// ```rust
-/// use scars_fault::Fault;
-///
-/// #[fault_handler]
-/// fn my_handler(info: &::scars_fault::FaultInfo) -> ! {
-///     if let Some(location) = info.location {
-///         // Log error with location
-///     }
-///     // Terminate the program
-///     core::process::exit(1);
+///     loop {}
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -390,21 +387,21 @@ pub fn fault_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Raises a fault.
+/// Raises a fault by passing the given `Fault` value to the registered handler.
 ///
-/// This macro takes an expression that evaluates to an `Fault`
-/// and calls the error handler with it.
+/// Takes an expression that evaluates to a value implementing `Fault`
+/// and forwards it to the handler installed via `#[fault_handler]` (or the
+/// weak default in `scars-fault`).
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use scars_fault::{Fault, fault};
 ///
 /// #[derive(Debug, Fault)]
 /// #[fault("My error occurred")]
 /// struct MyError;
 ///
-/// // This will call the error handler
 /// fault!(MyError);
 /// ```
 #[proc_macro]
@@ -413,7 +410,7 @@ pub fn fault(input: TokenStream) -> TokenStream {
 
     quote! {
         unsafe {
-            scars_fault::handle_fault(&#error)
+            ::scars_fault::handle_fault(&#error)
         }
     }
     .into()

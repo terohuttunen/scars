@@ -5,10 +5,8 @@ edition = "2024"
 
 [dependencies]
 defmt = { version = "1.0.1", optional = true }
-scars-fault-macros = { version = "0.1.0", path = "../scars-fault-macros", features = ["defmt"] }
+scars-fault-macros = { version = "0.1.0", path = "../scars-fault-macros", default-features = false }
 
 [features]
-default = ["defmt", "debug", "display"]
-defmt = ["dep:defmt"]
-debug = []
-display = []
+defmt = ["dep:defmt", "scars-fault-macros/defmt"]
+display = ["scars-fault-macros/display"]

@@ -4,6 +4,7 @@ use const_env::from_env;
 use core::arch::global_asm;
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
+use defmt_semihosting as _;
 use riscv::register::mstatus;
 use scars_arch_riscv::RISCV32;
 use scars_khal::*;

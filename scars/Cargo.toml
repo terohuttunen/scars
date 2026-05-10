@@ -84,6 +84,7 @@ bit_field = "0.10.2"
 bitflags = { version = "2.4", default-features = false }
 const_env = "0.1.2"
 critical-section = { version = "1.1.1" }
+defmt = { version = "1.0.1", optional = true }
 static_cell = "2.1.0"
 scars-khal = { version = "0.1.0", path = "../scars-khal" }
 scars-macros = { version = "0.1.0", path = "../scars-macros" }
@@ -111,6 +112,6 @@ semihosting = { version = "0.1.4" }
 default = ["relative-delay"]
 tracing = []
 relative-delay = []
-khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting"]
-khal-sim = ["dep:scars-khal-sim", "scars-test/std"]
-khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt"]
+khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "scars-fault/defmt", "dep:defmt"]
+khal-sim = ["dep:scars-khal-sim", "scars-test/std", "scars-fault/display"]
+khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt", "scars-fault/defmt", "dep:defmt"]

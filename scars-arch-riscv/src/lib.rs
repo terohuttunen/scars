@@ -123,7 +123,7 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
     };
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug, defmt::Format)]
 pub enum FaultKind {
     InstructionAddressMisaligned = 0,
     InstructionAddressFault = 1,
@@ -199,7 +199,8 @@ fn on_exit(_exit_code: i32) -> ! {
     }
 }
 
-fn on_error(_error: &dyn Fault) -> ! {
+fn on_error(error: &dyn Fault) -> ! {
+    defmt::error!("{}", error);
     on_exit(1)
 }
 

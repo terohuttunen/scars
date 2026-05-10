@@ -6,8 +6,8 @@ use cortex_m_rt::exception;
 pub use rtt_target::rprint as print;
 pub use rtt_target::rprintln as println;
 use rtt_target::rtt_init_print;
-use scars_khal::*;
 use scars_fault::*;
+use scars_khal::*;
 
 #[unsafe(no_mangle)]
 pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
@@ -120,7 +120,7 @@ impl ContextInfo for Context {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug, defmt::Format)]
 pub enum FaultKind {
     HardFault = 3,
     MemManage = 4,
@@ -196,7 +196,7 @@ pub fn on_exit(exit_code: i32) -> ! {
 }
 
 pub fn on_error(error: &dyn Fault) -> ! {
-    println!("{}", error);
+    defmt::panic!("{}", error);
 
     on_exit(1);
 }

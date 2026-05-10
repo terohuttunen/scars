@@ -15,6 +15,8 @@ test = false
 [dependencies]
 cortex-m = { version = "0.7.7", features = ["critical-section-single-core", "inline-asm"] }
 cortex-m-rt = "0.7.3"
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
 scars-khal = { path = "../../scars-khal" }
 scars-arch-cortex-m = { path = "../../scars-arch-cortex-m" }
 static_cell = "2.1.0"

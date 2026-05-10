@@ -13,6 +13,8 @@ doctest = false
 test = false
 
 [dependencies]
+defmt = "1.0.1"
+defmt-semihosting = "0.3.0"
 riscv = { version = "0.10.1"}
 scars-khal = { path = "../../scars-khal" }
 scars-arch-riscv = { path = "../../scars-arch-riscv" }

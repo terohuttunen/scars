@@ -7,6 +7,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use cortex_m_rt::entry;
 use critical_section::Mutex;
+use defmt_rtt as _;
 pub use peripherals::Peripherals;
 pub use rtt_target::debug_rprint as debug_printk;
 pub use rtt_target::debug_rprintln as debug_printkln;
