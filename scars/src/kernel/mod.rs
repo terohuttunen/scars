@@ -1,6 +1,7 @@
 #![allow(unused_imports)]
 pub(crate) mod clock;
 pub mod exception;
+pub mod fault_context;
 pub(crate) mod idle;
 pub(crate) mod scheduler;
 pub(crate) mod stack;

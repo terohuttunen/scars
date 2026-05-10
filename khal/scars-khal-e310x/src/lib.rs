@@ -257,8 +257,8 @@ impl FlowController for E310x {
         RISCV32::on_exit(exit_code)
     }
 
-    fn on_error(error: &dyn Fault) -> ! {
-        RISCV32::on_error(error)
+    fn on_fault(info: &::scars_khal::FaultInfo) -> ! {
+        RISCV32::on_fault(info)
     }
 
     fn on_breakpoint() {

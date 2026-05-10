@@ -688,6 +688,8 @@ impl RawScheduler {
     }
 }
 
+static SCHEDULER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 static SCHEDULER: SyncUnsafeCell<MaybeUninit<Scheduler>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
@@ -726,8 +728,17 @@ impl Scheduler {
         unsafe {
             let _ = (&mut *SCHEDULER.get()).write(Scheduler::new(idle_thread));
         }
+        SCHEDULER_INITIALIZED.store(true, Ordering::Release);
         let idle_context = idle_thread.context.as_ptr() as *mut _;
         start_first_thread(idle_context)
+    }
+
+    /// True once `Scheduler::start` has finished installing the
+    /// scheduler instance. Reading scheduler state before this returns
+    /// `true` is undefined behaviour, so the kernel fault handler uses
+    /// it to dispatch to a `BootstrapContext` instead.
+    pub(crate) fn is_initialized() -> bool {
+        SCHEDULER_INITIALIZED.load(Ordering::Acquire)
     }
 
     fn instance() -> &'static Scheduler {

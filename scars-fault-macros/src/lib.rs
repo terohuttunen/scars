@@ -122,6 +122,28 @@ compile_error!("scars-fault-macros: enable one of features `defmt` or `display`"
 /// ```
 #[proc_macro_derive(Fault, attributes(fault))]
 pub fn derive_fault(input: TokenStream) -> TokenStream {
+    derive_format_trait(input, syn::parse_quote!(::scars_fault::Fault))
+}
+
+/// Derives the `FaultContext` trait and a matching formatting impl.
+///
+/// `FaultContext` is the contextual-frame counterpart to [`Fault`]: a
+/// type implementing it represents context attached to a propagating
+/// fault (running thread, captured registers, backtrace, etc.). It
+/// uses the same `#[fault("...")]` format-string attribute as
+/// `#[derive(Fault)]`.
+#[proc_macro_derive(FaultContext, attributes(fault))]
+pub fn derive_fault_context(input: TokenStream) -> TokenStream {
+    derive_format_trait(input, syn::parse_quote!(::scars_fault::FaultContext))
+}
+
+/// Shared codegen for `derive(Fault)` and `derive(FaultContext)`.
+///
+/// `trait_path` is the absolute path of the trait being implemented;
+/// the emitted code is otherwise identical between the two derives
+/// (both opt into the dyn-safe `defmt_format` shim under the `defmt`
+/// backend, and a plain `Display` impl under the `display` backend).
+fn derive_format_trait(input: TokenStream, trait_path: syn::Path) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
 
     let struct_or_enum_name = &input.ident;
@@ -301,7 +323,7 @@ pub fn derive_fault(input: TokenStream) -> TokenStream {
 
     let trait_impls = match BACKEND {
         Backend::Defmt => quote! {
-            impl #impl_generics ::scars_fault::Fault for #struct_or_enum_name #ty_generics #where_clause {
+            impl #impl_generics #trait_path for #struct_or_enum_name #ty_generics #where_clause {
                 fn defmt_format(&self, __fmt: ::scars_fault::__defmt::Formatter<'_>) {
                     #format_body
                 }
@@ -309,12 +331,12 @@ pub fn derive_fault(input: TokenStream) -> TokenStream {
 
             impl #impl_generics ::scars_fault::__defmt::Format for #struct_or_enum_name #ty_generics #where_clause {
                 fn format(&self, __fmt: ::scars_fault::__defmt::Formatter<'_>) {
-                    <Self as ::scars_fault::Fault>::defmt_format(self, __fmt)
+                    <Self as #trait_path>::defmt_format(self, __fmt)
                 }
             }
         },
         Backend::Display => quote! {
-            impl #impl_generics ::scars_fault::Fault for #struct_or_enum_name #ty_generics #where_clause {}
+            impl #impl_generics #trait_path for #struct_or_enum_name #ty_generics #where_clause {}
 
             impl #impl_generics ::core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
                 fn fmt(&self, __fmt: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {

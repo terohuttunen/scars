@@ -14,6 +14,7 @@ const fn maxu8(left: u8, right: u8) -> u8 {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ConstParamTy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Priority {
     Thread(ThreadPriority),

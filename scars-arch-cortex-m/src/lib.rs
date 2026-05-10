@@ -135,6 +135,12 @@ pub struct CortexMFault {
     frame: *const Context,
 }
 
+#[derive(Debug, FaultContext)]
+#[fault("cortex-m frame at {frame:?}")]
+pub struct CortexMContext {
+    pub frame: *const Context,
+}
+
 pub fn start_first_thread(idle_context: *mut Context) -> ! {
     unsafe {
         CURRENT_THREAD_CONTEXT.store(idle_context, core::sync::atomic::Ordering::SeqCst);
@@ -195,10 +201,25 @@ pub fn on_exit(exit_code: i32) -> ! {
     }
 }
 
-pub fn on_error(error: &dyn Fault) -> ! {
-    defmt::panic!("{}", error);
+pub fn on_fault(info: &FaultInfo) -> ! {
+    let plat = CortexMContext {
+        frame: CURRENT_THREAD_CONTEXT.load(core::sync::atomic::Ordering::SeqCst) as *const _,
+    };
+    let plat_node = FaultContextNode {
+        frame: &plat,
+        next: info.context,
+    };
+    let info = info.with_context(&plat_node);
 
-    on_exit(1);
+    if let Some(loc) = info.location {
+        defmt::error!("Fault at {}:{}: {}", loc.file(), loc.line(), info.error);
+    } else {
+        defmt::error!("Fault: {}", info.error);
+    }
+    for (i, frame) in info.context_iter().enumerate() {
+        defmt::error!("  {}: {}", i + 1, frame);
+    }
+    defmt::panic!()
 }
 
 pub fn on_breakpoint() {
@@ -281,8 +302,8 @@ macro_rules! impl_flow_controller {
             }
 
             #[inline(always)]
-            fn on_error(error: &dyn Fault) -> ! {
-                $crate::on_error(error)
+            fn on_fault(info: &::scars_khal::FaultInfo) -> ! {
+                $crate::on_fault(info)
             }
 
             #[inline(always)]

@@ -1,6 +1,8 @@
 use crate::priority::InterruptPriority;
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
+use scars_fault::FaultInfo;
+use scars_fault::FaultInfo;
 use scars_khal::*;
 #[cfg(feature = "khal-e310x")]
 pub use scars_khal_e310x as kernel_hal;
@@ -8,7 +10,6 @@ pub use scars_khal_e310x as kernel_hal;
 pub use scars_khal_sim as kernel_hal;
 #[cfg(feature = "khal-stm32f4")]
 pub use scars_khal_stm32f4 as kernel_hal;
-use scars_fault::Fault;
 
 pub use kernel_hal::pac;
 
@@ -124,8 +125,8 @@ pub fn exit(exit_code: i32) -> ! {
 
 #[allow(dead_code)]
 #[inline(always)]
-pub fn error(error: &dyn Fault) -> ! {
-    <kernel_hal::HAL as FlowController>::on_error(error)
+pub fn fault(info: &FaultInfo) -> ! {
+    <kernel_hal::HAL as FlowController>::on_fault(info)
 }
 
 #[allow(dead_code)]

@@ -22,6 +22,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(C)]
 pub enum ThreadExecutionState {
     /// The initial state after thread creation. Memory has been allocated,

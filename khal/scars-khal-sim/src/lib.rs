@@ -85,6 +85,12 @@ pub struct SimulatorError {
     kind: SimulatorErrorKind,
 }
 
+#[derive(Debug, FaultContext)]
+#[fault("simulator pid {pid}")]
+pub struct SimContext {
+    pub pid: libc::pid_t,
+}
+
 impl SimulatorError {
     pub fn new(kind: SimulatorErrorKind) -> SimulatorError {
         SimulatorError { kind }
@@ -274,8 +280,19 @@ impl FlowController for Simulator {
         }
     }
 
-    fn on_error(error: &dyn Fault) -> ! {
-        println!("{}", error);
+    fn on_fault(info: &FaultInfo) -> ! {
+        let plat = SimContext { pid: unsafe { libc::getpid() } };
+        let plat_node = FaultContextNode { frame: &plat, next: info.context };
+        let info = info.with_context(&plat_node);
+
+        if let Some(loc) = info.location {
+            eprintln!("Fault at {}: {}", loc, info.error);
+        } else {
+            eprintln!("Fault: {}", info.error);
+        }
+        for (i, frame) in info.context_iter().enumerate() {
+            eprintln!("  {}: {}", i + 1, frame);
+        }
 
         unsafe {
             libc::exit(1);

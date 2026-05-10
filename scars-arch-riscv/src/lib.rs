@@ -2,8 +2,8 @@
 use bit_field::BitField;
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicPtr, Ordering};
+use scars_fault::{Fault, FaultContext, FaultContextNode, FaultInfo};
 use scars_khal::*;
-use scars_fault::Fault;
 
 global_asm!(include_str!("trap.S"));
 
@@ -179,6 +179,12 @@ impl RISCFault {
     }
 }
 
+#[derive(Debug, FaultContext)]
+#[fault("riscv frame at {frame:?}")]
+pub struct RiscvContext {
+    pub frame: *const RISCVTrapFrame,
+}
+
 unsafe extern "C" {
     unsafe fn _start_first_thread(idle_context: *mut ()) -> !;
 }
@@ -199,8 +205,24 @@ fn on_exit(_exit_code: i32) -> ! {
     }
 }
 
-fn on_error(error: &dyn Fault) -> ! {
-    defmt::error!("{}", error);
+fn on_fault(info: &FaultInfo) -> ! {
+    let plat = RiscvContext {
+        frame: CURRENT_THREAD_CONTEXT.load(Ordering::SeqCst) as *const _,
+    };
+    let plat_node = FaultContextNode {
+        frame: &plat,
+        next: info.context,
+    };
+    let info = info.with_context(&plat_node);
+
+    if let Some(loc) = info.location {
+        defmt::error!("Fault at {}:{}: {}", loc.file(), loc.line(), info.error);
+    } else {
+        defmt::error!("Fault: {}", info.error);
+    }
+    for (i, frame) in info.context_iter().enumerate() {
+        defmt::error!("  {}: {}", i + 1, frame);
+    }
     on_exit(1)
 }
 
@@ -227,8 +249,8 @@ impl FlowController for RISCV32 {
     }
 
     #[inline(always)]
-    fn on_error(error: &dyn Fault) -> ! {
-        crate::on_error(error)
+    fn on_fault(info: &FaultInfo) -> ! {
+        crate::on_fault(info)
     }
 
     fn on_breakpoint() {

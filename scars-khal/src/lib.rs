@@ -264,7 +264,7 @@
 //!         loop {}
 //!     }
 //!
-//!     fn on_error(error: &dyn Fault) -> ! {
+//!     fn on_fault(info: &FaultInfo) -> ! {
 //!         loop {}
 //!     }
 //!
@@ -323,7 +323,7 @@
 pub mod callbacks;
 pub use aligned::*;
 pub use callbacks::KernelCallbacks;
-pub use scars_fault::Fault;
+pub use scars_fault::{Fault, FaultContext, FaultContextNode, FaultInfo};
 
 unsafe extern "Rust" {
     pub unsafe fn start_kernel() -> !;
@@ -557,14 +557,16 @@ pub trait FlowController: Sync {
     /// * `exit_code` - The exit code of the kernel.
     fn on_exit(exit_code: i32) -> !;
 
-    /// Called when an error occurs.
+    /// Called when an unrecoverable fault occurs.
     ///
-    /// This function is called when an error occurs. It should not return.
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - The error that occurred.
-    fn on_error(error: &dyn Fault) -> !;
+    /// Receives the full [`FaultInfo`] — the leaf fault, the original
+    /// capture location, and the context chain accumulated by upstream
+    /// layers (typically the kernel, which has already prepended a
+    /// `ThreadContext` / `InterruptContext` / `BootstrapContext`). The
+    /// implementation may prepend its own platform-specific
+    /// [`FaultContext`] (captured registers, MCAUSE/MEPC, etc.) before
+    /// formatting and terminating. Must not return.
+    fn on_fault(info: &FaultInfo) -> !;
 
     /// Called when a breakpoint is hit.
     fn on_breakpoint();

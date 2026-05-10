@@ -24,7 +24,9 @@ pub mod time;
 
 extern crate self as scars;
 
-pub use scars_fault::{Fault, FaultInfo, fault, fault_handler, handle_fault};
+pub use scars_fault::{
+    Fault, FaultContext, FaultContextNode, FaultInfo, fault, fault_handler, handle_fault,
+};
 pub use scars_macros::*;
 
 pub use events::{
