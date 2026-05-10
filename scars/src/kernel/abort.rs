@@ -1,6 +1,6 @@
 use crate::kernel::hal;
+use scars_fault::Fault;
 use scars_khal::FlowController;
-use unrecoverable_error::UnrecoverableError;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn abort() -> ! {

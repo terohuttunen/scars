@@ -1,11 +1,11 @@
 [package]
-name = "unrecoverable-error"
+name = "scars-fault"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 defmt = { version = "1.0.1", optional = true }
-unrecoverable-error-macros = { version = "0.1.0", path = "../unrecoverable-error-macros", features = ["defmt"] }
+scars-fault-macros = { version = "0.1.0", path = "../scars-fault-macros", features = ["defmt"] }
 
 [features]
 default = ["defmt", "debug", "display"]

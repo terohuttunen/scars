@@ -7,7 +7,7 @@ use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use scars_khal::*;
-use unrecoverable_error::*;
+use scars_fault::*;
 
 // Sent to the current thread on syscall
 const SYSCALL_SIGNAL: libc::c_int = libc::SIGUSR1;
@@ -46,41 +46,41 @@ static mut __EXTERNAL_INTERRUPTS: [InterruptVector; MAX_INTERRUPT + 1] = [Interr
 }; MAX_INTERRUPT + 1];
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, Copy, Clone, Debug, UnrecoverableError)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug, Fault)]
 pub enum SimulatorErrorKind {
-    #[unrecoverable_error("Mutex lock failed for mutex at {mutex_ptr:?}")]
+    #[fault("Mutex lock failed for mutex at {mutex_ptr:?}")]
     MutexLockFailed {
         mutex_ptr: *const libc::pthread_mutex_t,
     } = 1,
-    #[unrecoverable_error("Condition wait failed for condition at {cond_ptr:?}")]
+    #[fault("Condition wait failed for condition at {cond_ptr:?}")]
     CondWaitFailed {
         cond_ptr: *const libc::pthread_cond_t,
     } = 2,
-    #[unrecoverable_error("Mutex unlock failed for mutex at {mutex_ptr:?}")]
+    #[fault("Mutex unlock failed for mutex at {mutex_ptr:?}")]
     MutexUnlockFailed {
         mutex_ptr: *const libc::pthread_mutex_t,
     } = 3,
-    #[unrecoverable_error(
+    #[fault(
         "Thread stack initialization failed for thread '{name}' with stack size {stack_size}"
     )]
     ThreadStackInitFailed {
         name: &'static str,
         stack_size: usize,
     } = 4,
-    #[unrecoverable_error("Failed to read clock {clock_id}")]
+    #[fault("Failed to read clock {clock_id}")]
     ClockReadFailed { clock_id: libc::clockid_t } = 5,
-    #[unrecoverable_error("Failed to set signal mask for signal {signal}")]
+    #[fault("Failed to set signal mask for signal {signal}")]
     SignalMaskFailed { signal: libc::c_int } = 6,
-    #[unrecoverable_error("Failed to set signal handler for signal {signal}")]
+    #[fault("Failed to set signal handler for signal {signal}")]
     SignalHandlerFailed { signal: libc::c_int } = 7,
-    #[unrecoverable_error("Unhandled exception: {exception_type}")]
+    #[fault("Unhandled exception: {exception_type}")]
     UnhandledException { exception_type: &'static str } = 8,
-    #[unrecoverable_error("Unknown error")]
+    #[fault("Unknown error")]
     Unknown = 255,
 }
 
-#[derive(Debug, UnrecoverableError)]
-#[unrecoverable_error("Simulator error: {kind:?}")]
+#[derive(Debug, Fault)]
+#[fault("Simulator error: {kind:?}")]
 pub struct SimulatorError {
     kind: SimulatorErrorKind,
 }
@@ -119,14 +119,14 @@ impl VirtualContext {
     pub fn suspend(&self) {
         unsafe {
             if libc::pthread_mutex_lock(self.suspension_lock.get()) != 0 {
-                unrecoverable_error!(SimulatorErrorKind::MutexLockFailed {
+                fault!(SimulatorErrorKind::MutexLockFailed {
                     mutex_ptr: self.suspension_lock.get()
                 });
             }
 
             while !self.is_resumed() {
                 if libc::pthread_cond_wait(self.suspension.get(), self.suspension_lock.get()) != 0 {
-                    unrecoverable_error!(SimulatorErrorKind::CondWaitFailed {
+                    fault!(SimulatorErrorKind::CondWaitFailed {
                         cond_ptr: self.suspension.get()
                     });
                 }
@@ -134,7 +134,7 @@ impl VirtualContext {
             self.set_resumed(false);
 
             if libc::pthread_mutex_unlock(self.suspension_lock.get()) != 0 {
-                unrecoverable_error!(SimulatorErrorKind::MutexUnlockFailed {
+                fault!(SimulatorErrorKind::MutexUnlockFailed {
                     mutex_ptr: self.suspension_lock.get()
                 });
             }
@@ -173,7 +173,7 @@ impl ContextInfo for VirtualContext {
             if libc::pthread_attr_init(attr.as_mut_ptr()) != 0
                 || libc::pthread_attr_setstack(attr.as_mut_ptr(), stackaddr, stack_size) != 0
             {
-                unrecoverable_error!(SimulatorErrorKind::ThreadStackInitFailed {
+                fault!(SimulatorErrorKind::ThreadStackInitFailed {
                     name,
                     stack_size
                 });
@@ -274,7 +274,7 @@ impl FlowController for Simulator {
         }
     }
 
-    fn on_error(error: &dyn UnrecoverableError) -> ! {
+    fn on_error(error: &dyn Fault) -> ! {
         println!("{}", error);
 
         unsafe {
@@ -408,7 +408,7 @@ extern "C" fn trap_signal_handler(
         ALARM_SIGNAL => {
             VirtualTimer::handle_alarm();
         }
-        _ => unrecoverable_error!(SimulatorErrorKind::UnhandledException {
+        _ => fault!(SimulatorErrorKind::UnhandledException {
             exception_type: "Unknown signal"
         }),
     }
@@ -457,7 +457,7 @@ impl VirtualInterruptController {
             if libc::sigemptyset(interrupt_sigmask.as_mut_ptr()) != 0
                 || libc::sigaddset(interrupt_sigmask.as_mut_ptr(), ALARM_SIGNAL) != 0
             {
-                unrecoverable_error!(SimulatorErrorKind::SignalMaskFailed {
+                fault!(SimulatorErrorKind::SignalMaskFailed {
                     signal: ALARM_SIGNAL
                 });
             }
@@ -467,7 +467,7 @@ impl VirtualInterruptController {
             if libc::sigemptyset(syscall_mask.as_mut_ptr()) != 0
                 || libc::sigaddset(syscall_mask.as_mut_ptr(), ALARM_SIGNAL) != 0
             {
-                unrecoverable_error!(SimulatorErrorKind::SignalMaskFailed {
+                fault!(SimulatorErrorKind::SignalMaskFailed {
                     signal: ALARM_SIGNAL
                 });
             }
@@ -479,7 +479,7 @@ impl VirtualInterruptController {
                 sa_restorer: None,
             };
             if libc::sigaction(SYSCALL_SIGNAL, &sigaction, std::ptr::null_mut()) != 0 {
-                unrecoverable_error!(SimulatorErrorKind::SignalHandlerFailed {
+                fault!(SimulatorErrorKind::SignalHandlerFailed {
                     signal: SYSCALL_SIGNAL
                 });
             }
@@ -621,7 +621,7 @@ extern "C" fn timer_thread(arg: *mut libc::c_void) -> *mut libc::c_void {
             if let Some(time) = *timer.wait_until.get() {
                 let mut now = core::mem::MaybeUninit::uninit();
                 if libc::clock_gettime(SIMULATOR_CLOCK, now.as_mut_ptr()) != 0 {
-                    unrecoverable_error!(SimulatorErrorKind::ClockReadFailed {
+                    fault!(SimulatorErrorKind::ClockReadFailed {
                         clock_id: SIMULATOR_CLOCK
                     });
                 }
@@ -682,7 +682,7 @@ impl VirtualTimer {
             if libc::sigemptyset(mask.as_mut_ptr()) != 0
                 || libc::sigaddset(mask.as_mut_ptr(), SYSCALL_SIGNAL) != 0
             {
-                unrecoverable_error!(SimulatorErrorKind::SignalMaskFailed {
+                fault!(SimulatorErrorKind::SignalMaskFailed {
                     signal: SYSCALL_SIGNAL
                 });
             }
@@ -695,7 +695,7 @@ impl VirtualTimer {
             };
 
             if libc::sigaction(ALARM_SIGNAL, &sigaction, std::ptr::null_mut()) != 0 {
-                unrecoverable_error!(SimulatorErrorKind::SignalHandlerFailed {
+                fault!(SimulatorErrorKind::SignalHandlerFailed {
                     signal: ALARM_SIGNAL
                 });
             }
@@ -741,7 +741,7 @@ impl AlarmClockController for Simulator {
         let mut time = core::mem::MaybeUninit::uninit();
         unsafe {
             if libc::clock_gettime(SIMULATOR_CLOCK, time.as_mut_ptr()) != 0 {
-                unrecoverable_error!(SimulatorErrorKind::ClockReadFailed {
+                fault!(SimulatorErrorKind::ClockReadFailed {
                     clock_id: SIMULATOR_CLOCK
                 });
             }

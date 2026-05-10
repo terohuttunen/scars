@@ -1,31 +1,31 @@
-//! Procedural macros for the `unrecoverable-error` crate.
+//! Procedural macros for the `scars-fault` crate.
 //!
-//! This crate provides procedural macros for the `unrecoverable-error` crate:
-//! - `#[derive(UnrecoverableError)]`: Derives the `UnrecoverableError` trait with custom formatting
-//! - `#[unrecoverable_error_handler]`: Marks a function as the error handler
-//! - `unrecoverable_error!`: Macro for raising unrecoverable errors
+//! This crate provides procedural macros for the `scars-fault` crate:
+//! - `#[derive(Fault)]`: Derives the `Fault` trait with custom formatting
+//! - `#[fault_handler]`: Marks a function as the error handler
+//! - `fault!`: Macro for raising faults
 //!
 //! # Custom Error Formatting
 //!
 //! The derive macro supports custom formatting for both structs and enums:
 //!
 //! ```rust
-//! use unrecoverable_error::UnrecoverableError;
+//! use scars_fault::Fault;
 //!
-//! #[derive(Debug, UnrecoverableError)]
-//! #[unrecoverable_error("Invalid configuration: {field} = {value}")]
+//! #[derive(Debug, Fault)]
+//! #[fault("Invalid configuration: {field} = {value}")]
 //! struct ConfigError<'a> {
 //!     field: &'a str,
 //!     value: &'a str,
 //! }
 //!
-//! #[derive(Debug, UnrecoverableError)]
+//! #[derive(Debug, Fault)]
 //! enum MyError<'a> {
-//!     #[unrecoverable_error("Invalid input: {value}")]
+//!     #[fault("Invalid input: {value}")]
 //!     InvalidInput { value: &'a str },
-//!     #[unrecoverable_error("Timeout after {ms}ms")]
+//!     #[fault("Timeout after {ms}ms")]
 //!     Timeout { ms: u32 },
-//!     #[unrecoverable_error("Connection failed: {reason}")]
+//!     #[fault("Connection failed: {reason}")]
 //!     ConnectionFailed { reason: &'a str },
 //! }
 //! ```
@@ -33,11 +33,11 @@
 //! The format strings support both `{}` and `{:?}` for field values:
 //!
 //! ```rust
-//! use unrecoverable_error::UnrecoverableError;
+//! use scars_fault::Fault;
 //!
-//! #[derive(Debug, UnrecoverableError)]
+//! #[derive(Debug, Fault)]
 //! enum DebugError {
-//!     #[unrecoverable_error("Debug value: {value:?}")]
+//!     #[fault("Debug value: {value:?}")]
 //!     Debug { value: Vec<u8> },
 //! }
 //! ```
@@ -47,20 +47,20 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse_macro_input;
 
-/// Derives the `UnrecoverableError` trait for a type with custom formatting.
+/// Derives the `Fault` trait for a type with custom formatting.
 ///
-/// This macro can be used on structs and enums to implement the `UnrecoverableError` trait.
+/// This macro can be used on structs and enums to implement the `Fault` trait.
 /// It requires that the type already implements `Debug` and `Display`.
 ///
 /// # Custom Formatting
 ///
-/// You can customize the error message using the `#[unrecoverable_error]` attribute:
+/// You can customize the error message using the `#[fault]` attribute:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
-/// #[unrecoverable_error("Invalid configuration: {field} = {value}")]
+/// #[derive(Debug, Fault)]
+/// #[fault("Invalid configuration: {field} = {value}")]
 /// struct ConfigError<'a> {
 ///     field: &'a str,
 ///     value: &'a str,
@@ -70,13 +70,13 @@ use syn::parse_macro_input;
 /// For enums, you can customize each variant:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
+/// #[derive(Debug, Fault)]
 /// enum MyError<'a> {
-///     #[unrecoverable_error("Invalid input: {value}")]
+///     #[fault("Invalid input: {value}")]
 ///     InvalidInput { value: &'a str },
-///     #[unrecoverable_error("Timeout after {ms}ms")]
+///     #[fault("Timeout after {ms}ms")]
 ///     Timeout { ms: u32 },
 /// }
 /// ```
@@ -84,11 +84,11 @@ use syn::parse_macro_input;
 /// The format strings support both `{}` and `{:?}` for field values:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
+/// #[derive(Debug, Fault)]
 /// enum DebugError {
-///     #[unrecoverable_error("Debug value: {value:?}")]
+///     #[fault("Debug value: {value:?}")]
 ///     Debug { value: Vec<u8> },
 /// }
 /// ```
@@ -98,19 +98,19 @@ use syn::parse_macro_input;
 /// Basic usage:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
+/// #[derive(Debug, Fault)]
 /// struct MyError;
 /// ```
 ///
 /// With custom formatting:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
-/// #[unrecoverable_error("Error in {module}: {message}")]
+/// #[derive(Debug, Fault)]
+/// #[fault("Error in {module}: {message}")]
 /// struct ModuleError<'a> {
 ///     module: &'a str,
 ///     message: &'a str,
@@ -120,20 +120,20 @@ use syn::parse_macro_input;
 /// Enum with custom formatting:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
+/// #[derive(Debug, Fault)]
 /// enum NetworkError<'a> {
-///     #[unrecoverable_error("Connection failed to {host}:{port}")]
+///     #[fault("Connection failed to {host}:{port}")]
 ///     ConnectionFailed { host: &'a str, port: u16 },
-///     #[unrecoverable_error("Timeout after {ms}ms")]
+///     #[fault("Timeout after {ms}ms")]
 ///     Timeout { ms: u32 },
-///     #[unrecoverable_error("Invalid response: {status:?}")]
+///     #[fault("Invalid response: {status:?}")]
 ///     InvalidResponse { status: Vec<u8> },
 /// }
 /// ```
-#[proc_macro_derive(UnrecoverableError, attributes(unrecoverable_error))]
-pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Fault, attributes(fault))]
+pub fn derive_fault(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
 
     let struct_or_enum_name = &input.ident;
@@ -149,7 +149,7 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
                 let mut custom_format = None;
 
                 for attr in &variant.attrs {
-                    if attr.path().is_ident("unrecoverable_error") {
+                    if attr.path().is_ident("fault") {
                         if let Ok(format_str) = attr.parse_args::<syn::LitStr>() {
                             custom_format = Some(format_str.value());
                         }
@@ -251,7 +251,7 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
             }
 
             quote! {
-                impl #impl_generics UnrecoverableError for #struct_or_enum_name #ty_generics #where_clause {}
+                impl #impl_generics Fault for #struct_or_enum_name #ty_generics #where_clause {}
 
                 impl #impl_generics core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
                     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -266,7 +266,7 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
             let mut custom_format = None;
 
             for attr in &input.attrs {
-                if attr.path().is_ident("unrecoverable_error") {
+                if attr.path().is_ident("fault") {
                     if let Ok(format_str) = attr.parse_args::<syn::LitStr>() {
                         custom_format = Some(format_str.value());
                     }
@@ -306,7 +306,7 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
                     .to_string();
 
                 quote! {
-                    impl #impl_generics UnrecoverableError for #struct_or_enum_name #ty_generics #where_clause {}
+                    impl #impl_generics Fault for #struct_or_enum_name #ty_generics #where_clause {}
 
                     impl #impl_generics core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
                         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -316,7 +316,7 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
                 }
             } else {
                 quote! {
-                    impl #impl_generics UnrecoverableError for #struct_or_enum_name #ty_generics #where_clause {}
+                    impl #impl_generics Fault for #struct_or_enum_name #ty_generics #where_clause {}
 
                     impl #impl_generics core::fmt::Display for #struct_or_enum_name #ty_generics #where_clause {
                         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -332,20 +332,20 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Marks a function as the unrecoverable error handler.
+/// Marks a function as the fault handler.
 ///
-/// This attribute macro marks a function as the handler for unrecoverable errors.
-/// The function must have the signature `fn(&UnrecoverableErrorInfo) -> !`.
+/// This attribute macro marks a function as the handler for faults.
+/// The function must have the signature `fn(&FaultInfo) -> !`.
 ///
 /// # Examples
 ///
 /// Using the fully qualified path:
 ///
 /// ```rust
-/// use unrecoverable_error::{UnrecoverableError, UnrecoverableErrorInfo};
+/// use scars_fault::{Fault, FaultInfo};
 ///
-/// #[unrecoverable_error_handler]
-/// fn my_handler(info: &UnrecoverableErrorInfo) -> ! {
+/// #[fault_handler]
+/// fn my_handler(info: &FaultInfo) -> ! {
 ///     if let Some(location) = info.location {
 ///         // Log error with location
 ///     }
@@ -357,10 +357,10 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
 /// Using the type directly:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[unrecoverable_error_handler]
-/// fn my_handler(info: &::unrecoverable_error::UnrecoverableErrorInfo) -> ! {
+/// #[fault_handler]
+/// fn my_handler(info: &::scars_fault::FaultInfo) -> ! {
 ///     if let Some(location) = info.location {
 ///         // Log error with location
 ///     }
@@ -369,7 +369,7 @@ pub fn derive_unrecoverable_error(input: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn unrecoverable_error_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn fault_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as syn::ItemFn);
     let fn_block = &input.block;
     let fn_attrs = &input.attrs;
@@ -379,10 +379,10 @@ pub fn unrecoverable_error_handler(_attr: TokenStream, item: TokenStream) -> Tok
 
     quote! {
         #(#fn_attrs)*
-        #[unsafe(export_name = "_unrecoverable_error_handler")]
+        #[unsafe(export_name = "_fault_handler")]
         #fn_vis #fn_sig {
             const _: () = {
-                let _: fn(&::unrecoverable_error::UnrecoverableErrorInfo) -> ! = #fn_ident;
+                let _: fn(&::scars_fault::FaultInfo) -> ! = #fn_ident;
             };
             #fn_block
         }
@@ -390,30 +390,30 @@ pub fn unrecoverable_error_handler(_attr: TokenStream, item: TokenStream) -> Tok
     .into()
 }
 
-/// Raises an unrecoverable error.
+/// Raises a fault.
 ///
-/// This macro takes an expression that evaluates to an `UnrecoverableError`
+/// This macro takes an expression that evaluates to an `Fault`
 /// and calls the error handler with it.
 ///
 /// # Examples
 ///
 /// ```rust
-/// use unrecoverable_error::{UnrecoverableError, unrecoverable_error};
+/// use scars_fault::{Fault, fault};
 ///
-/// #[derive(Debug, UnrecoverableError)]
-/// #[unrecoverable_error("My error occurred")]
+/// #[derive(Debug, Fault)]
+/// #[fault("My error occurred")]
 /// struct MyError;
 ///
 /// // This will call the error handler
-/// unrecoverable_error!(MyError);
+/// fault!(MyError);
 /// ```
 #[proc_macro]
-pub fn unrecoverable_error(input: TokenStream) -> TokenStream {
+pub fn fault(input: TokenStream) -> TokenStream {
     let error = parse_macro_input!(input as syn::Expr);
 
     quote! {
         unsafe {
-            unrecoverable_error::handle_unrecoverable_error(&#error)
+            scars_fault::handle_fault(&#error)
         }
     }
     .into()

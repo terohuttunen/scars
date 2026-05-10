@@ -2,15 +2,15 @@
 #![feature(linkage)]
 #![warn(missing_docs)]
 
-//! A crate for handling unrecoverable errors in `#![no_std]` environments.
+//! A crate for handling faults in `#![no_std]` environments.
 //!
-//! This crate provides a mechanism for handling unrecoverable errors in `#![no_std]` environments,
+//! This crate provides a mechanism for handling faults in `#![no_std]` environments,
 //! similar to how `panic!` works in standard Rust, but with more control over error handling.
 //!
 //! # Overview
 //!
 //! The crate provides:
-//! - A trait for unrecoverable errors
+//! - A trait for faults
 //! - A default error handler that panics
 //! - A way to override the error handler
 //! - Location tracking for errors
@@ -21,17 +21,17 @@
 //! ## Basic Usage
 //!
 //! ```rust
-//! use unrecoverable_error::{UnrecoverableError, unrecoverable_error};
+//! use scars_fault::{Fault, fault};
 //!
-//! #[derive(Debug, UnrecoverableError)]
-//! #[unrecoverable_error("Invalid configuration: {field} = {value}")]
+//! #[derive(Debug, Fault)]
+//! #[fault("Invalid configuration: {field} = {value}")]
 //! struct ConfigError<'a> {
 //!     field: &'a str,
 //!     value: &'a str,
 //! }
 //!
 //! // This will call the default handler (which panics)
-//! unrecoverable_error!(ConfigError {
+//! fault!(ConfigError {
 //!     field: "timeout",
 //!     value: "1000",
 //! });
@@ -40,16 +40,16 @@
 //! ## Custom Handler
 //!
 //! ```rust
-//! use unrecoverable_error::{UnrecoverableError, unrecoverable_error, UnrecoverableErrorInfo};
+//! use scars_fault::{Fault, fault, FaultInfo};
 //!
-//! #[derive(Debug, UnrecoverableError)]
-//! #[unrecoverable_error("Network error: {reason}")]
+//! #[derive(Debug, Fault)]
+//! #[fault("Network error: {reason}")]
 //! struct NetworkError<'a> {
 //!     reason: &'a str,
 //! }
 //!
-//! #[unrecoverable_error_handler]
-//! fn my_handler(info: &UnrecoverableErrorInfo) -> ! {
+//! #[fault_handler]
+//! fn my_handler(info: &FaultInfo) -> ! {
 //!     if let Some(location) = info.location {
 //!         // Log error with location
 //!     }
@@ -58,7 +58,7 @@
 //! }
 //!
 //! // This will call the custom handler
-//! unrecoverable_error!(NetworkError {
+//! fault!(NetworkError {
 //!     reason: "connection refused",
 //! });
 //! ```
@@ -66,20 +66,20 @@
 //! ## Enum Errors
 //!
 //! ```rust
-//! use unrecoverable_error::{UnrecoverableError, unrecoverable_error};
+//! use scars_fault::{Fault, fault};
 //!
-//! #[derive(Debug, UnrecoverableError)]
+//! #[derive(Debug, Fault)]
 //! enum MyError<'a> {
-//!     #[unrecoverable_error("Invalid input: {value}")]
+//!     #[fault("Invalid input: {value}")]
 //!     InvalidInput { value: &'a str },
-//!     #[unrecoverable_error("Timeout after {ms}ms")]
+//!     #[fault("Timeout after {ms}ms")]
 //!     Timeout { ms: u32 },
-//!     #[unrecoverable_error("Connection failed: {reason}")]
+//!     #[fault("Connection failed: {reason}")]
 //!     ConnectionFailed { reason: &'a str },
 //! }
 //!
 //! // This will call the default handler with a formatted message
-//! unrecoverable_error!(MyError::Timeout { ms: 1000 });
+//! fault!(MyError::Timeout { ms: 1000 });
 //! ```
 //!
 //! # Features
@@ -87,11 +87,9 @@
 //! - `location` (enabled by default): Enables location tracking for errors
 //!
 
-pub use unrecoverable_error_macros::{
-    UnrecoverableError, unrecoverable_error, unrecoverable_error_handler,
-};
+pub use scars_fault_macros::{Fault, fault, fault_handler};
 
-/// A trait for unrecoverable errors.
+/// A trait for faults.
 ///
 /// This trait is used to represent errors that cannot be recovered from.
 /// It is similar to the `std::error::Error` trait, but does not require
@@ -103,10 +101,10 @@ pub use unrecoverable_error_macros::{
 /// Basic usage:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
-/// #[unrecoverable_error("Invalid configuration: {field} = {value}")]
+/// #[derive(Debug, Fault)]
+/// #[fault("Invalid configuration: {field} = {value}")]
 /// struct ConfigError<'a> {
 ///     field: &'a str,
 ///     value: &'a str,
@@ -116,34 +114,34 @@ pub use unrecoverable_error_macros::{
 /// With error chaining:
 ///
 /// ```rust
-/// use unrecoverable_error::UnrecoverableError;
+/// use scars_fault::Fault;
 ///
-/// #[derive(Debug, UnrecoverableError)]
-/// #[unrecoverable_error("Wrapped error: {inner}")]
+/// #[derive(Debug, Fault)]
+/// #[fault("Wrapped error: {inner}")]
 /// struct WrappedError<'a> {
-///     inner: Box<dyn UnrecoverableError + 'a>,
+///     inner: Box<dyn Fault + 'a>,
 /// }
 ///
-/// impl<'a> UnrecoverableError for WrappedError<'a> {
-///     fn source(&self) -> Option<&(dyn UnrecoverableError)> {
+/// impl<'a> Fault for WrappedError<'a> {
+///     fn source(&self) -> Option<&(dyn Fault)> {
 ///         Some(&*self.inner)
 ///     }
 /// }
 /// ```
-pub trait UnrecoverableError: core::fmt::Debug + core::fmt::Display {
+pub trait Fault: core::fmt::Debug + core::fmt::Display {
     /// Returns the source of this error, if any.
     ///
     /// This is similar to `std::error::Error::source`, but returns a reference
-    /// to an `UnrecoverableError` instead of a `dyn Error`.
+    /// to an `Fault` instead of a `dyn Error`.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use unrecoverable_error::UnrecoverableError;
+    /// use scars_fault::Fault;
     ///
     /// #[derive(Debug)]
     /// struct WrappedError {
-    ///     source: Box<dyn UnrecoverableError>,
+    ///     source: Box<dyn Fault>,
     /// }
     ///
     /// impl core::fmt::Display for WrappedError {
@@ -152,18 +150,18 @@ pub trait UnrecoverableError: core::fmt::Debug + core::fmt::Display {
     ///     }
     /// }
     ///
-    /// impl UnrecoverableError for WrappedError {
-    ///     fn source(&self) -> Option<&dyn UnrecoverableError> {
+    /// impl Fault for WrappedError {
+    ///     fn source(&self) -> Option<&dyn Fault> {
     ///         Some(&*self.source)
     ///     }
     /// }
     /// ```
-    fn source(&self) -> Option<&dyn UnrecoverableError> {
+    fn source(&self) -> Option<&dyn Fault> {
         None
     }
 }
 
-/// Information about an unrecoverable error, including the error itself and optional location.
+/// Information about a fault, including the error itself and optional location.
 ///
 /// This struct is passed to error handlers and contains all the information
 /// about the error that occurred.
@@ -171,10 +169,10 @@ pub trait UnrecoverableError: core::fmt::Debug + core::fmt::Display {
 /// # Examples
 ///
 /// ```rust
-/// use unrecoverable_error::{UnrecoverableError, UnrecoverableErrorInfo};
+/// use scars_fault::{Fault, FaultInfo};
 ///
-/// #[unrecoverable_error_handler]
-/// fn my_handler(info: &UnrecoverableErrorInfo) -> ! {
+/// #[fault_handler]
+/// fn my_handler(info: &FaultInfo) -> ! {
 ///     if let Some(location) = info.location {
 ///         // Log error with location
 ///     }
@@ -182,9 +180,9 @@ pub trait UnrecoverableError: core::fmt::Debug + core::fmt::Display {
 ///     core::process::exit(1);
 /// }
 /// ```
-pub struct UnrecoverableErrorInfo<'a> {
-    /// The unrecoverable error that occurred
-    pub error: &'a dyn UnrecoverableError,
+pub struct FaultInfo<'a> {
+    /// The fault that occurred
+    pub error: &'a dyn Fault,
     /// Optional location where the error occurred
     pub location: Option<&'a core::panic::Location<'a>>,
 }
@@ -192,31 +190,31 @@ pub struct UnrecoverableErrorInfo<'a> {
 /// The default error handler that panics.
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe fn _unrecoverable_error_handler(info: &UnrecoverableErrorInfo) -> ! {
+pub unsafe fn _fault_handler(info: &FaultInfo) -> ! {
     if let Some(location) = info.location {
-        panic!("Unrecoverable error at {}: {}", location, info.error);
+        panic!("Fault at {}: {}", location, info.error);
     } else {
-        panic!("Unrecoverable error: {}", info.error);
+        panic!("Fault: {}", info.error);
     }
 }
 
-/// Function to handle unrecoverable errors.
+/// Function to handle faults.
 ///
-/// This function is called by the `unrecoverable_error!` macro to handle
-/// unrecoverable errors. It will call the user-defined handler if it exists,
+/// This function is called by the `fault!` macro to handle
+/// faults. It will call the user-defined handler if it exists,
 /// otherwise use the default handler.
 ///
 /// # Safety
 ///
 /// This function is marked as unsafe because it calls an external function
 /// that may not exist. The caller must ensure that either:
-/// - A custom handler is defined using `#[unrecoverable_error_handler]`
+/// - A custom handler is defined using `#[fault_handler]`
 /// - The default handler is available
 ///
 /// # Examples
 ///
 /// ```rust
-/// use unrecoverable_error::{UnrecoverableError, handle_unrecoverable_error};
+/// use scars_fault::{Fault, handle_fault};
 ///
 /// #[derive(Debug)]
 /// struct MyError;
@@ -227,19 +225,19 @@ pub unsafe fn _unrecoverable_error_handler(info: &UnrecoverableErrorInfo) -> ! {
 ///     }
 /// }
 ///
-/// impl UnrecoverableError for MyError {}
+/// impl Fault for MyError {}
 ///
 /// // This is equivalent to using the macro:
-/// // unrecoverable_error!(MyError);
+/// // fault!(MyError);
 /// unsafe {
-///     handle_unrecoverable_error(&MyError);
+///     handle_fault(&MyError);
 /// }
 /// ```
 #[track_caller]
-pub fn handle_unrecoverable_error(error: &dyn UnrecoverableError) -> ! {
-    let info = UnrecoverableErrorInfo {
+pub fn handle_fault(error: &dyn Fault) -> ! {
+    let info = FaultInfo {
         error,
         location: Some(core::panic::Location::caller()),
     };
-    unsafe { _unrecoverable_error_handler(&info) }
+    unsafe { _fault_handler(&info) }
 }

@@ -8,12 +8,12 @@ pub use scars_khal_e310x as kernel_hal;
 pub use scars_khal_sim as kernel_hal;
 #[cfg(feature = "khal-stm32f4")]
 pub use scars_khal_stm32f4 as kernel_hal;
-use unrecoverable_error::UnrecoverableError;
+use scars_fault::Fault;
 
 pub use kernel_hal::pac;
 
 pub type Context = <kernel_hal::HAL as FlowController>::Context;
-pub type Fault = <kernel_hal::HAL as FlowController>::HardwareError;
+pub type HardwareFault = <kernel_hal::HAL as FlowController>::HardwareError;
 
 #[allow(dead_code)]
 pub const MAX_INTERRUPT_NUMBER: usize =
@@ -124,7 +124,7 @@ pub fn exit(exit_code: i32) -> ! {
 
 #[allow(dead_code)]
 #[inline(always)]
-pub fn error(error: &dyn UnrecoverableError) -> ! {
+pub fn error(error: &dyn Fault) -> ! {
     <kernel_hal::HAL as FlowController>::on_error(error)
 }
 

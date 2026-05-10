@@ -5,9 +5,9 @@ use core::marker::PhantomPinned;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use unrecoverable_error::{UnrecoverableError, unrecoverable_error};
+use scars_fault::{Fault, fault};
 
-#[derive(Debug, UnrecoverableError)]
+#[derive(Debug, Fault)]
 pub enum AtomicQueueError {
     ItemAlreadyInQueue,
 }
@@ -83,7 +83,7 @@ impl<T, N: LinkedListTag> AtomicQueue<T, N> {
         T: AtomicQueueNode<N>,
     {
         if let Err(e) = self.try_push_back(item) {
-            unrecoverable_error!(e);
+            fault!(e);
         }
     }
 

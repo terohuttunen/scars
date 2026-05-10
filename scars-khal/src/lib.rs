@@ -50,7 +50,7 @@
 //!   - Processes system call requests from user threads
 //!
 //! - [`kernel_exception_handler`]: Called by the HAL when a hardware exception occurs
-//!   - Implemented by the kernel to handle unrecoverable errors
+//!   - Implemented by the kernel to handle faults
 //!   - Called from exception context
 //!   - Handles platform-independent error processing
 //!
@@ -100,7 +100,7 @@
 //! - Thread safety and proper synchronization when accessing hardware resources
 //! - Proper interrupt handling and masking
 //! - Safe context switching
-//! - Proper error handling for unrecoverable errors
+//! - Proper error handling for faults
 //!
 //! # Interrupt Priority Handling
 //!
@@ -131,22 +131,22 @@
 //!     InterruptController,
 //!     AlarmClockController,
 //!     FlowController,
-//!     UnrecoverableError,
+//!     Fault,
 //!     GetInterruptNumber,
 //!     ContextInfo,
 //! };
-//! use unrecoverable_error::UnrecoverableError;
+//! use scars_fault::Fault;
 //!
 //! // Define your hardware-specific error type
-//! #[derive(Debug, UnrecoverableError)]
+//! #[derive(Debug, Fault)]
 //! enum HardwareError {
-//!     #[unrecoverable_error("Invalid interrupt number: {number}")]
+//!     #[fault("Invalid interrupt number: {number}")]
 //!     InvalidInterrupt { number: u16 },
-//!     #[unrecoverable_error("Invalid priority level: {level}")]
+//!     #[fault("Invalid priority level: {level}")]
 //!     InvalidPriority { level: u8 },
-//!     #[unrecoverable_error("Timer configuration error: {reason}")]
+//!     #[fault("Timer configuration error: {reason}")]
 //!     TimerError { reason: &'static str },
-//!     #[unrecoverable_error("Context switch error: {reason}")]
+//!     #[fault("Context switch error: {reason}")]
 //!     ContextError { reason: &'static str },
 //! }
 //!
@@ -264,7 +264,7 @@
 //!         loop {}
 //!     }
 //!
-//!     fn on_error(error: &dyn UnrecoverableError) -> ! {
+//!     fn on_error(error: &dyn Fault) -> ! {
 //!         loop {}
 //!     }
 //!
@@ -315,7 +315,7 @@
 //!
 //! # Error Handling
 //!
-//! The crate uses the [`UnrecoverableError`] trait for handling fatal errors.
+//! The crate uses the [`Fault`] trait for handling fatal errors.
 //! Implementations should provide meaningful error information and handle errors
 //! appropriately for their platform.
 
@@ -323,7 +323,7 @@
 pub mod callbacks;
 pub use aligned::*;
 pub use callbacks::KernelCallbacks;
-pub use unrecoverable_error::UnrecoverableError;
+pub use scars_fault::Fault;
 
 unsafe extern "Rust" {
     pub unsafe fn start_kernel() -> !;
@@ -517,7 +517,7 @@ pub trait ContextInfo {
 pub trait FlowController: Sync {
     type StackAlignment: Alignment;
     type Context: ContextInfo;
-    type HardwareError: UnrecoverableError;
+    type HardwareError: Fault;
 
     /// Start the first thread.
     ///
@@ -555,7 +555,7 @@ pub trait FlowController: Sync {
     /// # Arguments
     ///
     /// * `error` - The error that occurred.
-    fn on_error(error: &dyn UnrecoverableError) -> !;
+    fn on_error(error: &dyn Fault) -> !;
 
     /// Called when a breakpoint is hit.
     fn on_breakpoint();

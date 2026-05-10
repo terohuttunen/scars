@@ -7,7 +7,7 @@ pub use rtt_target::rprint as print;
 pub use rtt_target::rprintln as println;
 use rtt_target::rtt_init_print;
 use scars_khal::*;
-use unrecoverable_error::*;
+use scars_fault::*;
 
 #[unsafe(no_mangle)]
 pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
@@ -128,9 +128,9 @@ pub enum FaultKind {
     UsageFault = 6,
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug, UnrecoverableError)]
-#[unrecoverable_error("Cortex-M fault: {kind:?}")]
-pub struct Fault {
+#[derive(PartialEq, Eq, Copy, Clone, Debug, Fault)]
+#[fault("Cortex-M fault: {kind:?}")]
+pub struct CortexMFault {
     kind: FaultKind,
     frame: *const Context,
 }
@@ -195,7 +195,7 @@ pub fn on_exit(exit_code: i32) -> ! {
     }
 }
 
-pub fn on_error(error: &dyn UnrecoverableError) -> ! {
+pub fn on_error(error: &dyn Fault) -> ! {
     println!("{}", error);
 
     on_exit(1);
@@ -263,7 +263,7 @@ macro_rules! impl_flow_controller {
         impl FlowController for $struct_name {
             type StackAlignment = scars_khal::A8;
             type Context = $crate::Context;
-            type HardwareError = $crate::Fault;
+            type HardwareError = $crate::CortexMFault;
 
             #[inline(always)]
             fn start_first_thread(idle_context: *mut Self::Context) -> ! {
@@ -281,7 +281,7 @@ macro_rules! impl_flow_controller {
             }
 
             #[inline(always)]
-            fn on_error(error: &dyn UnrecoverableError) -> ! {
+            fn on_error(error: &dyn Fault) -> ! {
                 $crate::on_error(error)
             }
 

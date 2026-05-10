@@ -12,8 +12,8 @@ members = [
     "examples/stm32f4/interrupt",
     "examples/stm32f4/tasking",
     "examples/sim/hello",
-    "unrecoverable-error",
-    "unrecoverable-error-macros",
+    "scars-fault",
+    "scars-fault-macros",
     "xtask"]
 default-members = [
     "khal/scars-khal-e310x",
@@ -28,8 +28,8 @@ default-members = [
     "examples/stm32f4/interrupt",
     "examples/stm32f4/tasking",
     "examples/sim/hello",
-    "unrecoverable-error",
-    "unrecoverable-error-macros"]
+    "scars-fault",
+    "scars-fault-macros"]
 resolver = "2"
 
 [profile.dev]

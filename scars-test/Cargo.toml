@@ -14,7 +14,7 @@ test = false
 [dependencies]
 rtt-target = { version = "0.6.2", optional = true }
 cortex-m = { version = "0.7.7", optional = true }
-unrecoverable-error = { path = "../unrecoverable-error" }
+scars-fault = { path = "../scars-fault" }
 
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 semihosting = { version = "0.1.4", features = ["fs", "stdio"] }

@@ -1,8 +1,8 @@
 use super::FlowController;
-use unrecoverable_error::UnrecoverableError;
+use scars_fault::Fault;
 
 mod private {
-    use unrecoverable_error::UnrecoverableError;
+    use scars_fault::Fault;
     unsafe extern "Rust" {
         pub unsafe fn _private_kernel_wakeup_handler();
 
@@ -15,7 +15,7 @@ mod private {
             arg2: usize,
         ) -> usize;
 
-        pub unsafe fn _private_hardware_exception_handler(error: &dyn UnrecoverableError) -> !;
+        pub unsafe fn _private_hardware_exception_handler(error: &dyn Fault) -> !;
 
         pub unsafe fn _private_current_thread_context() -> *const ();
 
@@ -43,7 +43,7 @@ pub trait KernelCallbacks<Context, Exception> {
     }
 
     #[inline(always)]
-    fn kernel_exception_handler(error: &dyn UnrecoverableError) -> ! {
+    fn kernel_exception_handler(error: &dyn Fault) -> ! {
         unsafe { private::_private_hardware_exception_handler(error) }
     }
 

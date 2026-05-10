@@ -238,7 +238,7 @@ impl FlowController for E310x {
         RISCV32::on_exit(exit_code)
     }
 
-    fn on_error(error: &dyn UnrecoverableError) -> ! {
+    fn on_error(error: &dyn Fault) -> ! {
         RISCV32::on_error(error)
     }
 

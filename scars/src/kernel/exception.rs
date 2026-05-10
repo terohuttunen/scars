@@ -1,10 +1,10 @@
 use crate::abort;
-use crate::kernel::hal::{Context, Fault};
+use crate::kernel::hal::{Context, HardwareFault};
 use crate::printkln;
 use core::panic::{Location, PanicInfo};
 use scars_khal::FlowController;
-use unrecoverable_error::{
-    UnrecoverableError, UnrecoverableErrorInfo, unrecoverable_error_handler,
+use scars_fault::{
+    Fault, FaultInfo, fault_handler,
 };
 
 #[macro_export]
@@ -16,29 +16,29 @@ macro_rules! runtime_error {
     }};
 }
 
-#[derive(Debug, UnrecoverableError)]
+#[derive(Debug, Fault)]
 pub enum RtosError<'a> {
     /// Internal kernel error
-    #[unrecoverable_error("Kernel error: {0}")]
+    #[fault("Kernel error: {0}")]
     Kernel(&'a KernelError),
 
     /// Hardware error from kernel HAL
-    #[unrecoverable_error("Hardware error: {0}")]
-    Hardware(&'a Fault),
+    #[fault("Hardware error: {0}")]
+    Hardware(&'a HardwareFault),
 
     /// Runtime error
-    #[unrecoverable_error("Runtime error: {0}")]
-    RuntimeError(&'a dyn UnrecoverableError),
+    #[fault("Runtime error: {0}")]
+    RuntimeError(&'a dyn Fault),
 
     /// Panic from Rust runtime
-    #[unrecoverable_error("Panic: {0}")]
+    #[fault("Panic: {0}")]
     Panic(&'a PanicInfo<'a>),
 }
 
-#[derive(Debug, UnrecoverableError)]
+#[derive(Debug, Fault)]
 pub enum KernelError {
     /// Stack overflow
-    #[unrecoverable_error("Stack overflow in thread {thread_name} with stack size {stack_size}")]
+    #[fault("Stack overflow in thread {thread_name} with stack size {stack_size}")]
     StackOverflow {
         thread_name: &'static str,
         stack_size: usize,
@@ -48,7 +48,7 @@ pub enum KernelError {
 /// Runtime errors are errors that can happen at runtime, and are not
 /// related to the kernel or hardware. They are caused by incorrect usage
 /// of the kernel API by the application.
-#[derive(Debug, UnrecoverableError)]
+#[derive(Debug, Fault)]
 pub enum RuntimeError {
     /// Idle task may not suspend, because it has to be always ready to run.
     /// Some task must always be able to run if others are suspended.
@@ -80,7 +80,7 @@ pub enum RuntimeError {
     InheritanceLockNotAllowed,
 }
 
-pub fn handle_runtime_error(error: &dyn UnrecoverableError) -> ! {
+pub fn handle_runtime_error(error: &dyn Fault) -> ! {
     let error = RtosError::RuntimeError(error);
     handle_rtos_error(&error);
 }
@@ -91,7 +91,7 @@ pub fn handle_kernel_error(error: &KernelError) -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe fn _private_hardware_exception_handler(error: &Fault) -> ! {
+pub unsafe fn _private_hardware_exception_handler(error: &HardwareFault) -> ! {
     let error = RtosError::Hardware(error);
     handle_rtos_error(&error);
 }
@@ -109,8 +109,8 @@ unsafe extern "Rust" {
 }
     */
 
-#[unrecoverable_error_handler]
-fn handle_unrecoverable_error(error: &UnrecoverableErrorInfo) -> ! {
+#[fault_handler]
+fn handle_fault(error: &FaultInfo) -> ! {
     let error = RtosError::RuntimeError(error.error);
     handle_rtos_error(&error)
 }

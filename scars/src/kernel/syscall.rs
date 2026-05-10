@@ -21,7 +21,7 @@ use core::marker::PhantomData;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
-use scars_khal::{FlowController, UnrecoverableError};
+use scars_khal::{FlowController, Fault};
 
 pub const SYSCALL_ID_YIELD: usize = 1;
 pub const SYSCALL_ID_WAIT: usize = 2;
@@ -88,12 +88,12 @@ pub(crate) fn thread_suspend(thread: Option<&RawThread>) {
     let _ = syscall(SYSCALL_ID_SUSPEND, thread_ptr, 0, 0);
 }
 
-struct UnrecoverableErrorWrapper<'a> {
-    error: &'a dyn UnrecoverableError,
+struct FaultWrapper<'a> {
+    error: &'a dyn Fault,
 }
 
-pub fn runtime_error(error: &dyn UnrecoverableError) -> ! {
-    let wrapper = UnrecoverableErrorWrapper { error };
+pub fn runtime_error(error: &dyn Fault) -> ! {
+    let wrapper = FaultWrapper { error };
     let _ = syscall(
         SYSCALL_ID_RUNTIME_ERROR,
         &wrapper as *const _ as usize,
@@ -142,7 +142,7 @@ unsafe fn _private_kernel_syscall_handler(
                     Scheduler::delay_thread_until(time);
                 }
                 SYSCALL_ID_RUNTIME_ERROR => {
-                    let wrapper = &*(arg0 as *const UnrecoverableErrorWrapper);
+                    let wrapper = &*(arg0 as *const FaultWrapper);
                     crate::kernel::exception::handle_runtime_error(wrapper.error);
                 }
                 SYSCALL_ID_START_THREAD => {

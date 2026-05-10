@@ -3,7 +3,7 @@ use bit_field::BitField;
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicPtr, Ordering};
 use scars_khal::*;
-use unrecoverable_error::UnrecoverableError;
+use scars_fault::Fault;
 
 global_asm!(include_str!("trap.S"));
 
@@ -161,8 +161,8 @@ impl TryFrom<usize> for FaultKind {
     }
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug, UnrecoverableError)]
-#[unrecoverable_error("RISCV fault: {kind:?} mtval = {mtval}")]
+#[derive(PartialEq, Eq, Copy, Clone, Debug, Fault)]
+#[fault("RISCV fault: {kind:?} mtval = {mtval}")]
 pub struct RISCFault {
     kind: FaultKind,
     mtval: usize,
@@ -199,7 +199,7 @@ fn on_exit(_exit_code: i32) -> ! {
     }
 }
 
-fn on_error(_error: &dyn UnrecoverableError) -> ! {
+fn on_error(_error: &dyn Fault) -> ! {
     on_exit(1)
 }
 
@@ -226,7 +226,7 @@ impl FlowController for RISCV32 {
     }
 
     #[inline(always)]
-    fn on_error(error: &dyn UnrecoverableError) -> ! {
+    fn on_error(error: &dyn Fault) -> ! {
         crate::on_error(error)
     }
 
