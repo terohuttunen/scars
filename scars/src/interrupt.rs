@@ -67,11 +67,17 @@ pub(crate) fn current_interrupt() -> Option<NonNull<RawInterruptHandler>> {
     NonNull::new(CURRENT_INTERRUPT_CONTROL_BLOCK.load(Ordering::SeqCst))
 }
 
-/// Set the interrupt priority threshold based on ceiling priority
+/// Set the interrupt priority threshold based on ceiling priority.
+///
+/// For an interrupt-level ceiling, mask interrupts at that priority and
+/// below. For a thread-level or absent ceiling, leave all interrupt
+/// priorities deliverable.
 pub(crate) fn set_ceiling_threshold(ceiling: PriorityStatus) {
     match ceiling {
         PriorityStatus::Interrupt(prio) => set_interrupt_threshold(prio),
-        PriorityStatus::Thread(_) | PriorityStatus::Invalid => set_interrupt_threshold(0),
+        PriorityStatus::Thread(_) | PriorityStatus::Invalid => {
+            set_interrupt_threshold(crate::kernel::hal::MAX_INTERRUPT_PRIORITY as u8)
+        }
     }
 }
 

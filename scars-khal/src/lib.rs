@@ -417,20 +417,29 @@ pub trait InterruptController: Sync {
 
     /// Returns the current interrupt priority threshold.
     ///
-    /// The threshold acts as a filter - interrupts with priority less than or equal
-    /// to the threshold will be blocked. Only interrupts with priority higher than
-    /// the threshold will be serviced.
-    ///
-    /// # Returns
-    ///
-    /// The current interrupt priority threshold as a `u8`.
+    /// See [`set_interrupt_threshold`](Self::set_interrupt_threshold)
+    /// for the threshold convention. A round-trip
+    /// `set_interrupt_threshold(t); get_interrupt_threshold()` must
+    /// return `t` for every value the kernel actually uses (priority
+    /// ceilings and `MAX_INTERRUPT_PRIORITY`).
     fn get_interrupt_threshold() -> u8;
 
     /// Sets the interrupt priority threshold.
     ///
-    /// The threshold acts as a filter - interrupts with priority less than or equal
-    /// to the threshold will be blocked. Only interrupts with priority higher than
-    /// the threshold will be serviced.
+    /// # Convention
+    ///
+    /// The threshold acts as a filter: interrupts with priority less
+    /// than or equal to `threshold` are blocked; interrupts with
+    /// priority strictly greater than `threshold` are serviced.
+    ///
+    /// `threshold == MAX_INTERRUPT_PRIORITY` is reserved as the "no
+    /// masking" sentinel: every interrupt is deliverable regardless
+    /// of priority. The kernel uses this value for the thread-context
+    /// ceiling (see `set_ceiling_threshold` in `scars::interrupt`).
+    ///
+    /// Implementations whose underlying state does not naturally
+    /// encode the sentinel must convert at this boundary; `get` /
+    /// `set` must round-trip every value the kernel passes.
     ///
     /// # Arguments
     ///

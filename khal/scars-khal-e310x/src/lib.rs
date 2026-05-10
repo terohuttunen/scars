@@ -83,17 +83,35 @@ impl InterruptController for E310x {
         previous_priority
     }
 
+    /// The scars-khal threshold convention reserves
+    /// `MAX_INTERRUPT_PRIORITY` as the "no masking" sentinel (matches
+    /// ARM `BASEPRI = 0`). PLIC, however, masks priorities `<=
+    /// PLIC.threshold` directly — `PLIC.threshold = MAX` would mask
+    /// everything. Convert at the boundary: scars `MAX` maps to PLIC
+    /// `0` (no masking, because no real IRQ is at priority 0 — PLIC
+    /// reserves priority 0 for "disabled"); other values pass
+    /// through unchanged.
     #[inline(always)]
     fn get_interrupt_threshold() -> u8 {
-        Self::instance().plic.threshold.read().bits() as u8
+        let plic = Self::instance().plic.threshold.read().bits() as u8;
+        if plic == 0 {
+            Self::MAX_INTERRUPT_PRIORITY as u8
+        } else {
+            plic
+        }
     }
 
     #[inline(always)]
     fn set_interrupt_threshold(threshold: u8) {
+        let plic_threshold = if threshold as usize >= Self::MAX_INTERRUPT_PRIORITY {
+            0
+        } else {
+            threshold
+        };
         Self::instance()
             .plic
             .threshold
-            .write(|w| unsafe { w.bits(threshold as u32) });
+            .write(|w| unsafe { w.bits(plic_threshold as u32) });
     }
 
     fn claim_interrupt() -> Self::InterruptClaim {
