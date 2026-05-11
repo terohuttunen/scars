@@ -16,7 +16,7 @@ macro_rules! runtime_error {
     }};
 }
 
-#[derive(Debug, Fault)]
+#[derive(Fault)]
 pub enum KernelError {
     /// Stack overflow
     #[fault("Stack overflow in thread {thread_name} with stack size {stack_size}")]
@@ -29,7 +29,7 @@ pub enum KernelError {
 /// Runtime errors are errors that can happen at runtime, and are not
 /// related to the kernel or hardware. They are caused by incorrect usage
 /// of the kernel API by the application.
-#[derive(Debug, Fault)]
+#[derive(Fault)]
 pub enum RuntimeError {
     /// Idle task may not suspend, because it has to be always ready to run.
     /// Some task must always be able to run if others are suspended.
@@ -159,6 +159,10 @@ fn handle_fault(info: &FaultInfo) -> ! {
 #[cfg(not(feature = "khal-sim"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    crate::kernel::hal::kernel_hal::printkln!("{}", info);
+    if let Some(location) = info.location() {
+        defmt::error!("panic at {}:{}", location.file(), location.line());
+    } else {
+        defmt::error!("panic");
+    }
     loop {}
 }

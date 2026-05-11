@@ -161,7 +161,7 @@ impl TryFrom<usize> for FaultKind {
     }
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug, Fault)]
+#[derive(PartialEq, Eq, Copy, Clone, Fault)]
 #[fault("RISCV fault: {kind:?} mtval = {mtval}")]
 pub struct RISCFault {
     kind: FaultKind,
@@ -179,7 +179,7 @@ impl RISCFault {
     }
 }
 
-#[derive(Debug, FaultContext)]
+#[derive(FaultContext)]
 #[fault("riscv frame at {frame:?}")]
 pub struct RiscvContext {
     pub frame: *const RISCVTrapFrame,

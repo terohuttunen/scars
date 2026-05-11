@@ -7,7 +7,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use scars_fault::{Fault, fault};
 
-#[derive(Debug, Fault)]
+#[derive(Fault)]
 pub enum AtomicQueueError {
     ItemAlreadyInQueue,
 }

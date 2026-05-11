@@ -34,7 +34,7 @@ pub use defmt as __defmt;
 /// emits a `defmt::Format` impl plus a `defmt_format` method used by
 /// `dyn Fault`. Under `display`, it emits `core::fmt::Display`.
 #[cfg(feature = "defmt")]
-pub trait Fault: core::fmt::Debug {
+pub trait Fault {
     /// Format this fault into the given `defmt::Formatter`.
     ///
     /// Implemented automatically by `#[derive(Fault)]`.
@@ -56,7 +56,7 @@ pub trait Fault: core::fmt::Debug + core::fmt::Display {}
 /// Implemented through `#[derive(FaultContext)]`, which uses the same
 /// `#[fault("...")]` format-string attribute as `#[derive(Fault)]`.
 #[cfg(feature = "defmt")]
-pub trait FaultContext: core::fmt::Debug {
+pub trait FaultContext {
     /// Format this context frame into the given `defmt::Formatter`.
     fn defmt_format(&self, fmt: defmt::Formatter<'_>);
 }

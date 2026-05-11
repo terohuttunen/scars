@@ -14,7 +14,7 @@ use crate::thread::ThreadExecutionState;
 use scars_fault::FaultContext;
 
 /// Snapshot of the running thread at fault time.
-#[derive(Debug, FaultContext)]
+#[derive(FaultContext)]
 #[fault(
     "thread '{name}' (id {thread_id}, base priority {base_priority}, active {active_priority}, state {state:?})"
 )]
@@ -27,7 +27,7 @@ pub struct ThreadContext {
 }
 
 /// Snapshot of the running interrupt handler at fault time.
-#[derive(Debug, FaultContext)]
+#[derive(FaultContext)]
 #[fault("interrupt #{irq_number} (base priority {base_priority}, active {active_priority})")]
 pub struct InterruptContext {
     pub irq_number: u16,
@@ -36,6 +36,6 @@ pub struct InterruptContext {
 }
 
 /// Marker context for faults raised before the scheduler is running.
-#[derive(Debug, FaultContext)]
+#[derive(FaultContext)]
 #[fault("during early init (scheduler not running)")]
 pub struct BootstrapContext;

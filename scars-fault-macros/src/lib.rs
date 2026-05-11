@@ -24,14 +24,14 @@
 //! ```rust
 //! use scars_fault::Fault;
 //!
-//! #[derive(Debug, Fault)]
+//! #[derive(Fault)]
 //! #[fault("Invalid configuration: {field} = {value}")]
 //! struct ConfigError<'a> {
 //!     field: &'a str,
 //!     value: &'a str,
 //! }
 //!
-//! #[derive(Debug, Fault)]
+//! #[derive(Fault)]
 //! enum MyError<'a> {
 //!     #[fault("Invalid input: {value}")]
 //!     InvalidInput { value: &'a str },
@@ -47,7 +47,7 @@
 //! ```rust
 //! use scars_fault::Fault;
 //!
-//! #[derive(Debug, Fault)]
+//! #[derive(Fault)]
 //! enum DebugError {
 //!     #[fault("Debug value: {value:?}")]
 //!     Debug { value: Vec<u8> },
@@ -87,7 +87,7 @@ compile_error!("scars-fault-macros: enable one of features `defmt` or `display`"
 /// ```rust
 /// use scars_fault::Fault;
 ///
-/// #[derive(Debug, Fault)]
+/// #[derive(Fault)]
 /// #[fault("Invalid configuration: {field} = {value}")]
 /// struct ConfigError<'a> {
 ///     field: &'a str,
@@ -100,7 +100,7 @@ compile_error!("scars-fault-macros: enable one of features `defmt` or `display`"
 /// ```rust
 /// use scars_fault::Fault;
 ///
-/// #[derive(Debug, Fault)]
+/// #[derive(Fault)]
 /// enum MyError<'a> {
 ///     #[fault("Invalid input: {value}")]
 ///     InvalidInput { value: &'a str },
@@ -114,7 +114,7 @@ compile_error!("scars-fault-macros: enable one of features `defmt` or `display`"
 /// ```rust
 /// use scars_fault::Fault;
 ///
-/// #[derive(Debug, Fault)]
+/// #[derive(Fault)]
 /// enum DebugError {
 ///     #[fault("Debug value: {value:?}")]
 ///     Debug { value: Vec<u8> },
@@ -343,6 +343,12 @@ fn derive_format_trait(input: TokenStream, trait_path: syn::Path) -> TokenStream
                     #format_body
                 }
             }
+
+            impl #impl_generics ::core::fmt::Debug for #struct_or_enum_name #ty_generics #where_clause {
+                fn fmt(&self, __fmt: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                    <Self as ::core::fmt::Display>::fmt(self, __fmt)
+                }
+            }
         },
     };
 
@@ -420,7 +426,7 @@ pub fn fault_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```rust,ignore
 /// use scars_fault::{Fault, fault};
 ///
-/// #[derive(Debug, Fault)]
+/// #[derive(Fault)]
 /// #[fault("My error occurred")]
 /// struct MyError;
 ///

@@ -46,7 +46,7 @@ static mut __EXTERNAL_INTERRUPTS: [InterruptVector; MAX_INTERRUPT + 1] = [Interr
 }; MAX_INTERRUPT + 1];
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, Copy, Clone, Debug, Fault)]
+#[derive(PartialEq, Eq, Copy, Clone, Fault)]
 pub enum SimulatorErrorKind {
     #[fault("Mutex lock failed for mutex at {mutex_ptr:?}")]
     MutexLockFailed {
@@ -79,13 +79,13 @@ pub enum SimulatorErrorKind {
     Unknown = 255,
 }
 
-#[derive(Debug, Fault)]
+#[derive(Fault)]
 #[fault("Simulator error: {kind:?}")]
 pub struct SimulatorError {
     kind: SimulatorErrorKind,
 }
 
-#[derive(Debug, FaultContext)]
+#[derive(FaultContext)]
 #[fault("simulator pid {pid}")]
 pub struct SimContext {
     pub pid: libc::pid_t,
