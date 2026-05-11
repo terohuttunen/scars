@@ -6,7 +6,11 @@ use core::panic::PanicInfo;
 use semihosting::{print, println};
 
 #[cfg(feature = "rtt")]
-use rtt_target::{rprint as print, rprintln as println};
+use defmt::println as print;
+#[cfg(feature = "rtt")]
+use defmt::println;
+#[cfg(feature = "rtt")]
+use defmt_rtt as _;
 
 unsafe extern "Rust" {
     unsafe fn exit_scars(exit_code: i32) -> !;
@@ -51,4 +55,3 @@ pub fn test_fail() -> ! {
     println!("[failed]");
     unsafe { exit_scars(1) }
 }
-

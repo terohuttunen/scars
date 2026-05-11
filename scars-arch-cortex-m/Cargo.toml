@@ -17,7 +17,6 @@ cortex-m = { version = "0.7.7", features = ["critical-section-single-core", "inl
 cortex-m-rt = "0.7.3"
 defmt = "1.0.1"
 scars-khal = { version = "0.1.0", path = "../scars-khal" }
-rtt-target = "0.6.2"
 scars-fault = { path = "../scars-fault" }
 semihosting = { version = "0.1.20", optional = true }
 

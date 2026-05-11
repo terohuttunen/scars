@@ -161,8 +161,4 @@ fn handle_fault(info: &FaultInfo) -> ! {
 fn panic(info: &PanicInfo) -> ! {
     crate::kernel::hal::kernel_hal::printkln!("{}", info);
     loop {}
-    //printkln!("Panic handler");
-    //printkln!("{}", info);
-    //unsafe { _user_exception_handler(Exception::Panic(info)) };
-    //abort()
 }

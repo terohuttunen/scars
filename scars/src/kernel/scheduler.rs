@@ -1045,7 +1045,7 @@ pub fn print_threads() {
         let pin_scheduler = scheduler.as_ref();
         for info in pin_scheduler.thread_info(pkey) {
             printkln!(
-                "{:<10} {:<4}   {:<4} {:x?}",
+                "{} {}   {} {:x}",
                 info.name,
                 info.base_priority,
                 match info.state {
@@ -1054,7 +1054,7 @@ pub fn print_threads() {
                     ThreadExecutionState::Blocked => "Block",
                     _ => "?",
                 },
-                info.entry,
+                info.entry as usize,
             );
         }
     });

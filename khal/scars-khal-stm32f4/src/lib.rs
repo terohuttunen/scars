@@ -7,13 +7,10 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use cortex_m_rt::entry;
 use critical_section::Mutex;
+pub use defmt::println as printk;
+pub use defmt::println as printkln;
 use defmt_rtt as _;
 pub use peripherals::Peripherals;
-pub use rtt_target::debug_rprint as debug_printk;
-pub use rtt_target::debug_rprintln as debug_printkln;
-pub use rtt_target::rprint as printk;
-pub use rtt_target::rprintln as printkln;
-use rtt_target::rtt_init_print;
 use scars_arch_cortex_m::*;
 use scars_khal::*;
 pub use stm32f4xx_hal::pac::Interrupt;
@@ -29,6 +26,13 @@ const NVIC_PRIO_SHIFT: u8 = 8 - pac::NVIC_PRIO_BITS;
 
 // Static HAL instance
 static HAL: SyncUnsafeCell<MaybeUninit<STM32F4>> = SyncUnsafeCell::new(MaybeUninit::uninit());
+
+defmt::timestamp!("{=u32:us}", 0);
+
+#[defmt::panic_handler]
+fn defmt_panic() -> ! {
+    cortex_m::asm::udf()
+}
 
 pub struct STM32F4 {
     nvic: Mutex<RefCell<cortex_m::peripheral::NVIC>>,
@@ -310,8 +314,6 @@ pub unsafe extern "C" fn tim2() {
 #[entry]
 fn init() -> ! {
     unsafe {
-        rtt_init_print!();
-
         start_kernel();
     }
 }

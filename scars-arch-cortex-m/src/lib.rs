@@ -3,9 +3,6 @@ use core::arch::{asm, naked_asm};
 use core::sync::atomic::AtomicPtr;
 use cortex_m::register::basepri;
 use cortex_m_rt::exception;
-pub use rtt_target::rprint as print;
-pub use rtt_target::rprintln as println;
-use rtt_target::rtt_init_print;
 use scars_fault::*;
 use scars_khal::*;
 
@@ -128,14 +125,14 @@ pub enum FaultKind {
     UsageFault = 6,
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug, Fault)]
+#[derive(PartialEq, Eq, Copy, Clone, Fault)]
 #[fault("Cortex-M fault: {kind:?}")]
 pub struct CortexMFault {
     kind: FaultKind,
     frame: *const Context,
 }
 
-#[derive(Debug, FaultContext)]
+#[derive(FaultContext)]
 #[fault("cortex-m frame at {frame:?}")]
 pub struct CortexMContext {
     pub frame: *const Context,
