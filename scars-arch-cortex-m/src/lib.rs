@@ -355,7 +355,7 @@ pub unsafe extern "C" fn svcall() {
         "ldr    lr, =CURRENT_THREAD_CONTEXT",
         "ldr    lr, [lr]",
         "str    lr, [sp]",
-        "bl     _private_kernel_syscall_handler",
+        "bl     _kernel_syscall_handler",
         // Copy syscall return value in r0 to thread stack
         "mrs    r1, psp",
         "str    r0, [r1]",
@@ -412,7 +412,7 @@ pub unsafe extern "C" fn _switch_context(_old: *mut Context, _new: *const Contex
 }
 
 /// Common entry for any IRQ that doesn't have its own dedicated
-/// handler. Routes through `_private_kernel_interrupt_handler` which
+/// handler. Routes through `_kernel_interrupt_handler` which
 /// looks up the per-IRQ closure registered via `InterruptHandler`.
 #[unsafe(naked)]
 #[unsafe(export_name = "DefaultHandler")]
@@ -422,7 +422,7 @@ pub unsafe extern "C" fn default_handler() {
         "ldr    r0, =CURRENT_THREAD_CONTEXT",
         "ldr    r0, [r0]",
         "push   {{r0, lr}}",
-        "bl     _private_kernel_interrupt_handler",
+        "bl     _kernel_interrupt_handler",
         "pop    {{r0, lr}}",
         "bx     lr",
     );
@@ -474,7 +474,7 @@ pub unsafe extern "C" fn pendsv() {
         "ldr    r0, =CURRENT_THREAD_CONTEXT",
         "ldr    r0, [r0]",
         "push   {{r0, lr}}",
-        "bl     _private_kernel_service_call_handler",
+        "bl     _kernel_service_call_handler",
         "pop    {{r0, lr}}",
         "ldr    r1, =CURRENT_THREAD_CONTEXT",
         "ldr    r1, [r1]",

@@ -111,12 +111,7 @@ static SYSCALL_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
     SyncUnsafeCell::new(RawInterruptHandler::new(Priority::interrupt(0)));
 
 #[unsafe(no_mangle)]
-unsafe fn _private_kernel_syscall_handler(
-    id: usize,
-    arg0: usize,
-    arg1: usize,
-    arg2: usize,
-) -> usize {
+unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
     let rval = 0;
     unsafe {
         interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {
@@ -163,7 +158,7 @@ unsafe fn _private_kernel_syscall_handler(
 }
 
 #[unsafe(no_mangle)]
-pub(crate) unsafe fn _private_kernel_service_call_handler() {
+pub(crate) unsafe fn _kernel_service_call_handler() {
     unsafe {
         // Anything that needs to be done within some context, i.e. anything that calls
         // context-aware functions, must be done within an interrupt context. Service call

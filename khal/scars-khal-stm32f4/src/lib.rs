@@ -274,7 +274,7 @@ unsafe impl Sync for STM32F4 {}
 /// TIM2 IRQ — STM32F4's monotonic-clock alarm. Reads the chained
 /// TIM2/TIM5 64-bit counter against the 64-bit compare and either
 /// returns early (low-word fired but high word not yet at compare) or
-/// enters `_private_kernel_wakeup_handler` to fire expired kernel
+/// enters `_kernel_wakeup_handler` to fire expired kernel
 /// timers.
 #[unsafe(naked)]
 #[unsafe(export_name = "TIM2")]
@@ -303,7 +303,7 @@ pub unsafe extern "C" fn tim2() {
         "it     lt",
         "bxlt   lr",
         "push   {{r0, lr}}",
-        "bl     _private_kernel_wakeup_handler",
+        "bl     _kernel_wakeup_handler",
         "pop    {{r0, lr}}",
         "ldr    r1, =CURRENT_THREAD_CONTEXT",
         "ldr    r1, [r1]",

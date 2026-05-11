@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use critical_section::CriticalSection;
 
 #[unsafe(no_mangle)]
-pub(crate) unsafe fn _private_kernel_wakeup_handler() {
+pub(crate) unsafe fn _kernel_wakeup_handler() {
     static TIMER_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
         SyncUnsafeCell::new(RawInterruptHandler::new(Priority::interrupt(0)));
 

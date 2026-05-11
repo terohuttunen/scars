@@ -107,7 +107,7 @@ pub(crate) unsafe fn interrupt_context<R>(
 
 /// Private kernel interrupt handler entry point
 #[unsafe(no_mangle)]
-pub(crate) unsafe fn _private_kernel_interrupt_handler() {
+pub(crate) unsafe fn _kernel_interrupt_handler() {
     let claim = claim_interrupt();
     let interrupt_number = claim.get_interrupt_number();
 

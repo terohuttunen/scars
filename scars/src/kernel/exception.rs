@@ -82,7 +82,7 @@ pub fn handle_kernel_error(error: &KernelError) -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe fn _private_hardware_exception_handler(error: &HardwareFault) -> ! {
+pub unsafe fn _hardware_exception_handler(error: &HardwareFault) -> ! {
     let info = FaultInfo {
         error,
         location: None,
