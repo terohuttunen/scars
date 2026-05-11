@@ -37,7 +37,10 @@ macro_rules! make_interrupt_handler {
 // Re-export HAL constants that users need
 pub use crate::kernel::hal::MAX_INTERRUPT_NUMBER;
 
-use crate::kernel::hal::{claim_interrupt, complete_interrupt, set_interrupt_threshold};
+use crate::kernel::hal::{
+    claim_interrupt, complete_interrupt, pend_service_call, set_interrupt_threshold,
+};
+use crate::kernel::scheduler::Scheduler;
 use crate::priority::PriorityStatus;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -129,4 +132,13 @@ pub(crate) unsafe fn _kernel_interrupt_handler() {
     }
 
     complete_interrupt(claim);
+
+    // Pick up any reschedule queued during a PreemptLock-bracketed
+    // section of the handler. `set_pending_reschedule` skips the pend
+    // while a preempt lock is held, and the lock release path defers
+    // to this interrupt-exit hook for the interrupt case (see
+    // `PreemptLock::release_nesting_lock`).
+    if Scheduler::is_reschedule_pending() {
+        pend_service_call();
+    }
 }
