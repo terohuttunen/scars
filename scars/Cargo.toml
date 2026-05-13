@@ -76,6 +76,11 @@ name = "preempt"
 harness = false
 
 [[test]]
+name = "sim_interrupt01"
+harness = false
+required-features = ["khal-sim"]
+
+[[test]]
 name = "yield"
 harness = false
 

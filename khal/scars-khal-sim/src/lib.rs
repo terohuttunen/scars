@@ -12,6 +12,7 @@ mod context;
 mod error;
 mod flow;
 mod interrupt;
+pub mod pac;
 #[macro_use]
 pub mod printk;
 mod signal;
@@ -20,18 +21,12 @@ mod timer;
 pub use context::{VirtualContext, VirtualTrap};
 pub use error::{SimContext, SimulatorError, SimulatorErrorKind};
 pub use interrupt::{
-    MAX_INTERRUPT, MAX_INTERRUPT_PRIORITY, VirtualInterruptController,
-    InterruptClaim as SimInterruptClaim,
+    InterruptClaim as SimInterruptClaim, MAX_INTERRUPT, MAX_INTERRUPT_PRIORITY,
+    VirtualInterruptController, pend_interrupt,
 };
 pub use timer::{TIMER_FREQ_HZ, VirtualTimer};
 
 pub type HAL = Simulator;
-
-pub mod pac {
-    pub enum Interrupt {
-        UART1,
-    }
-}
 
 // Static HAL instance using SyncUnsafeCell directly
 static HAL: SyncUnsafeCell<MaybeUninit<Simulator>> = SyncUnsafeCell::new(MaybeUninit::uninit());

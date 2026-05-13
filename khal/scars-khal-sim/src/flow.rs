@@ -1,7 +1,7 @@
 use crate::Simulator;
 use crate::context::{CURRENT_THREAD_CONTEXT, VirtualContext, VirtualTrap, current_thread_context};
 use crate::error::{SimContext, SimulatorErrorKind};
-use crate::signal::{ALARM_SIGNAL, SYSCALL_SIGNAL};
+use crate::signal::{ALARM_SIGNAL, INTERRUPT_SIGNAL, SYSCALL_SIGNAL};
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 use scars_fault::*;
@@ -15,11 +15,12 @@ impl FlowController for Simulator {
     fn start_first_thread(context: *mut Self::Context) -> ! {
         let mut wait_set = MaybeUninit::uninit();
 
-        // Only the currently active RTOS thread should receive the virtual
-        // trap signal SYSCALL_SIGNAL and ALARM_SIGNAL.
+        // Only the currently active RTOS thread should receive the
+        // trap, virtual-interrupt, or alarm signals.
         unsafe {
             libc::sigemptyset(wait_set.as_mut_ptr());
             libc::sigaddset(wait_set.as_mut_ptr(), SYSCALL_SIGNAL);
+            libc::sigaddset(wait_set.as_mut_ptr(), INTERRUPT_SIGNAL);
             libc::sigaddset(wait_set.as_mut_ptr(), ALARM_SIGNAL);
             libc::pthread_sigmask(
                 libc::SIG_BLOCK,

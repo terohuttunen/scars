@@ -21,7 +21,7 @@ impl VirtualTimer {
     pub fn init(timer_ptr: *mut Self) {
         unsafe {
             // ALARM_SIGNAL handler additionally masks SYSCALL_SIGNAL while running.
-            install_handler(ALARM_SIGNAL, SYSCALL_SIGNAL);
+            install_handler(ALARM_SIGNAL, &[SYSCALL_SIGNAL], 0);
 
             let mut cond_attr = MaybeUninit::uninit();
             libc::pthread_condattr_init(cond_attr.as_mut_ptr());

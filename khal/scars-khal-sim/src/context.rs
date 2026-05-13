@@ -1,6 +1,6 @@
 use crate::error::SimulatorErrorKind;
 use crate::interrupt::INTERRUPTS_ENABLED;
-use crate::signal::{ALARM_SIGNAL, SYSCALL_SIGNAL};
+use crate::signal::{ALARM_SIGNAL, INTERRUPT_SIGNAL, SYSCALL_SIGNAL};
 use core::cell::{Cell, UnsafeCell};
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
@@ -22,7 +22,6 @@ pub enum VirtualTrap {
         args: [usize; 3],
         rval: usize,
     },
-    Alarm,
     ServiceCall,
 }
 
@@ -157,6 +156,7 @@ extern "C" fn thread_main_wrapper(arg: *mut libc::c_void) -> *mut libc::c_void {
         let mut set = MaybeUninit::uninit();
         libc::sigemptyset(set.as_mut_ptr());
         libc::sigaddset(set.as_mut_ptr(), SYSCALL_SIGNAL);
+        libc::sigaddset(set.as_mut_ptr(), INTERRUPT_SIGNAL);
         libc::sigaddset(set.as_mut_ptr(), ALARM_SIGNAL);
         libc::pthread_sigmask(libc::SIG_UNBLOCK, set.as_mut_ptr(), core::ptr::null_mut());
     }
