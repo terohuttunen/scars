@@ -7,12 +7,12 @@ use crate::kernel::{
 };
 use crate::priority::PriorityStatus;
 use crate::runtime_error;
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::sync::{NestingLock, PreemptLock, ScopedLock, TryLockResult, Unlock};
 use crate::thread::{IDLE_THREAD_ID, LockListTag, RawThread};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicPtr, Ordering};
 use pin_project::pin_project;
 
 /// CeilingLock is a locking primitive that allows raising the priority

@@ -12,14 +12,14 @@ use crate::kernel::{
     stack::StackRefMut,
     waiter::WaitQueueHandle,
 };
+use crate::local::LocalStorage;
 use crate::priority::PriorityStatus;
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::sync::{InheritanceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
 use crate::time::Instant;
-use crate::local::LocalStorage;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

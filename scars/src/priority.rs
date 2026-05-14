@@ -1,5 +1,5 @@
+use crate::sync::atomic::{AtomicI16, Ordering};
 use core::marker::ConstParamTy;
-use core::sync::atomic::{AtomicI16, Ordering};
 
 pub type ThreadPriority = u8;
 pub type InterruptPriority = u8;

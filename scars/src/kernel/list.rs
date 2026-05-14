@@ -1,9 +1,9 @@
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::marker::PhantomPinned;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub trait LinkedListTag: 'static {}
 

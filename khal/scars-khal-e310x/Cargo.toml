@@ -22,6 +22,7 @@ e310x = {version = "0.11.0"}
 static_cell = "2.1.0"
 const_env = "0.1.2"
 critical-section = { version = "1.1.1" }
+portable-atomic = { version = "1", default-features = false, features = ["critical-section"] }
 semihosting = { version = "0.1.4", features = ["stdio"], optional = true }
 
 [dev-dependencies]

@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU8, Ordering};
+use crate::sync::atomic::{AtomicU8, Ordering};
 
 const UNSTARTED: u8 = 0;
 const STARTED: u8 = 1;

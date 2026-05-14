@@ -45,7 +45,7 @@ pub use once::Once;
 pub use once_lock::OnceLock;
 pub use shared::Shared;
 
-pub use ::core::sync::atomic;
+pub use ::portable_atomic as atomic;
 
 pub use ceiling_lock::{CeilingLock, RawCeilingLock};
 pub use critical_section::{self, CriticalSection};

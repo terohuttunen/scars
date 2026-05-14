@@ -2,8 +2,8 @@ pub mod builder;
 pub(crate) mod context;
 pub mod handler;
 pub mod options;
-pub(crate) mod raw;
 pub mod pending;
+pub(crate) mod raw;
 pub mod reference;
 pub mod sender;
 
@@ -11,11 +11,11 @@ pub use options::EventOptions;
 pub use sender::EventSender;
 
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
+use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::syscall;
 use crate::thread::RawThread;
 use crate::time::Instant;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Type alias for event mask values, making it easy to change the underlying type
 pub type Events = u32;
@@ -299,7 +299,7 @@ impl WaitEvents {
             ExecutionContext::Thread(current_thread) => {
                 // Clear timeout flag before starting new wait operation
                 self.timed_out
-                    .store(false, core::sync::atomic::Ordering::SeqCst);
+                    .store(false, crate::sync::atomic::Ordering::SeqCst);
 
                 syscall::thread_wait_event(self as *mut _);
 
@@ -409,7 +409,7 @@ impl WaitEvents {
             ExecutionContext::Thread(current_thread) => {
                 // Clear timeout flag before starting new wait operation
                 self.timed_out
-                    .store(false, core::sync::atomic::Ordering::SeqCst);
+                    .store(false, crate::sync::atomic::Ordering::SeqCst);
 
                 syscall::thread_wait_event_until(self as *mut _, deadline);
 

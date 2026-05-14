@@ -1,5 +1,6 @@
 use crate::kernel::hal;
 use crate::priority::{AnyPriority, Priority};
+use crate::sync::atomic::Ordering;
 use crate::sync::{InterruptLock, NestingLock, interrupt_lock::InterruptLockKey};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
@@ -20,8 +21,7 @@ use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::Ordering;
-use scars_khal::{FlowController, Fault};
+use scars_khal::{Fault, FlowController};
 
 pub const SYSCALL_ID_YIELD: usize = 1;
 pub const SYSCALL_ID_WAIT: usize = 2;

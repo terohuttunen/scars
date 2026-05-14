@@ -2,11 +2,11 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use scars::Stack;
 use scars::cell::LockedCell;
 use scars::prelude::*;
 use scars::sync::CeilingLock;
+use scars::sync::atomic::{AtomicBool, Ordering};
 use scars::thread::{Thread, ThreadFn};
 use scars::time::Duration;
 use scars_test;

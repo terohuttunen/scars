@@ -1,5 +1,5 @@
 use crate::events::{AtomicEvents, Events};
-use core::sync::atomic::Ordering;
+use crate::sync::atomic::Ordering;
 
 /// Atomic set of pending event flags.
 #[repr(align(16))]

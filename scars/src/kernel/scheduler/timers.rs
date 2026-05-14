@@ -39,13 +39,13 @@ use crate::kernel::waiter::{
     SUSPENDABLE_PENDING_WAKEUP, WaitQueueEntry,
 };
 use crate::priority::Priority;
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::sync::interrupt_lock::InterruptLock;
 use crate::sync::preempt_lock::{PreemptLock, PreemptLockKey};
 use crate::time::Instant;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Marker tag for the intrusive list of armed [`RawTimer`]s.
 pub struct TimerQueueTag {}

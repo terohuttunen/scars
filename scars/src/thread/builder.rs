@@ -3,9 +3,9 @@ use super::{RawThread, Thread, ThreadFn, ThreadRef};
 use crate::kernel::hal::Context;
 use crate::kernel::stack::StackRefMut;
 use crate::priority::Priority;
+use crate::sync::atomic::{AtomicU32, Ordering};
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, Ordering};
 use scars_khal::ContextInfo;
 
 static NEXT_FREE_THREAD_ID: AtomicU32 = AtomicU32::new(IDLE_THREAD_ID);

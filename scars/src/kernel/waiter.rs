@@ -5,6 +5,7 @@ use crate::in_interrupt;
 use crate::kernel::atomic_queue::{AtomicNode, impl_atomic_linked};
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, Node, impl_linked};
 use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
+use crate::sync::atomic::{AtomicU32, Ordering};
 use crate::sync::{CeilingLock, NestingLock, PreemptLock, preempt_lock::PreemptLockKey};
 use crate::syscall;
 use crate::task::raw_task::RawTask;
@@ -13,7 +14,6 @@ use crate::time::Instant;
 use core::cell::Cell;
 use core::future::{Future, poll_fn};
 use core::pin::{Pin, pin};
-use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{RawWaker, Waker};
 
 pub struct WaitQueueTag {}

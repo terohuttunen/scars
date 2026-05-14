@@ -12,9 +12,9 @@ use crate::priority::{AtomicPriority, AtomicPriorityStatus, Priority, PrioritySt
 use crate::sync::{ceiling_lock::RawCeilingLock, interrupt_lock::InterruptLockKey};
 use crate::thread::LockListTag;
 
+use crate::sync::atomic::Ordering;
 use core::cell::{Cell, UnsafeCell};
 use core::pin::Pin;
-use core::sync::atomic::Ordering;
 
 /// Core interrupt handler structure
 #[repr(align(16))]

@@ -22,6 +22,8 @@ use crate::kernel::{
 };
 use crate::printkln;
 use crate::priority::{AnyPriority, AtomicPriorityStatus, Priority, PriorityStatus};
+use crate::sync::atomic::Ordering;
+use crate::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
 use crate::sync::preempt_lock::is_preempt_allowed;
 use crate::sync::{
     InterruptLock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
@@ -35,8 +37,6 @@ use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::Ordering;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
 use event_queue::PendingEventsQueue;
 use scars_khal::{ContextInfo, FlowController};
 pub(crate) use timers::RawTimer;
@@ -307,7 +307,7 @@ impl RawScheduler {
         // Set timeout flag if thread has current wait events (indicating it timed out)
         let wait_events_ptr = thread
             .current_wait_events
-            .load(core::sync::atomic::Ordering::SeqCst);
+            .load(crate::sync::atomic::Ordering::SeqCst);
         if !wait_events_ptr.is_null() {
             let wait_events = unsafe { &*wait_events_ptr };
             wait_events.set_timed_out();

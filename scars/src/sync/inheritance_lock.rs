@@ -5,10 +5,10 @@ use crate::kernel::{
     waiter::WaitQueue,
 };
 use crate::runtime_error;
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::sync::{PreemptLock, ScopedLock, TryLockResult, Unlock};
 use crate::thread::{InheritanceLockListTag, RawThread};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub struct InheritanceLock {
     // The current owner of the lock

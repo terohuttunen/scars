@@ -1,4 +1,5 @@
 use crate::priority::Priority;
+use crate::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::preempt_lock::PreemptLockKey;
 use crate::{
     interrupt::{
@@ -9,7 +10,6 @@ use crate::{
 };
 use core::cell::SyncUnsafeCell;
 use core::ops::{Add, Mul, Sub};
-use core::sync::atomic::{AtomicUsize, Ordering};
 use critical_section::CriticalSection;
 
 #[unsafe(no_mangle)]

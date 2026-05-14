@@ -1,8 +1,8 @@
 use super::{NestingLock, TryLockError};
 use crate::kernel::hal::{acquire, restore};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PreemptLockKey<'lock> {

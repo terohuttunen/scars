@@ -1,9 +1,9 @@
 use super::TryLockError;
 use crate::kernel::hal::{acquire, restore};
+use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::sync::{NestingLock, ScopedLock};
 use core::marker::PhantomData;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static INTERRUPT_LOCK_NESTING: AtomicUsize = AtomicUsize::new(0);
 

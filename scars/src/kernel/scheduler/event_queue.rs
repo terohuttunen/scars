@@ -2,8 +2,8 @@ use crate::events::context::event_handler_context;
 use crate::events::{Events, raw::RawEventHandler};
 use crate::kernel::atomic_queue::AtomicQueue;
 use crate::kernel::list::LinkedListTag;
+use crate::sync::atomic::{AtomicBool, Ordering};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::{Scheduler, hal};
 

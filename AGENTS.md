@@ -44,6 +44,11 @@ the linker script and runner now live in board manifests, not
 2. If the board needs a new KHAL crate, add it under `khal/` and wire the
    `khal-<name>` feature in `scars/Cargo.toml`.
 3. The board's manifest `name` must match its filename.
+4. Each khal crate selects its own `portable-atomic` backend by declaring
+   `portable-atomic` in its `Cargo.toml` with the features the target
+   requires (e.g. `critical-section` for single-core targets without native
+   64-bit atomics). `scars` keeps a bare dep; Cargo unifies the khal's
+   choice into the kernel.
 
 ### Adding an example
 

@@ -42,8 +42,8 @@ use crate::kernel::hal::{
 };
 use crate::kernel::scheduler::Scheduler;
 use crate::priority::PriorityStatus;
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicPtr, Ordering};
 use scars_khal::GetInterruptNumber;
 
 static CURRENT_INTERRUPT_CONTROL_BLOCK: AtomicPtr<RawInterruptHandler> =

@@ -2,12 +2,12 @@ use super::ExecutorHandle;
 use crate::kernel::atomic_queue::*;
 use crate::kernel::list::{LinkedListTag, Node, impl_linked};
 use crate::kernel::waiter::{WaitQueueEntry, WaitQueueTag};
+use crate::sync::atomic::{AtomicU32, Ordering};
 use crate::time::Instant;
 use core::future::Future;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 pub struct TaskReadyListTag;

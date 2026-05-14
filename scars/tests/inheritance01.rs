@@ -3,10 +3,10 @@
 #![feature(type_alias_impl_trait)]
 
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU32, Ordering};
 use scars::Stack;
 use scars::prelude::*;
 use scars::sync::InheritanceLock;
+use scars::sync::atomic::{AtomicU32, Ordering};
 use scars::thread::{Thread, ThreadFn};
 use scars::time::Duration;
 use scars_test;
