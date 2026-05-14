@@ -9,14 +9,16 @@ use core::sync::atomic::AtomicBool;
 use scars_khal::*;
 
 mod context;
+mod defmt;
 mod error;
 mod flow;
 mod interrupt;
 pub mod pac;
-#[macro_use]
-pub mod printk;
 mod signal;
 mod timer;
+
+pub use ::defmt::println as printk;
+pub use ::defmt::println as printkln;
 
 pub use context::{VirtualContext, VirtualTrap};
 pub use error::{SimContext, SimulatorError, SimulatorErrorKind};

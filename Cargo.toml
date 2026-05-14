@@ -54,11 +54,3 @@ incremental = false
 lto = 'fat'
 opt-level = 3
 panic = "abort"
-
-[profile.release.package.xtask]
-codegen-units = 16
-opt-level = 1
-
-[profile.dev.package.xtask]
-codegen-units = 16
-opt-level = 1

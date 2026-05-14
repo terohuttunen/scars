@@ -17,3 +17,5 @@ libc = "0.2.175"
 scars-khal = { version = "0.1.0", path = "../../scars-khal" }
 scars-fault = { path = "../../scars-fault" }
 portable-atomic = { version = "1", default-features = false }
+defmt = "1.0.1"
+defmt-decoder = "1"

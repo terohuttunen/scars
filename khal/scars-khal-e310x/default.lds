@@ -1,5 +1,6 @@
 INCLUDE scars.x
 INCLUDE memory.x
+INCLUDE defmt.x
 
 PHDRS
 {

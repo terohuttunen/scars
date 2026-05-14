@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
-#![feature(sync_unsafe_cell)]
 use scars;
 extern crate std;
 use scars::Stack;
@@ -20,7 +19,7 @@ fn init() {
         .init(MAIN_THREAD_STACK.init())
         .attach(|| {
             loop {
-                scars::printkln!("Hello, from main!");
+                defmt::println!("Hello, from main!");
                 scars::delay(scars::time::Duration::from_millis(10));
             }
         })
@@ -32,7 +31,7 @@ fn init() {
         .init(OTHER_THREAD_STACK.init())
         .attach(|| {
             loop {
-                scars::printkln!("Hello, from the other thread!");
+                defmt::println!("Hello, from the other thread!");
                 scars::delay(scars::time::Duration::from_millis(10));
             }
         })

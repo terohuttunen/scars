@@ -13,13 +13,18 @@ pub fn project_env(board: &Board) -> BTreeMap<String, String> {
     let triple_key = board.target.replace('-', "_").to_uppercase();
 
     if let Some(linker) = &board.linker {
-        let mut flags = vec![format!("-Clink-arg=-T{}", linker.script)];
+        let mut flags: Vec<String> = Vec::new();
+        if let Some(script) = &linker.script {
+            flags.push(format!("-Clink-arg=-T{script}"));
+        }
         flags.extend(linker.rustflags.iter().cloned());
-        // CARGO_TARGET_<TRIPLE>_RUSTFLAGS is split on whitespace; flags must not contain spaces.
-        env.insert(
-            format!("CARGO_TARGET_{triple_key}_RUSTFLAGS"),
-            flags.join(" "),
-        );
+        if !flags.is_empty() {
+            // CARGO_TARGET_<TRIPLE>_RUSTFLAGS is split on whitespace; flags must not contain spaces.
+            env.insert(
+                format!("CARGO_TARGET_{triple_key}_RUSTFLAGS"),
+                flags.join(" "),
+            );
+        }
     }
 
     if let Some(r) = &board.runner {

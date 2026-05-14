@@ -4,3 +4,13 @@ package = "scars"
 features = ["khal-sim"]
 test_runner = "native"
 examples_dir = "examples/sim"
+
+[linker]
+# Non-PIE so defmt's `&SYMBOL as u16` truncation lands on the link-time symbol
+# address (host PIE with ASLR otherwise mixes random bits into the lower 16
+# of every static address, breaking defmt-decoder's tag lookup).
+rustflags = [
+    "-Clink-arg=-Tkhal/scars-khal-sim/sim-defmt.lds",
+    "-Crelocation-model=static",
+    "-Clink-arg=-no-pie",
+]

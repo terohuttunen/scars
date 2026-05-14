@@ -67,12 +67,12 @@ impl FlowController for Simulator {
         let info = info.with_context(&plat_node);
 
         if let Some(loc) = info.location {
-            eprintln!("Fault at {}: {}", loc, info.error);
+            defmt::error!("Fault at {}: {}", loc, info.error);
         } else {
-            eprintln!("Fault: {}", info.error);
+            defmt::error!("Fault: {}", info.error);
         }
         for (i, frame) in info.context_iter().enumerate() {
-            eprintln!("  {}: {}", i + 1, frame);
+            defmt::error!("  {}: {}", i + 1, frame);
         }
 
         unsafe {

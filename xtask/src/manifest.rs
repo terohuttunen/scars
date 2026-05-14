@@ -30,7 +30,8 @@ pub enum TestRunner {
 
 #[derive(Debug, Deserialize)]
 pub struct Linker {
-    pub script: String,
+    #[serde(default)]
+    pub script: Option<String>,
     #[serde(default)]
     pub rustflags: Vec<String>,
 }
