@@ -3,7 +3,6 @@ pub mod nvic;
 
 use core::arch::{asm, naked_asm};
 use core::sync::atomic::AtomicPtr;
-use cortex_m::register::basepri;
 use cortex_m_rt::exception;
 use scars_fault::*;
 use scars_khal::*;
@@ -11,15 +10,16 @@ use scars_khal::*;
 #[unsafe(no_mangle)]
 pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
 
+/// ARMv6-M thread context. Smaller than the ARMv7-M cousin — no FPU
+/// register slots, and the per-thread interrupt-mask state is just
+/// the saved PRIMASK bit (M0 has no BASEPRI; PRIMASK is the whole
+/// masking state).
+///
+/// Layout is referenced by offset from the inline asm below:
+/// r4..r11 at 0..32, lr at 32, sp at 36, primask at 40.
 #[repr(C)]
 #[derive(Debug)]
 pub struct Context {
-    // Caller saved registers r0, r1, r2, r3, r12, lr, pc are pushed
-    // into thread stack on interrupt. Thread context stores all callee
-    // saved registers.
-
-    // Register
-    // r4-r11     Local variables
     r4: u32,
     r5: u32,
     r6: u32,
@@ -28,33 +28,9 @@ pub struct Context {
     r9: u32,
     r10: u32,
     r11: u32,
-    // Link register at the interrupt handler.
-    // Contains information of what was stored in thread stack.
     lr: u32,
-
-    // Stack top (r13) at offset 9 * 4
     sp: u32,
-
-    // Thread current interrupt priority threshold at offset 10 * 4
-    basepri: u32,
-
-    // Callee saved FPU registers starting from offset 11 * 4
-    s16: f32,
-    s17: f32,
-    s18: f32,
-    s19: f32,
-    s20: f32,
-    s21: f32,
-    s22: f32,
-    s23: f32,
-    s24: f32,
-    s25: f32,
-    s26: f32,
-    s27: f32,
-    s28: f32,
-    s29: f32,
-    s30: f32,
-    s31: f32,
+    primask: u32,
 }
 
 impl ContextInfo for Context {
@@ -79,31 +55,22 @@ impl ContextInfo for Context {
             (*context).r9 = 0;
             (*context).r10 = 0;
             (*context).r11 = 0;
+            // EXC_RETURN cookie: thread mode, PSP, basic frame, no FP
+            // (bit 4 set ⇒ no FP frame; ARMv6-M has no FPU so always
+            // basic). Same encoding as on M3.
             (*context).lr = 0xFFFFFFFD;
 
-            (*context).s16 = 0.0f32;
-            (*context).s17 = 0.0f32;
-            (*context).s18 = 0.0f32;
-            (*context).s19 = 0.0f32;
-            (*context).s20 = 0.0f32;
-            (*context).s21 = 0.0f32;
-            (*context).s22 = 0.0f32;
-            (*context).s23 = 0.0f32;
-            (*context).s24 = 0.0f32;
-            (*context).s25 = 0.0f32;
-            (*context).s26 = 0.0f32;
-            (*context).s27 = 0.0f32;
-            (*context).s28 = 0.0f32;
-            (*context).s29 = 0.0f32;
-            (*context).s30 = 0.0f32;
-            (*context).s31 = 0.0f32;
-
-            // Allocate exception frame from thread stack
+            // Allocate a basic exception frame at the top of the
+            // thread stack; the CPU will pop it on the first
+            // exception-return into this thread.
             let frame_ptr = stack_ptr.sub(core::mem::size_of::<cortex_m_rt::ExceptionFrame>())
                 as *mut cortex_m_rt::ExceptionFrame;
             (*context).sp = frame_ptr as u32;
-            // TODO: initial priority
-            (*context).basepri = basepri::read() as u32;
+            // Capture current PRIMASK so the new thread starts with
+            // the same mask state as its creator (same shape as the
+            // M3+ crate capturing BASEPRI at thread init). 0 = IRQs
+            // enabled, 1 = disabled.
+            (*context).primask = !cortex_m::register::primask::read().is_active() as u32;
 
             (*frame_ptr).set_r0(argument.unwrap_or(core::ptr::null()) as u32);
             (*frame_ptr).set_r1(0);
@@ -112,7 +79,6 @@ impl ContextInfo for Context {
             (*frame_ptr).set_r12(0);
             (*frame_ptr).set_lr(on_abort as u32);
             (*frame_ptr).set_pc(main_fn as u32);
-            // TODO: disable FPU at thread startup because not pushing FPU context
             (*frame_ptr).set_xpsr(0x01000000);
         }
     }
@@ -122,20 +88,17 @@ impl ContextInfo for Context {
 #[derive(PartialEq, Eq, Copy, Clone, Debug, defmt::Format)]
 pub enum FaultKind {
     HardFault = 3,
-    MemManage = 4,
-    BusFault = 5,
-    UsageFault = 6,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone, Fault)]
-#[fault("Cortex-M fault: {kind:?}")]
+#[fault("Cortex-M0 fault: {kind:?}")]
 pub struct CortexMFault {
     kind: FaultKind,
     frame: *const Context,
 }
 
 #[derive(FaultContext)]
-#[fault("cortex-m frame at {frame:?}")]
+#[fault("cortex-m0 frame at {frame:?}")]
 pub struct CortexMContext {
     pub frame: *const Context,
 }
@@ -144,42 +107,40 @@ pub fn start_first_thread(idle_context: *mut Context) -> ! {
     unsafe {
         CURRENT_THREAD_CONTEXT.store(idle_context, core::sync::atomic::Ordering::SeqCst);
         asm!(
-            // Stash idle_context in r6 so the basepri load below can
-            // reach the context after `ldmia` clobbers r0 with frame.r0.
-            "mov r6, r0",
+            // r0 = idle_context on entry; preserve it in r6 since the
+            // exception-frame pop below clobbers r0–r3.
+            "mov    r6, r0",
 
-            // Read the thread stack pointer from the context.
-            "ldr r4, [r6, #9*4]",
+            // r4 = context.sp = prebuilt exception frame
+            "ldr    r4, [r6, #9*4]",
 
-            // Read PC from stack
-            "ldr r5, [r4, #6*4]",
+            // r5 = frame.pc (idle main_fn)
+            "ldr    r5, [r4, #6*4]",
 
-            // Read LR from stack
-            "ldr lr, [r4, #5*4]",
+            // Pop r0–r3 from the frame so the thread sees its argument
+            // in r0 on entry. (No ldmia with high registers on ARMv6-M.)
+            "ldr    r0, [r4, #0]",
+            "ldr    r1, [r4, #4]",
+            "ldr    r2, [r4, #8]",
+            "ldr    r3, [r4, #12]",
 
-            "ldmia r4, {{r0-r3, r12}}",
-
-            // Pop exception frame from the stack
-            "add r4, r4, #8*4",
-
-            // Set process stack pointer to thread stack bottom
-            "msr psp, r4",
-            // Make sure that stack pointer is set before enabling use of it
+            // Discard the rest of the frame (r12, lr, pc, xpsr) by
+            // advancing PSP past the whole frame.
+            "adds   r4, r4, #8*4",
+            "msr    psp, r4",
             "isb",
 
-            // Enable process stack pointer
-            // FPU context is not active, because FPU registers were not stored in context init.
-            "mov r4, #2",
-            "msr control, r4",
-
-            // Restore basepri register from the stashed context pointer.
-            "ldr r4, [r6, #10 * 4]",
-            "msr basepri, r4",
-            "dsb",
+            // Switch to PSP, thread mode.
+            "movs   r4, #2",
+            "msr    control, r4",
             "isb",
 
-            // Jump to thread main
-            "bx r5",
+            // Restore the thread's saved PRIMASK.
+            "ldr    r2, [r6, #10*4]",
+            "msr    primask, r2",
+
+            // Jump to thread main.
+            "bx     r5",
             in("r0") idle_context,
             options(noreturn)
         )
@@ -233,12 +194,9 @@ pub fn on_idle() {
     cortex_m::asm::wfi();
 }
 
-/// Active-idle hook for KHALs that need the CPU observable to a
-/// SWD-driven RTT poller even when no thread is runnable. On STM32F1
-/// (Cortex-M3) `wfi` puts the core in a sleep state that probe-rs's
-/// RTT polling cannot observe — kernel-timer output is generated by
-/// the firmware but never reaches the host until a halt event. F1
-/// uses this in place of `on_idle`; F4 / H7 are unaffected.
+/// See `scars_arch_cortex_m::on_idle_active`. STM32F0 (Cortex-M0)
+/// will likely run into the same probe-rs-RTT streaming issue as F1
+/// when wfi sleeps the core; KHAL can opt into this if needed.
 pub fn on_idle_active() {
     cortex_m::asm::nop();
 }
@@ -259,7 +217,6 @@ pub fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
 }
 
 pub fn pend_service_call() {
-    // Set PendSV pending bit in SCB->ICSR (bit 28)
     const SCB_ICSR_PENDSVSET: u32 = 1 << 28;
     unsafe {
         let scb = &*cortex_m::peripheral::SCB::PTR;
@@ -268,7 +225,6 @@ pub fn pend_service_call() {
 }
 
 pub fn clear_service_call() {
-    // Clear PendSV pending bit in SCB->ICSR (bit 27)
     const SCB_ICSR_PENDSVCLR: u32 = 1 << 27;
     unsafe {
         let scb = &*cortex_m::peripheral::SCB::PTR;
@@ -276,30 +232,22 @@ pub fn clear_service_call() {
     }
 }
 
-/// Lower PendSV to the lowest hardware priority. Must be called once
-/// during HAL init before any context switch is requested.
-///
-/// Cortex-M's reset value for PendSV's priority byte is 0 (highest),
-/// which would let PendSV preempt every other ISR mid-handler — the
-/// scheduler relies on context switches happening only after every
-/// other exception has finished. Writing `0xFF` selects the lowest
-/// priority regardless of how many priority bits the implementation
-/// supports (the unused low bits are ignored).
-pub fn init_pendsv_priority(scb: &mut cortex_m::peripheral::SCB) {
+/// Pin every kernel-owned exception (SVCall, PendSV) to the lowest
+/// NVIC priority. The kernel-priority-is-lowest invariant is a
+/// scars-wide assumption; on ARMv6-M with no BASEPRI it's also
+/// load-bearing — see `nvic::Nvic::set_threshold`.
+pub fn init_kernel_priorities(scb: &mut cortex_m::peripheral::SCB) {
     unsafe {
+        scb.set_priority(cortex_m::peripheral::scb::SystemHandler::SVCall, 0xFF);
         scb.set_priority(cortex_m::peripheral::scb::SystemHandler::PendSV, 0xFF);
     }
 }
 
 #[macro_export]
 macro_rules! impl_flow_controller {
-    // Default: use `$crate::on_idle()` (wfi) as the idle hook.
     ($struct_name:ident) => {
         $crate::impl_flow_controller!($struct_name, on_idle = $crate::on_idle());
     };
-    // Override variant: KHAL supplies its own idle expression. Used by
-    // scars-khal-stm32f1, which can't use wfi for the RTT-streaming
-    // reason documented on `on_idle_active`.
     ($struct_name:ident, on_idle = $on_idle:expr) => {
         impl FlowController for $struct_name {
             type StackAlignment = scars_khal::A8;
@@ -365,88 +313,148 @@ macro_rules! impl_flow_controller {
     };
 }
 
-/// SVC exception handler. The function signature is fictional —
-/// SVCall receives state through the exception frame on PSP, not via
-/// the C ABI — but a typed naked symbol gives LLVM the right metadata
-/// and lets cortex-m-rt's vector table pick it up.
+/// SVC exception handler — ARMv6-M version. The handler must call
+/// `_kernel_syscall_handler(id, arg0, arg1, arg2)` with the original
+/// r0–r3 from the SVC site, and on return tail-jump to `_switch_context`
+/// with r0 = OLD context, r1 = NEW context.
+///
+/// The M3+ analogue achieves this by `push {r0, lr}` and then
+/// `str lr, [sp]` (overwriting the saved-r0 slot with the OLD context
+/// pointer, while keeping r0-the-register intact for the handler).
+/// ARMv6-M cannot encode `str` with `lr` as the source register, so
+/// the trick here is the same shape but uses `r4` as the staging
+/// register, with the thread's original `r4` saved/restored on the
+/// stack around the use.
 #[unsafe(naked)]
 #[unsafe(export_name = "SVCall")]
 #[unsafe(link_section = ".SVCall.user")]
 pub unsafe extern "C" fn svcall() {
     naked_asm!(
+        // Stack the syscall id and EXC_RETURN cookie. After this:
+        //   SP[0] = r0_saved (= syscall id), SP[4] = lr_saved.
+        // r0 (the register) still holds the syscall id for the handler.
         "push   {{r0, lr}}",
-        "ldr    lr, =CURRENT_THREAD_CONTEXT",
-        "ldr    lr, [lr]",
-        "str    lr, [sp]",
+
+        // Use r4 as a scratch to overwrite the SP[0] slot with the
+        // OLD context pointer. Save r4 first so we don't lose the
+        // thread's value of it.
+        "push   {{r4}}",
+        "ldr    r4, ={ctx}",
+        "ldr    r4, [r4]",
+        "str    r4, [sp, #4]",
+        "pop    {{r4}}",
+
+        // r0–r3 still hold the original syscall args; call the handler.
         "bl     _kernel_syscall_handler",
-        // Copy syscall return value in r0 to thread stack
+        // r0 = syscall return value; r4–r11 preserved by AAPCS.
+
+        // Write the return value into the SVC exception frame's r0
+        // slot so the thread observes it after EXC_RETURN.
         "mrs    r1, psp",
         "str    r0, [r1]",
-        "pop    {{r0, lr}}",
-        "ldr    r1, =CURRENT_THREAD_CONTEXT",
+
+        // Recover OLD context and EXC_RETURN from the stack.
+        "pop    {{r0, r3}}",
+        "mov    lr, r3",
+
+        // r1 = currently-installed thread context (may differ from
+        // OLD if the syscall switched threads).
+        "ldr    r1, ={ctx}",
         "ldr    r1, [r1]",
+
         "b      _switch_context",
+        ctx = sym CURRENT_THREAD_CONTEXT,
     );
 }
 
-/// Context-switch primitive entered from `b _switch_context` at the
-/// tail of every exception handler. `r0` is the outgoing thread's
-/// `Context*`, `r1` the incoming one. Returns via `bx lr` performing
-/// the parent exception's `EXC_RETURN`.
+/// Context-switch primitive. Entered via `b _switch_context` from the
+/// tail of an exception handler. r0 = outgoing Context*, r1 = incoming
+/// Context*. Returns via `bx lr` which performs the parent exception's
+/// EXC_RETURN.
+///
+/// ARMv6-M caveats that drive the shape:
+/// - `stmia`/`ldmia` register lists are limited to {r0–r7} and cannot
+///   include `lr`; r8–r11 and lr are moved through low registers.
+/// - No IT blocks; the threshold-application branch uses explicit
+///   `beq`/`b` instead of conditional execution.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = "._switch_context.user")]
 pub unsafe extern "C" fn _switch_context(_old: *mut Context, _new: *const Context) {
     naked_asm!(
-        ".fpu vfpv4-d16",
+        // Fast path: same context, just return.
         "cmp    r0, r1",
-        "it     eq",
-        "beq    0f",
-        // Save callee saved registers
-        "stmia  r0, {{r4-r11, lr}}",
-        "add    r2, r0, #11*4",
-        "tst    lr, #0x10",
-        "it     eq",
-        "vstmiaeq r2, {{s16-s31}}",
-        // Store process stack pointer to context
-        "mrs    r2, psp",
-        "str    r2, [r0, #9 * 4]",
-        // Store basepri register to context
-        "mrs    r2, basepri",
-        "str    r2, [r0, #10 * 4]",
-        // Restore new context
-        // Restore psp from context 'sp'
-        "ldr    r2, [r1, #9 * 4]",
-        "msr    psp, r2",
-        // Restore callee saved registers
-        "ldmia  r1, {{r4-r11, lr}}",
-        "add    r2, r1, #11*4",
-        "tst    lr, #0x10",
-        "it     eq",
-        "vldmiaeq r2, {{s16-s31}}",
-        // Restore basepri
-        "ldr    r2, [r1, #10 * 4]",
-        "msr    basepri, r2",
+        "beq    9f",
+        // --- Save outgoing context (r0 points to outgoing Context) ---
+        // r4–r7 first.
+        "str    r4, [r0, #0]",
+        "str    r5, [r0, #4]",
+        "str    r6, [r0, #8]",
+        "str    r7, [r0, #12]",
+        // r8–r11 via low-register staging.
+        "mov    r4, r8",
+        "mov    r5, r9",
+        "mov    r6, r10",
+        "mov    r7, r11",
+        "str    r4, [r0, #16]",
+        "str    r5, [r0, #20]",
+        "str    r6, [r0, #24]",
+        "str    r7, [r0, #28]",
+        // lr (EXC_RETURN cookie) via r4.
+        "mov    r4, lr",
+        "str    r4, [r0, #32]",
+        // psp into context.sp.
+        "mrs    r4, psp",
+        "str    r4, [r0, #36]",
+        // primask into context.primask.
+        "mrs    r4, primask",
+        "str    r4, [r0, #40]",
+        // --- Restore incoming context (r1 points to incoming Context) ---
+        // primask from context.primask.
+        "ldr    r4, [r1, #40]",
+        "msr    primask, r4",
+        // psp from context.sp.
+        "ldr    r4, [r1, #36]",
+        "msr    psp, r4",
+        // r8–r11 first, while we can still use r4–r7 as scratch.
+        "ldr    r4, [r1, #16]",
+        "mov    r8, r4",
+        "ldr    r4, [r1, #20]",
+        "mov    r9, r4",
+        "ldr    r4, [r1, #24]",
+        "mov    r10, r4",
+        "ldr    r4, [r1, #28]",
+        "mov    r11, r4",
+        // lr.
+        "ldr    r4, [r1, #32]",
+        "mov    lr, r4",
+        // r4–r7 last, since we used them as scratch above.
+        "ldr    r4, [r1, #0]",
+        "ldr    r5, [r1, #4]",
+        "ldr    r6, [r1, #8]",
+        "ldr    r7, [r1, #12]",
         "dsb",
         "isb",
-        "0:",
+        "9:",
         "bx     lr",
     );
 }
 
 /// Common entry for any IRQ that doesn't have its own dedicated
-/// handler. Routes through `_kernel_interrupt_handler` which
-/// looks up the per-IRQ closure registered via `InterruptHandler`.
+/// handler. Routes through `_kernel_interrupt_handler` which looks up
+/// the per-IRQ closure registered via `InterruptHandler`.
 #[unsafe(naked)]
 #[unsafe(export_name = "DefaultHandler")]
 #[unsafe(link_section = ".DefaultHandler.user")]
 pub unsafe extern "C" fn default_handler() {
     naked_asm!(
-        "ldr    r0, =CURRENT_THREAD_CONTEXT",
-        "ldr    r0, [r0]",
-        "push   {{r0, lr}}",
+        // Push lr via low register; ARMv6-M cannot push lr+r0 in one
+        // shot.
+        "mov    r1, lr",
+        "push   {{r0, r1}}",
         "bl     _kernel_interrupt_handler",
-        "pop    {{r0, lr}}",
+        "pop    {{r0, r1}}",
+        "mov    lr, r1",
         "bx     lr",
     );
 }
@@ -466,41 +474,22 @@ unsafe fn NonMaskableInt() -> ! {
     loop {}
 }
 
-#[exception]
-unsafe fn MemoryManagement() -> ! {
-    loop {}
-}
-
-#[exception]
-unsafe fn BusFault() -> ! {
-    loop {}
-}
-
-#[exception]
-unsafe fn UsageFault() -> ! {
-    loop {}
-}
-
-#[exception]
-unsafe fn DebugMonitor() -> ! {
-    loop {}
-}
-
-/// PendSV handler — the kernel's deferred-work / context-switch
-/// trampoline. Pended via `pend_service_call`; runs at the lowest
-/// hardware priority so all other ISRs finish first.
+/// PendSV handler — kernel service-call / context-switch trampoline.
 #[unsafe(naked)]
 #[unsafe(export_name = "PendSV")]
 #[unsafe(link_section = ".PendSV.user")]
 pub unsafe extern "C" fn pendsv() {
     naked_asm!(
-        "ldr    r0, =CURRENT_THREAD_CONTEXT",
+        "ldr    r0, ={ctx}",
         "ldr    r0, [r0]",
-        "push   {{r0, lr}}",
+        "mov    r1, lr",
+        "push   {{r0, r1}}",
         "bl     _kernel_service_call_handler",
-        "pop    {{r0, lr}}",
-        "ldr    r1, =CURRENT_THREAD_CONTEXT",
+        "pop    {{r0, r1}}",
+        "mov    lr, r1",
+        "ldr    r1, ={ctx}",
         "ldr    r1, [r1]",
         "b      _switch_context",
+        ctx = sym CURRENT_THREAD_CONTEXT,
     );
 }

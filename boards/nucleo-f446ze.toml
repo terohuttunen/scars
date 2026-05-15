@@ -1,7 +1,7 @@
-name = "stm32f429i-disco"
+name = "nucleo-f446ze"
 target = "thumbv7em-none-eabihf"
 package = "scars"
-features = ["chip-stm32f429"]
+features = ["chip-stm32f446"]
 test_runner = "probe-rs"
 examples_dirs = ["examples/stm32f4"]
 
@@ -13,7 +13,7 @@ rustflags = ["-Ctarget-cpu=cortex-m4", "-Ctarget-feature=+vfp4"]
 program = "probe-rs"
 args = [
     "run",
-    "--chip", "STM32F429ZITx",
-    "--probe", "0483:374b:066AFF505588494867255052",
+    "--chip", "STM32F446ZETx",
+    "--probe", "0483:374b:066CFF575487884867184855",
     "--connect-under-reset",
 ]

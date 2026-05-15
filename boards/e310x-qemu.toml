@@ -3,7 +3,7 @@ target = "riscv32imac-unknown-none-elf"
 package = "scars"
 features = ["khal-e310x"]
 test_runner = "qemu"
-examples_dir = "examples/e310x"
+examples_dirs = ["examples/e310x"]
 
 [linker]
 script = "khal/scars-khal-e310x/default.lds"

@@ -2,14 +2,19 @@ use crate::priority::InterruptPriority;
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use scars_fault::FaultInfo;
-use scars_fault::FaultInfo;
 use scars_khal::*;
 #[cfg(feature = "khal-e310x")]
 pub use scars_khal_e310x as kernel_hal;
 #[cfg(feature = "khal-sim")]
 pub use scars_khal_sim as kernel_hal;
+#[cfg(feature = "khal-stm32f0")]
+pub use scars_khal_stm32f0 as kernel_hal;
+#[cfg(feature = "khal-stm32f1")]
+pub use scars_khal_stm32f1 as kernel_hal;
 #[cfg(feature = "khal-stm32f4")]
 pub use scars_khal_stm32f4 as kernel_hal;
+#[cfg(feature = "khal-stm32h7")]
+pub use scars_khal_stm32h7 as kernel_hal;
 
 pub use kernel_hal::pac;
 

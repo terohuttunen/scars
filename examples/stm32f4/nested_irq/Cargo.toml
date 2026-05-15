@@ -6,11 +6,9 @@ edition = "2024"
 [dependencies]
 scars = { path = "../../../scars" }
 cortex-m = "0.7.7"
-
-[dependencies.stm32f4xx-hal]
-version = "0.23.0"
-features = ["stm32f429"]
+defmt = "1.0.1"
 
 [features]
-default = ["khal-stm32f4"]
-khal-stm32f4 = ["scars/khal-stm32f4"]
+default = []
+chip-stm32f429 = ["scars/chip-stm32f429"]
+chip-stm32f446 = ["scars/chip-stm32f446"]

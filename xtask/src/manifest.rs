@@ -10,7 +10,7 @@ pub struct Board {
     pub package: String,
     pub features: Vec<String>,
     pub test_runner: TestRunner,
-    pub examples_dir: PathBuf,
+    pub examples_dirs: Vec<PathBuf>,
     #[serde(default)]
     pub linker: Option<Linker>,
     #[serde(default)]

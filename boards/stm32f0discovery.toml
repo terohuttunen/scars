@@ -1,0 +1,19 @@
+name = "stm32f0discovery"
+target = "thumbv6m-none-eabi"
+package = "scars"
+features = ["chip-stm32f051"]
+test_runner = "probe-rs"
+examples_dirs = ["examples/stm32f0", "examples/shared"]
+
+[linker]
+script = "khal/scars-khal-stm32f0/default.lds"
+rustflags = ["-Ctarget-cpu=cortex-m0"]
+
+[runner]
+program = "probe-rs"
+args = [
+    "run",
+    "--chip", "STM32F051R8",
+    "--probe", "0483:3748:38C3BF6F06304E4B3020402243",
+    "--connect-under-reset",
+]

@@ -3,7 +3,7 @@ target = "x86_64-unknown-linux-gnu"
 package = "scars"
 features = ["khal-sim"]
 test_runner = "native"
-examples_dir = "examples/sim"
+examples_dirs = ["examples/sim"]
 
 [linker]
 # Non-PIE so defmt's `&SYMBOL as u16` truncation lands on the link-time symbol

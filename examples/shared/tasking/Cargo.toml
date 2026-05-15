@@ -1,0 +1,23 @@
+[package]
+name = "tasking"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+scars = { path = "../../../scars", optional = true }
+defmt = "1.0.1"
+
+[features]
+default = []
+chip-stm32f051 = ["scars/chip-stm32f051"]
+chip-stm32f103 = ["scars/chip-stm32f103"]
+chip-stm32h753v = ["scars/chip-stm32h753v"]
+
+# Out-of-workspace example crates don't inherit workspace profiles.
+[profile.release]
+codegen-units = 1
+incremental = false
+lto = 'fat'
+opt-level = 3
+panic = "abort"
+debug = true

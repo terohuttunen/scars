@@ -1,12 +1,16 @@
 [workspace]
 members = [
     "khal/scars-khal-e310x",
+    "khal/scars-khal-stm32f0",
+    "khal/scars-khal-stm32f1",
     "khal/scars-khal-stm32f4",
+    "khal/scars-khal-stm32h7",
     "khal/scars-khal-sim",
     "scars",
     "scars-khal",
     "scars-arch-riscv",
     "scars-arch-cortex-m",
+    "scars-arch-cortex-m0",
     "scars-test",
     "scars-macros",
     "examples/stm32f4/interrupt",
@@ -15,14 +19,27 @@ members = [
     "scars-fault",
     "scars-fault-macros",
     "xtask"]
+exclude = [
+    # Same-named example crates across chip families collide if put
+    # in workspace.members. They live outside the workspace and xtask
+    # drives them via --manifest-path.
+    "examples/shared/tasking",
+    # Long-standing standalone F4 examples; not listed in members.
+    "examples/stm32f4/nested_irq",
+    "examples/stm32f4/fpu_test",
+]
 default-members = [
     "khal/scars-khal-e310x",
+    "khal/scars-khal-stm32f0",
+    "khal/scars-khal-stm32f1",
     "khal/scars-khal-stm32f4",
+    "khal/scars-khal-stm32h7",
     "khal/scars-khal-sim",
     "scars",
     "scars-khal",
     "scars-arch-riscv",
     "scars-arch-cortex-m",
+    "scars-arch-cortex-m0",
     "scars-test",
     "scars-macros",
     "examples/stm32f4/interrupt",

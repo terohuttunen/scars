@@ -1,5 +1,5 @@
 [package]
-name = "scars-khal-stm32f4"
+name = "scars-khal-stm32f0"
 version = "0.1.0"
 authors = ["Tero Huttunen <tero.huttunen@ultic.io>"]
 edition = "2024"
@@ -18,22 +18,18 @@ cortex-m-rt = "0.7.3"
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
 scars-khal = { path = "../../scars-khal" }
-scars-arch-cortex-m = { path = "../../scars-arch-cortex-m" }
-critical-section = { version = "1.1.1" }
+scars-arch-cortex-m0 = { path = "../../scars-arch-cortex-m0" }
+critical-section = "1.1.1"
 portable-atomic = { version = "1", default-features = false, features = ["critical-section"] }
 
-[dependencies.stm32f4]
+[dependencies.stm32f0]
 version = "0.16.0"
 default-features = false
-# `rt` is mandatory: it pulls in the chip's interrupt vector table
-# (cortex-m-rt/device + device.x). Without it, named handlers like
-# TIM2/EXTI0 never land in the vector table and IRQs misdispatch.
+# `rt` is mandatory — pulls in the chip's interrupt vector table.
 features = ["critical-section", "rt"]
 
 [features]
 # Exactly one chip feature must be selected by the board manifest.
-stm32f429 = ["stm32f4/stm32f429"]
-stm32f446 = ["stm32f4/stm32f446"]
-
-[dev-dependencies]
-semihosting = { version = "0.1.4", features = ["stdio"] }
+# `stm32f0x1` covers the F050/F051/F071/F091 family (Discovery uses
+# F051R8, which is part of stm32f0x1).
+stm32f0x1 = ["stm32f0/stm32f0x1"]

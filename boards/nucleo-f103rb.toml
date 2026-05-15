@@ -1,0 +1,19 @@
+name = "nucleo-f103rb"
+target = "thumbv7m-none-eabi"
+package = "scars"
+features = ["chip-stm32f103"]
+test_runner = "probe-rs"
+examples_dirs = ["examples/stm32f1", "examples/shared"]
+
+[linker]
+script = "khal/scars-khal-stm32f1/default.lds"
+rustflags = ["-Ctarget-cpu=cortex-m3"]
+
+[runner]
+program = "probe-rs"
+args = [
+    "run",
+    "--chip", "STM32F103RB",
+    "--probe", "0483:374b:066EFF485753667187145431",
+    "--connect-under-reset",
+]

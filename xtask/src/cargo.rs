@@ -8,14 +8,20 @@ use xshell::{Shell, cmd};
 /// - `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` for linker script + extra rustflags
 /// - `CARGO_TARGET_<TRIPLE>_RUNNER` for the qemu / probe-rs / etc. runner
 /// - any `[env]` keys verbatim
-pub fn project_env(board: &Board) -> BTreeMap<String, String> {
+///
+/// The linker script path is resolved against `workspace_root` so the
+/// flag works regardless of where rust-lld is ultimately invoked from
+/// (notably: example crates outside the workspace run with their own
+/// build CWD, not the workspace root).
+pub fn project_env(board: &Board, workspace_root: &Path) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     let triple_key = board.target.replace('-', "_").to_uppercase();
 
     if let Some(linker) = &board.linker {
         let mut flags: Vec<String> = Vec::new();
         if let Some(script) = &linker.script {
-            flags.push(format!("-Clink-arg=-T{script}"));
+            let script_path = workspace_root.join(script);
+            flags.push(format!("-Clink-arg=-T{}", script_path.display()));
         }
         flags.extend(linker.rustflags.iter().cloned());
         if !flags.is_empty() {
@@ -41,26 +47,42 @@ pub fn project_env(board: &Board) -> BTreeMap<String, String> {
     env
 }
 
+/// How to point cargo at the target crate. Workspace members (the
+/// `scars` lib, in-workspace examples) come in by `-p name`; standalone
+/// example crates that live outside the workspace come in by
+/// `--manifest-path Cargo.toml` so cargo can find them without a
+/// matching workspace member.
+pub enum CargoTarget<'a> {
+    Package(&'a str),
+    Manifest(&'a Path),
+}
+
 pub fn run_cargo(
     sh: &Shell,
     workspace_root: &Path,
     board: &Board,
     sub: &str,
-    package: &str,
+    target: CargoTarget<'_>,
     release: bool,
     extra: &[String],
 ) -> Result<()> {
-    let env = project_env(board);
+    let env = project_env(board, workspace_root);
     let features = board.features.join(",");
-    let mut args: Vec<String> = vec![
-        sub.into(),
-        "-p".into(),
-        package.into(),
-        "--target".into(),
-        board.target.clone(),
-        "--features".into(),
-        features,
-    ];
+    let mut args: Vec<String> = vec![sub.into()];
+    match target {
+        CargoTarget::Package(name) => {
+            args.push("-p".into());
+            args.push(name.into());
+        }
+        CargoTarget::Manifest(path) => {
+            args.push("--manifest-path".into());
+            args.push(path.display().to_string());
+        }
+    }
+    args.push("--target".into());
+    args.push(board.target.clone());
+    args.push("--features".into());
+    args.push(features);
     if release {
         args.push("--release".into());
     }

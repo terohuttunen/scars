@@ -2,6 +2,7 @@ mod cargo;
 mod manifest;
 
 use anyhow::{Context, Result, anyhow, bail};
+use cargo::CargoTarget;
 use clap::{Parser, Subcommand};
 use manifest::{Board, TestRunner, load_all, load_board};
 use std::path::{Path, PathBuf};
@@ -110,7 +111,7 @@ fn cmd_check(sh: &Shell, root: &Path, sel: BoardSel) -> Result<()> {
     for b in boards_for(&sel, root)? {
         eprintln!("==> check {}", b.name);
         let pkg = b.package.clone();
-        cargo::run_cargo(sh, root, &b, "check", &pkg, true, &[])?;
+        cargo::run_cargo(sh, root, &b, "check", CargoTarget::Package(&pkg), true, &[])?;
     }
     Ok(())
 }
@@ -125,7 +126,15 @@ fn cmd_build(
     for b in boards_for(&sel, root)? {
         eprintln!("==> build {}", b.name);
         let pkg = package.clone().unwrap_or_else(|| b.package.clone());
-        cargo::run_cargo(sh, root, &b, "build", &pkg, release, &[])?;
+        cargo::run_cargo(
+            sh,
+            root,
+            &b,
+            "build",
+            CargoTarget::Package(&pkg),
+            release,
+            &[],
+        )?;
     }
     Ok(())
 }
@@ -153,41 +162,58 @@ fn cmd_test(
     for b in boards {
         eprintln!("==> test {}", b.name);
         let pkg = b.package.clone();
-        cargo::run_cargo(sh, root, &b, "test", &pkg, true, &extra)?;
+        cargo::run_cargo(
+            sh,
+            root,
+            &b,
+            "test",
+            CargoTarget::Package(&pkg),
+            true,
+            &extra,
+        )?;
     }
     Ok(())
 }
 
-fn resolve_example(root: &Path, board: &Board, slug: &str) -> Result<String> {
-    let example_dir = root.join(&board.examples_dir).join(slug);
-    let cargo_toml = example_dir.join("Cargo.toml");
-    if !cargo_toml.exists() {
-        bail!(
-            "example '{slug}' not found at {} (expected {})",
-            example_dir.display(),
-            cargo_toml.display()
-        );
+fn resolve_example(root: &Path, board: &Board, slug: &str) -> Result<PathBuf> {
+    let candidates: Vec<PathBuf> = board
+        .examples_dirs
+        .iter()
+        .map(|d| root.join(d).join(slug))
+        .collect();
+    for dir in &candidates {
+        let cargo_toml = dir.join("Cargo.toml");
+        if !cargo_toml.exists() {
+            continue;
+        }
+        // Convention: example crate name == directory name. Sanity-check the manifest
+        // so a future drift fails loud rather than silently picking the wrong crate.
+        let text = std::fs::read_to_string(&cargo_toml)
+            .with_context(|| format!("reading {}", cargo_toml.display()))?;
+        let value: toml::Value =
+            toml::from_str(&text).with_context(|| format!("parsing {}", cargo_toml.display()))?;
+        let pkg_name = value
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| anyhow!("{} missing package.name", cargo_toml.display()))?;
+        if pkg_name != slug {
+            bail!(
+                "example {} declares package.name = {:?}; convention requires it to match the directory ({:?})",
+                cargo_toml.display(),
+                pkg_name,
+                slug
+            );
+        }
+        return Ok(dir.clone());
     }
-    // Convention: example crate name == directory name. Sanity-check the manifest
-    // so a future drift fails loud rather than silently picking the wrong crate.
-    let text = std::fs::read_to_string(&cargo_toml)
-        .with_context(|| format!("reading {}", cargo_toml.display()))?;
-    let value: toml::Value =
-        toml::from_str(&text).with_context(|| format!("parsing {}", cargo_toml.display()))?;
-    let pkg_name = value
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .ok_or_else(|| anyhow!("{} missing package.name", cargo_toml.display()))?;
-    if pkg_name != slug {
-        bail!(
-            "example {} declares package.name = {:?}; convention requires it to match the directory ({:?})",
-            cargo_toml.display(),
-            pkg_name,
-            slug
-        );
-    }
-    Ok(slug.to_string())
+    bail!(
+        "example '{slug}' not found in any of {:?}",
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+    );
 }
 
 fn cmd_run(sh: &Shell, root: &Path, board: &str, example: &str, release: bool) -> Result<()> {
@@ -195,9 +221,21 @@ fn cmd_run(sh: &Shell, root: &Path, board: &str, example: &str, release: bool) -
     if board.runner.is_none() && board.target != "x86_64-unknown-linux-gnu" {
         bail!("board {} has no [runner] config", board.name);
     }
-    let pkg = resolve_example(root, &board, example)?;
-    eprintln!("==> run {} :: {}", board.name, pkg);
-    cargo::run_cargo(sh, root, &board, "run", &pkg, release, &[])?;
+    let dir = resolve_example(root, &board, example)?;
+    eprintln!("==> run {} :: {} ({})", board.name, example, dir.display());
+    // Examples may live outside workspace.members (e.g. same-named
+    // `tasking` per chip family), so drive them by manifest path. This
+    // works equally for in-workspace and standalone example crates.
+    let manifest = dir.join("Cargo.toml");
+    cargo::run_cargo(
+        sh,
+        root,
+        &board,
+        "run",
+        CargoTarget::Manifest(&manifest),
+        release,
+        &[],
+    )?;
     Ok(())
 }
 

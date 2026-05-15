@@ -10,8 +10,7 @@ use scars::events::Events;
 use scars::khal::{Interrupt, Peripherals, pac::EXTI};
 use scars::sync::channel::CeilingSender;
 use scars::task::{
-    self, EventHandlerExecutor, LocalExecutor, Sleep, WaitForEvents,
-    task_pool::TaskPool,
+    self, EventHandlerExecutor, LocalExecutor, Sleep, WaitForEvents, task_pool::TaskPool,
 };
 use scars::thread::{Thread, ThreadFn};
 use scars::{

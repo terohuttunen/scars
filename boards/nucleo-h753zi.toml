@@ -1,0 +1,19 @@
+name = "nucleo-h753zi"
+target = "thumbv7em-none-eabihf"
+package = "scars"
+features = ["chip-stm32h753v"]
+test_runner = "probe-rs"
+examples_dirs = ["examples/stm32h7", "examples/shared"]
+
+[linker]
+script = "khal/scars-khal-stm32h7/default.lds"
+rustflags = ["-Ctarget-cpu=cortex-m7"]
+
+[runner]
+program = "probe-rs"
+args = [
+    "run",
+    "--chip", "STM32H753ZITx",
+    "--probe", "0483:374e:002000323234510C33353533",
+    "--connect-under-reset",
+]
