@@ -1,0 +1,24 @@
+name = "pico-2"
+target = "thumbv8m.main-none-eabihf"
+package = "scars"
+features = ["chip-rp2350"]
+test_runner = "probe-rs"
+examples_dirs = ["examples/rp2350"]
+
+[linker]
+script = "khal/scars-khal-rp2350/default.lds"
+rustflags = ["-Ctarget-cpu=cortex-m33"]
+
+[runner]
+program = "probe-rs"
+# `--probe VID:PID:SERIAL` matches the convention used by the STM32
+# board manifests. Replace with your debug probe's identifier (run
+# `probe-rs list` to find it). The placeholder below is a Raspberry Pi
+# Debug Probe VID:PID without a serial — probe-rs will pick the first
+# attached matching probe.
+args = [
+    "run",
+    "--chip", "RP235x",
+    "--probe", "2e8a:000c",
+    "--connect-under-reset",
+]

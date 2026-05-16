@@ -5,6 +5,8 @@ use scars_fault::FaultInfo;
 use scars_khal::*;
 #[cfg(feature = "khal-e310x")]
 pub use scars_khal_e310x as kernel_hal;
+#[cfg(feature = "khal-rp2350")]
+pub use scars_khal_rp2350 as kernel_hal;
 #[cfg(feature = "khal-sim")]
 pub use scars_khal_sim as kernel_hal;
 #[cfg(feature = "khal-stm32f0")]

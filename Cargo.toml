@@ -5,6 +5,7 @@ members = [
     "khal/scars-khal-stm32f1",
     "khal/scars-khal-stm32f4",
     "khal/scars-khal-stm32h7",
+    "khal/scars-khal-rp2350",
     "khal/scars-khal-sim",
     "scars",
     "scars-khal",
@@ -27,6 +28,9 @@ exclude = [
     # Long-standing standalone F4 examples; not listed in members.
     "examples/stm32f4/nested_irq",
     "examples/stm32f4/fpu_test",
+    # RP2350 example shares the `hello` crate name with examples/sim/hello;
+    # kept outside the workspace so xtask drives it via --manifest-path.
+    "examples/rp2350/hello",
 ]
 default-members = [
     "khal/scars-khal-e310x",
@@ -34,6 +38,7 @@ default-members = [
     "khal/scars-khal-stm32f1",
     "khal/scars-khal-stm32f4",
     "khal/scars-khal-stm32h7",
+    "khal/scars-khal-rp2350",
     "khal/scars-khal-sim",
     "scars",
     "scars-khal",

@@ -1,0 +1,12 @@
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+scars = { path = "../../../scars", optional = true }
+defmt = "1.0.1"
+
+[features]
+default = []
+chip-rp2350 = ["scars/chip-rp2350"]
