@@ -2,6 +2,7 @@ name = "nucleo-f103rb"
 target = "thumbv7m-none-eabi"
 package = "scars"
 features = ["chip-stm32f103"]
+kernel_features = ["bench-large"]
 test_runner = "probe-rs"
 examples_dirs = ["examples/stm32f1", "examples/shared"]
 

@@ -45,6 +45,10 @@ impl Duration {
         }
     }
 
+    pub const fn from_ticks(ticks: u64) -> Duration {
+        Duration { ticks }
+    }
+
     pub const fn is_zero(&self) -> bool {
         self.ticks == Duration::ZERO.ticks
     }
@@ -59,6 +63,10 @@ impl Duration {
 
     pub const fn as_micros(&self) -> u64 {
         self.ticks / Duration::MICROSECOND.ticks
+    }
+
+    pub const fn as_nanos(&self) -> u64 {
+        (self.ticks as u128 * 1_000_000_000 / TICK_FREQ_HZ as u128) as u64
     }
 
     // checked_add, saturating_add, checked_sub, saturating_sub, checked_mul, saturating_mul, checked_div
@@ -133,6 +141,15 @@ impl Add<Duration> for Instant {
     fn add(self, rhs: Duration) -> Instant {
         Instant {
             tick: self.tick + rhs.ticks,
+        }
+    }
+}
+
+impl Sub<Instant> for Instant {
+    type Output = Duration;
+    fn sub(self, rhs: Instant) -> Duration {
+        Duration {
+            ticks: self.tick.saturating_sub(rhs.tick),
         }
     }
 }

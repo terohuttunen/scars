@@ -2,6 +2,7 @@ name = "stm32f429i-disco"
 target = "thumbv7em-none-eabihf"
 package = "scars"
 features = ["chip-stm32f429"]
+kernel_features = ["bench-large"]
 test_runner = "probe-rs"
 examples_dirs = ["examples/stm32f4"]
 

@@ -2,6 +2,7 @@ name = "sim"
 target = "x86_64-unknown-linux-gnu"
 package = "scars"
 features = ["khal-sim"]
+kernel_features = ["bench-large"]
 test_runner = "native"
 examples_dirs = ["examples/sim"]
 

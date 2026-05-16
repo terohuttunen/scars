@@ -84,6 +84,30 @@ required-features = ["khal-sim"]
 name = "yield"
 harness = false
 
+[[test]]
+name = "yield_under_ceiling"
+harness = false
+
+[[bench]]
+name = "sched"
+harness = false
+# 7 threads → ~9KB total .bss. Excluded on chips that don't enable
+# `bench-large` (notably the F0's 8KB SRAM).
+required-features = ["bench-large"]
+
+[[bench]]
+name = "sync"
+harness = false
+
+[[bench]]
+name = "irq"
+harness = false
+required-features = ["khal-sim"]
+
+[[bench]]
+name = "delay"
+harness = false
+
 [dependencies]
 bit_field = "0.10.2"
 bitflags = { version = "2.4", default-features = false }
@@ -109,6 +133,7 @@ scars-fault = { version = "0.1.0", path="../scars-fault" }
 
 [dev-dependencies]
 scars-test = { version = "0.1.0", path = "../scars-test" }
+scars-bench = { version = "0.1.0", path = "../scars-bench" }
 
 [target.'cfg(target_arch = "riscv32")'.dev-dependencies]
 semihosting = { version = "0.1.4", features = ["stdio"] }
@@ -124,16 +149,22 @@ tracing = []
 relative-delay = []
 defmt = ["dep:defmt", "scars-fault/defmt"]
 display = ["scars-fault/display"]
-khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "defmt"]
-khal-sim = ["dep:scars-khal-sim", "scars-test/std", "defmt"]
+khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "scars-bench/semihosting", "defmt"]
+khal-sim = ["dep:scars-khal-sim", "scars-test/std", "scars-bench/std", "defmt"]
 # KHAL-family features pull in the optional dep + test/log backend.
 # Internal building blocks — board manifests should pick a chip
 # feature (below) rather than enabling these directly.
-khal-stm32f0 = ["dep:scars-khal-stm32f0", "scars-test/rtt", "defmt"]
-khal-stm32f1 = ["dep:scars-khal-stm32f1", "scars-test/rtt", "defmt"]
-khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt", "defmt"]
-khal-stm32h7 = ["dep:scars-khal-stm32h7", "scars-test/rtt", "defmt"]
-khal-rp2350 = ["dep:scars-khal-rp2350", "scars-test/rtt", "defmt"]
+khal-stm32f0 = ["dep:scars-khal-stm32f0", "scars-test/rtt", "scars-bench/rtt", "defmt"]
+khal-stm32f1 = ["dep:scars-khal-stm32f1", "scars-test/rtt", "scars-bench/rtt", "defmt"]
+khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt", "scars-bench/rtt", "defmt"]
+khal-stm32h7 = ["dep:scars-khal-stm32h7", "scars-test/rtt", "scars-bench/rtt", "defmt"]
+khal-rp2350 = ["dep:scars-khal-rp2350", "scars-test/rtt", "scars-bench/rtt", "defmt"]
+# Capability marker enabled by board manifests with enough RAM for
+# the multi-thread benches (currently `sched`, which needs ~9KB .bss).
+# Declared on the board (not transitively via chip-*) so xtask's
+# required-features check sees it without doing feature resolution.
+# Excluded by the stm32f0discovery manifest (F051 has 8KB SRAM).
+bench-large = []
 # Chip features — what board manifests enable. Each pulls in the
 # matching KHAL family + the chip-specific feature on the underlying
 # KHAL crate.

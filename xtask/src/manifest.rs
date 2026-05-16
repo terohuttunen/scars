@@ -8,7 +8,17 @@ pub struct Board {
     pub name: String,
     pub target: String,
     pub package: String,
+    /// Features always forwarded — to the kernel crate (`check`,
+    /// `test`, `bench`) and to example crates (`run`, `flash`).
+    /// Shared examples must declare these in their own `[features]`
+    /// table; cargo errors loudly on mismatch.
     pub features: Vec<String>,
+    /// Features added only when targeting the kernel crate. Used for
+    /// kernel-internal flags (e.g. `bench-large`, which gates
+    /// memory-heavy `[[bench]]` entries via `required-features`)
+    /// that have no meaning for example crates.
+    #[serde(default)]
+    pub kernel_features: Vec<String>,
     pub test_runner: TestRunner,
     pub examples_dirs: Vec<PathBuf>,
     #[serde(default)]
@@ -58,6 +68,32 @@ pub fn load_board(workspace_root: &Path, name: &str) -> Result<Board> {
         ));
     }
     Ok(board)
+}
+
+/// One `[[bench]]` stanza from a package's Cargo.toml. Used by
+/// `cmd_bench` to drive per-bench `cargo test --bench NAME` invocations.
+#[derive(Debug, Deserialize)]
+pub struct BenchEntry {
+    pub name: String,
+    #[serde(default, rename = "required-features")]
+    pub required_features: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackageManifest {
+    #[serde(default)]
+    bench: Vec<BenchEntry>,
+}
+
+/// Read the `[[bench]]` stanzas from the given workspace package's
+/// `Cargo.toml`. Returns an empty vec if there are no benches declared.
+pub fn load_bench_entries(workspace_root: &Path, package: &str) -> Result<Vec<BenchEntry>> {
+    let path = workspace_root.join(package).join("Cargo.toml");
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let manifest: PackageManifest =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(manifest.bench)
 }
 
 pub fn load_all(workspace_root: &Path) -> Result<Vec<Board>> {

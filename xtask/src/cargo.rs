@@ -57,6 +57,9 @@ pub enum CargoTarget<'a> {
     Manifest(&'a Path),
 }
 
+/// Drive a cargo subcommand against `target`, forwarding the
+/// explicit `features` list (caller decides whether to use
+/// `board.features` only or the union with `board.kernel_features`).
 pub fn run_cargo(
     sh: &Shell,
     workspace_root: &Path,
@@ -65,9 +68,10 @@ pub fn run_cargo(
     target: CargoTarget<'_>,
     release: bool,
     extra: &[String],
+    features: &[String],
 ) -> Result<()> {
     let env = project_env(board, workspace_root);
-    let features = board.features.join(",");
+    let features = features.join(",");
     let mut args: Vec<String> = vec![sub.into()];
     match target {
         CargoTarget::Package(name) => {

@@ -2,6 +2,7 @@ name = "pico-2"
 target = "thumbv8m.main-none-eabihf"
 package = "scars"
 features = ["chip-rp2350"]
+kernel_features = ["bench-large"]
 test_runner = "probe-rs"
 examples_dirs = ["examples/rp2350"]
 

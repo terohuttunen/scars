@@ -13,6 +13,7 @@ members = [
     "scars-arch-cortex-m",
     "scars-arch-cortex-m0",
     "scars-test",
+    "scars-bench",
     "scars-macros",
     "examples/stm32f4/interrupt",
     "examples/stm32f4/tasking",
@@ -46,6 +47,7 @@ default-members = [
     "scars-arch-cortex-m",
     "scars-arch-cortex-m0",
     "scars-test",
+    "scars-bench",
     "scars-macros",
     "examples/stm32f4/interrupt",
     "examples/stm32f4/tasking",
@@ -75,4 +77,3 @@ codegen-units = 1
 incremental = false
 lto = 'fat'
 opt-level = 3
-panic = "abort"
