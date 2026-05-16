@@ -229,10 +229,22 @@ fn on_fault(info: &FaultInfo) -> ! {
 #[unsafe(no_mangle)]
 static CURRENT_THREAD_CONTEXT: AtomicPtr<RISCVTrapFrame> = AtomicPtr::new(core::ptr::null_mut());
 
-impl FlowController for RISCV32 {
+impl CoreController for RISCV32 {
     type StackAlignment = A16;
     type Context = RISCVTrapFrame;
     type HardwareError = RISCFault;
+
+    const NUM_CORES: usize = 1;
+
+    #[inline(always)]
+    fn current_core_id() -> u8 {
+        0
+    }
+
+    #[inline(always)]
+    fn pend_service_call_on(_core: u8) {
+        Self::pend_service_call()
+    }
 
     fn start_first_thread(idle_context: *mut Self::Context) -> ! {
         unsafe { _start_first_thread(idle_context as *mut _) }

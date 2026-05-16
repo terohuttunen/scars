@@ -244,15 +244,27 @@ pub fn init_kernel_priorities(scb: &mut cortex_m::peripheral::SCB) {
 }
 
 #[macro_export]
-macro_rules! impl_flow_controller {
+macro_rules! impl_core_controller {
     ($struct_name:ident) => {
-        $crate::impl_flow_controller!($struct_name, on_idle = $crate::on_idle());
+        $crate::impl_core_controller!($struct_name, on_idle = $crate::on_idle());
     };
     ($struct_name:ident, on_idle = $on_idle:expr) => {
-        impl FlowController for $struct_name {
-            type StackAlignment = scars_khal::A8;
+        impl ::scars_khal::CoreController for $struct_name {
+            type StackAlignment = ::scars_khal::A8;
             type Context = $crate::Context;
             type HardwareError = $crate::CortexMFault;
+
+            const NUM_CORES: usize = 1;
+
+            #[inline(always)]
+            fn current_core_id() -> u8 {
+                0
+            }
+
+            #[inline(always)]
+            fn pend_service_call_on(_core: u8) {
+                $crate::pend_service_call()
+            }
 
             #[inline(always)]
             fn start_first_thread(idle_context: *mut Self::Context) -> ! {

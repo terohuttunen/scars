@@ -7,10 +7,22 @@ use core::sync::atomic::Ordering;
 use scars_fault::*;
 use scars_khal::*;
 
-impl FlowController for Simulator {
+impl CoreController for Simulator {
     type StackAlignment = A16;
     type Context = VirtualContext;
     type HardwareError = crate::error::SimulatorError;
+
+    const NUM_CORES: usize = 1;
+
+    #[inline(always)]
+    fn current_core_id() -> u8 {
+        0
+    }
+
+    #[inline(always)]
+    fn pend_service_call_on(_core: u8) {
+        <Self as CoreController>::pend_service_call()
+    }
 
     fn start_first_thread(context: *mut Self::Context) -> ! {
         let mut wait_set = MaybeUninit::uninit();

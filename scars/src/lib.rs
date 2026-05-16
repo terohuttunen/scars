@@ -34,7 +34,7 @@ pub use events::{
     WaitTimeoutError,
 };
 pub use kernel::abort::abort;
-pub use kernel::hal::clock_ticks;
+pub use kernel::hal::{CoreId, CoreToken, NUM_CORES, clock_ticks, current_core_id};
 pub use kernel::hal::kernel_hal as khal;
 pub use kernel::hal::kernel_hal::{printk, printkln};
 pub use kernel::hal::pac;

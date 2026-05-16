@@ -38,7 +38,7 @@ use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use event_queue::PendingEventsQueue;
-use scars_khal::{ContextInfo, FlowController};
+use scars_khal::{ContextInfo, CoreController};
 pub(crate) use timers::RawTimer;
 pub use timers::{EventTimer, Timer, TimerHandler};
 use timers::{TimerQueue, TimerQueueTag};
@@ -709,12 +709,22 @@ impl RawScheduler {
     }
 }
 
-static SCHEDULER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+use crate::kernel::hal::NUM_CORES;
 
-static SCHEDULER: SyncUnsafeCell<MaybeUninit<Scheduler>> =
-    SyncUnsafeCell::new(MaybeUninit::uninit());
+static SCHEDULER_INITIALIZED: [AtomicBool; NUM_CORES] =
+    [const { AtomicBool::new(false) }; NUM_CORES];
 
+static SCHEDULERS: [SyncUnsafeCell<MaybeUninit<Scheduler>>; NUM_CORES] =
+    [const { SyncUnsafeCell::new(MaybeUninit::uninit()) }; NUM_CORES];
+
+/// Per-core scheduler.The per-core instance is selected via the SCHEDULERS
+/// static array indexed by `CoreId::current()`.
 pub struct Scheduler {
+    // Core this scheduler instance belongs to. Set at construction in
+    // `start_on`. Used for cross-core dispatch (e.g. waking a thread on
+    // its own core's scheduler) and debug-asserts.
+    pub core: crate::kernel::hal::CoreId,
+
     /// Work that could not be completed because of a lock.
     /// The operations will be completed when the preemption lock is released.
     deferred_work_queue: WorkQueue,
@@ -734,8 +744,9 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    fn new(idle_thread: &'static RawThread) -> Scheduler {
+    fn new(core: crate::kernel::hal::CoreId, idle_thread: &'static RawThread) -> Scheduler {
         Scheduler {
+            core,
             deferred_work_queue: WorkQueue::new(),
             pending_events: PendingEventsQueue::new(),
             pending_reschedule_kind: AtomicUsize::new(RESCHEDULE_KIND_NONE),
@@ -744,31 +755,44 @@ impl Scheduler {
         }
     }
 
-    pub(super) fn start() -> ! {
-        let idle_thread = crate::kernel::idle::init_idle_thread();
+    pub(super) fn start_on(core: crate::kernel::hal::CoreId) -> ! {
+        let idle_thread = crate::kernel::idle::init_idle_thread(core);
         unsafe {
-            let _ = (&mut *SCHEDULER.get()).write(Scheduler::new(idle_thread));
+            let _ =
+                (&mut *SCHEDULERS[core.as_usize()].get()).write(Scheduler::new(core, idle_thread));
         }
-        SCHEDULER_INITIALIZED.store(true, Ordering::Release);
+        SCHEDULER_INITIALIZED[core.as_usize()].store(true, Ordering::Release);
         let idle_context = idle_thread.context.as_ptr() as *mut _;
         start_first_thread(idle_context)
     }
 
-    /// True once `Scheduler::start` has finished installing the
-    /// scheduler instance. Reading scheduler state before this returns
-    /// `true` is undefined behaviour, so the kernel fault handler uses
-    /// it to dispatch to a `BootstrapContext` instead.
+    /// True once `start_on` has finished installing the calling core's
+    /// scheduler instance. Reading scheduler state on a core whose
+    /// scheduler has not yet been started is undefined behaviour, so
+    /// the kernel fault handler uses it to dispatch to a
+    /// `BootstrapContext` instead.
     pub(crate) fn is_initialized() -> bool {
-        SCHEDULER_INITIALIZED.load(Ordering::Acquire)
+        let core = CoreId::current().as_usize();
+        SCHEDULER_INITIALIZED[core].load(Ordering::Acquire)
     }
 
     fn instance() -> &'static Scheduler {
-        // SAFETY: The scheduler is initialized in the start function.
-        unsafe { (&*SCHEDULER.get()).assume_init_ref() }
+        // SAFETY: The scheduler for this core is initialized in `start_on`.
+        let core = CoreId::current().as_usize();
+        unsafe { (&*SCHEDULERS[core].get()).assume_init_ref() }
     }
 
     fn pin_instance() -> Pin<&'static Scheduler> {
         Pin::static_ref(Scheduler::instance())
+    }
+
+    /// Borrow the scheduler instance belonging to `core`. The caller is
+    /// responsible for ensuring that core's scheduler has been started;
+    /// this is used by cross-core dispatch paths where the scheduler is
+    /// known to be live.
+    #[allow(dead_code)]
+    fn instance_for(core: crate::kernel::hal::CoreId) -> &'static Scheduler {
+        unsafe { (&*SCHEDULERS[core.as_usize()].get()).assume_init_ref() }
     }
 
     fn borrow_mut<'lock, 'a: 'lock>(
@@ -827,23 +851,21 @@ impl Scheduler {
         pkey: PreemptLockKey<'key>,
         thread: Pin<&'static RawThread>,
     ) {
-        let mut scheduler = Scheduler::pin_instance().borrow_mut(pkey);
+        let mut scheduler = Self::pin_instance().borrow_mut(pkey);
         let mut pin_scheduler = scheduler.as_mut();
 
         match thread.state.get(pkey) {
             ThreadExecutionState::Ready => {
-                // Reorder in the ready queue
                 pin_scheduler.as_mut().reinsert_to_ready_queue(pkey, thread);
 
                 if let Some(ready_thread) = pin_scheduler.as_ref().ready_queue().head() {
                     if pin_scheduler.current_thread.priority(pkey) < ready_thread.priority(pkey) {
                         // Rescheduling will be executed when preemption lock is released
-                        Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
+                        Self::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
                     }
                 }
             }
             ThreadExecutionState::Blocked => {
-                // Reorder in the blocked list, and wakeup queues if needed
                 pin_scheduler.reinsert_to_blocked_queue(pkey, thread);
             }
             _ => (),
@@ -851,13 +873,13 @@ impl Scheduler {
     }
 
     pub(crate) fn cond_reschedule<'key>(pkey: PreemptLockKey<'key>) {
-        let scheduler = Scheduler::pin_instance().borrow_mut(pkey);
+        let scheduler = Self::pin_instance().borrow_mut(pkey);
         let pin_scheduler = scheduler.as_ref();
 
         if let Some(ready_thread) = pin_scheduler.ready_queue().head() {
             if pin_scheduler.current_thread.priority(pkey) < ready_thread.priority(pkey) {
                 // Rescheduling will be executed when preemption lock is released
-                Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
+                Self::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
             }
         }
     }
@@ -931,7 +953,7 @@ impl Scheduler {
     // Thread or ISR context
     pub(crate) fn resume_thread(thread: Pin<&'static RawThread>) {
         match PreemptLock::try_with(|pkey| {
-            Scheduler::pin_instance()
+            Self::pin_instance()
                 .borrow_mut(pkey)
                 .as_mut()
                 .resume_thread(pkey, thread);
@@ -942,7 +964,7 @@ impl Scheduler {
                 // priority ISR holds the lock.
                 // Store unblocked thread in pending ready list instead, from which it will be
                 // moved to ready list when the preempt lock is released.
-                let _ = Scheduler::schedule_deferred_operation(
+                let _ = Self::schedule_deferred_operation(
                     thread.get_pending_work(),
                     SUSPENDABLE_PENDING_RESUME,
                     None,

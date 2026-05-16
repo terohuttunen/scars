@@ -179,14 +179,14 @@ impl InterruptController for E310x {
 }
 
 #[unsafe(no_mangle)]
-fn _save_interrupt_threshold(context: &mut <E310x as FlowController>::Context) {
+fn _save_interrupt_threshold(context: &mut <E310x as CoreController>::Context) {
     let plic = unsafe { &*e310x::PLIC::ptr() };
     let threshold = plic.threshold.read().bits();
     context.interrupt_threshold = threshold as usize;
 }
 
 #[unsafe(no_mangle)]
-fn _restore_interrupt_threshold(context: &mut <E310x as FlowController>::Context) {
+fn _restore_interrupt_threshold(context: &mut <E310x as CoreController>::Context) {
     let plic = unsafe { &mut *(e310x::PLIC::ptr() as *mut e310x::plic::RegisterBlock) };
     plic.threshold
         .write(|w| unsafe { w.bits(context.interrupt_threshold as u32) });
@@ -240,10 +240,22 @@ impl AlarmClockController for E310x {
     }
 }
 
-impl FlowController for E310x {
-    type Context = <RISCV32 as FlowController>::Context;
-    type HardwareError = <RISCV32 as FlowController>::HardwareError;
-    type StackAlignment = <RISCV32 as FlowController>::StackAlignment;
+impl CoreController for E310x {
+    type Context = <RISCV32 as CoreController>::Context;
+    type HardwareError = <RISCV32 as CoreController>::HardwareError;
+    type StackAlignment = <RISCV32 as CoreController>::StackAlignment;
+
+    const NUM_CORES: usize = 1;
+
+    #[inline(always)]
+    fn current_core_id() -> u8 {
+        0
+    }
+
+    #[inline(always)]
+    fn pend_service_call_on(_core: u8) {
+        <Self as CoreController>::pend_service_call()
+    }
 
     fn start_first_thread(idle_context: *mut Self::Context) -> ! {
         RISCV32::start_first_thread(idle_context)

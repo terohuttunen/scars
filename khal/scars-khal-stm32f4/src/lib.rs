@@ -8,7 +8,7 @@ pub use defmt::println as printk;
 pub use defmt::println as printkln;
 use defmt_rtt as _;
 use scars_arch_cortex_m::{
-    CURRENT_THREAD_CONTEXT, impl_flow_controller, init_pendsv_priority, nvic,
+    CURRENT_THREAD_CONTEXT, impl_core_controller, init_pendsv_priority, nvic,
 };
 use scars_khal::*;
 
@@ -317,7 +317,7 @@ impl AlarmClockController for STM32F4 {
     }
 }
 
-impl_flow_controller!(STM32F4);
+impl_core_controller!(STM32F4);
 
 unsafe impl Sync for STM32F4 {}
 

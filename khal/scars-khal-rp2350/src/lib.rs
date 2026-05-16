@@ -9,7 +9,7 @@ pub use defmt::println as printk;
 pub use defmt::println as printkln;
 use defmt_rtt as _;
 use scars_arch_cortex_m::{
-    CURRENT_THREAD_CONTEXT, impl_flow_controller, init_pendsv_priority, nvic,
+    CURRENT_THREAD_CONTEXT, impl_core_controller, init_pendsv_priority, nvic,
 };
 use scars_khal::*;
 
@@ -254,7 +254,7 @@ impl AlarmClockController for RP2350 {
     }
 }
 
-impl_flow_controller!(RP2350);
+impl_core_controller!(RP2350);
 
 unsafe impl Sync for RP2350 {}
 

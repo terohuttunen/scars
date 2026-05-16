@@ -21,7 +21,7 @@ use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use scars_khal::{Fault, FlowController};
+use scars_khal::{CoreController, Fault};
 
 pub const SYSCALL_ID_YIELD: usize = 1;
 pub const SYSCALL_ID_WAIT: usize = 2;

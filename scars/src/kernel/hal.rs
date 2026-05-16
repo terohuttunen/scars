@@ -20,8 +20,8 @@ pub use scars_khal_stm32h7 as kernel_hal;
 
 pub use kernel_hal::pac;
 
-pub type Context = <kernel_hal::HAL as FlowController>::Context;
-pub type HardwareFault = <kernel_hal::HAL as FlowController>::HardwareError;
+pub type Context = <kernel_hal::HAL as CoreController>::Context;
+pub type HardwareFault = <kernel_hal::HAL as CoreController>::HardwareError;
 
 #[allow(dead_code)]
 pub const MAX_INTERRUPT_NUMBER: usize =
@@ -32,7 +32,118 @@ pub const MAX_INTERRUPT_PRIORITY: usize =
 #[allow(dead_code)]
 pub(crate) const TICK_FREQ_HZ: u64 = <kernel_hal::HAL as AlarmClockController>::TICK_FREQ_HZ;
 
-pub(crate) type StackAlignment = <kernel_hal::HAL as FlowController>::StackAlignment;
+pub(crate) type StackAlignment = <kernel_hal::HAL as CoreController>::StackAlignment;
+
+#[allow(dead_code)]
+pub const NUM_CORES: usize = <kernel_hal::HAL as CoreController>::NUM_CORES;
+
+/// Validated core index. Construction asserts `core < NUM_CORES`,
+/// so any existing `CoreId` value is guaranteed to be in range for
+/// the active khal. Used as the type of the `CORE` const generic
+/// across the kernel (analogous to how `Priority` is used for `PRIO`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, core::marker::ConstParamTy)]
+#[repr(transparent)]
+pub struct CoreId(u8);
+
+impl CoreId {
+    /// The default core for kernel objects that don't pick one
+    /// explicitly. Mirrors `scars_khal::DEFAULT_CORE` (currently 0)
+    /// but wrapped in the validated `CoreId` type.
+    pub const DEFAULT: Self = Self::new(scars_khal::DEFAULT_CORE);
+
+    pub const fn new(core: u8) -> Self {
+        assert!(
+            (core as usize) < NUM_CORES,
+            "CoreId out of range for this target's NUM_CORES",
+        );
+        Self(core)
+    }
+
+    /// Construct a `CoreId` without the range check.
+    ///
+    /// # Safety
+    ///
+    /// Caller must guarantee `core < NUM_CORES`. Used at the HAL
+    /// boundary where the khal contract already establishes the
+    /// invariant; avoids paying the runtime branch on every
+    /// `CoreId::current()` call.
+    #[inline(always)]
+    pub const unsafe fn from_u8_unchecked(core: u8) -> Self {
+        Self(core)
+    }
+
+    #[inline(always)]
+    pub const fn as_u8(self) -> u8 {
+        self.0
+    }
+
+    #[inline(always)]
+    pub const fn as_usize(self) -> usize {
+        // SAFETY: `CoreId` is constructed only via `new(u8)` (which
+        // asserts `< NUM_CORES`) or `from_u8_unchecked` (where the
+        // caller upholds the same invariant). The hint lets LLVM
+        // elide bounds checks on every `arr[core.as_usize()]` where
+        // `arr: [T; NUM_CORES]`.
+        unsafe { core::hint::assert_unchecked((self.0 as usize) < NUM_CORES) };
+        self.0 as usize
+    }
+
+    /// The id of the core executing this call.
+    #[inline(always)]
+    pub fn current() -> Self {
+        // SAFETY: HAL guarantees the returned id is `< NUM_CORES`.
+        unsafe { Self::from_u8_unchecked(<kernel_hal::HAL as CoreController>::current_core_id()) }
+    }
+}
+
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) fn pend_service_call_on(core: CoreId) {
+    <kernel_hal::HAL as CoreController>::pend_service_call_on(core.as_u8())
+}
+
+/// Zero-sized proof that the bearer is executing on core `CORE`.
+///
+/// `CoreToken` is `!Send + !Sync`, so it cannot escape its producing thread or
+/// interrupt handler. Within a single execution context the kernel does not
+/// migrate execution between cores, so a key obtained from `current()` is
+/// valid for the rest of that context.
+///
+/// Lock primitives accept `&CoreToken<'_, CORE>` on their `*_core` methods to
+/// skip the wrong-core check, since the key already proves we are on the
+/// right core.
+pub struct CoreToken<'k, const CORE: CoreId> {
+    _phantom: core::marker::PhantomData<*const &'k ()>,
+}
+
+impl<const CORE: CoreId> CoreToken<'_, CORE> {
+    /// Acquire a `CoreToken` proving we are on core `CORE`.
+    ///
+    /// Triggers [`RuntimeError::WrongCore`] if `CoreId::current() != CORE`.
+    #[inline]
+    pub fn current<'k>() -> CoreToken<'k, CORE> {
+        if CoreId::current() != CORE {
+            crate::runtime_error!(crate::kernel::RuntimeError::WrongCore);
+        }
+        CoreToken {
+            _phantom: core::marker::PhantomData,
+        }
+    }
+
+    /// Construct a `CoreToken` without checking the current core.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the calling context is executing on
+    /// core `CORE`. Used at kernel callback boundaries after the dispatcher
+    /// has matched `CoreId::current()`.
+    #[inline(always)]
+    pub unsafe fn new_unchecked<'k>() -> CoreToken<'k, CORE> {
+        CoreToken {
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
 
 pub(crate) fn init_hal() {
     unsafe {
@@ -121,59 +232,59 @@ pub(crate) fn restore(restore_state: bool) {
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn start_first_thread(idle_context: *mut Context) -> ! {
-    <kernel_hal::HAL as FlowController>::start_first_thread(idle_context)
+    <kernel_hal::HAL as CoreController>::start_first_thread(idle_context)
 }
 
 #[allow(dead_code)]
 #[unsafe(export_name = "exit_scars")]
 pub fn exit(exit_code: i32) -> ! {
-    <kernel_hal::HAL as FlowController>::on_exit(exit_code)
+    <kernel_hal::HAL as CoreController>::on_exit(exit_code)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn fault(info: &FaultInfo) -> ! {
-    <kernel_hal::HAL as FlowController>::on_fault(info)
+    <kernel_hal::HAL as CoreController>::on_fault(info)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn breakpoint() {
-    <kernel_hal::HAL as FlowController>::on_breakpoint()
+    <kernel_hal::HAL as CoreController>::on_breakpoint()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub fn idle() {
-    <kernel_hal::HAL as FlowController>::on_idle()
+    <kernel_hal::HAL as CoreController>::on_idle()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn syscall(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
-    <kernel_hal::HAL as FlowController>::syscall(id, arg0, arg1, arg2)
+    <kernel_hal::HAL as CoreController>::syscall(id, arg0, arg1, arg2)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn current_thread_context() -> *const Context {
-    <kernel_hal::HAL as FlowController>::current_thread_context()
+    <kernel_hal::HAL as CoreController>::current_thread_context()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn set_current_thread_context(context: *const Context) {
-    <kernel_hal::HAL as FlowController>::set_current_thread_context(context)
+    <kernel_hal::HAL as CoreController>::set_current_thread_context(context)
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn pend_service_call() {
-    <kernel_hal::HAL as FlowController>::pend_service_call()
+    <kernel_hal::HAL as CoreController>::pend_service_call()
 }
 
 #[allow(dead_code)]
 #[inline(always)]
 pub(crate) fn clear_service_call() {
-    <kernel_hal::HAL as FlowController>::clear_service_call()
+    <kernel_hal::HAL as CoreController>::clear_service_call()
 }

@@ -22,11 +22,14 @@
 //!   - Monotonic clock with configurable frequency
 //!   - Wakeup timer functionality
 //!
-//! - [`FlowController`]: Controls thread execution and system flow
+//! - [`CoreController`]: Controls per-core execution and identifies the
+//!   calling core
 //!   - Thread context management
 //!   - System call handling
 //!   - Error and exception handling
 //!   - Service call mechanism for deferred kernel operations
+//!   - Per-core identity (`current_core_id`, `NUM_CORES`) and cross-core
+//!     service-call dispatch (`pend_service_call_on`)
 //!
 //! - [`HardwareAbstractionLayer`]: Combines all controllers into a single interface
 //!
@@ -130,7 +133,7 @@
 //!     HardwareAbstractionLayer,
 //!     InterruptController,
 //!     AlarmClockController,
-//!     FlowController,
+//!     CoreController,
 //!     Fault,
 //!     GetInterruptNumber,
 //!     ContextInfo,
@@ -246,11 +249,17 @@
 //!     }
 //! }
 //!
-//! // Implement FlowController
-//! impl FlowController for MyHardware {
+//! // Implement CoreController
+//! impl CoreController for MyHardware {
 //!     type StackAlignment = A8;
 //!     type Context = ThreadContext;
 //!     type HardwareError = HardwareError;
+//!
+//!     const NUM_CORES: usize = 1;
+//!
+//!     fn current_core_id() -> u8 { 0 }
+//!
+//!     fn pend_service_call_on(_core: u8) {}
 //!
 //!     fn start_first_thread(idle_context: *mut Self::Context) -> ! {
 //!         loop {}
@@ -523,10 +532,40 @@ pub trait ContextInfo {
 ///
 /// This trait provides a set of methods for controlling the execution flow
 /// of the kernel.
-pub trait FlowController: Sync {
+/// Identifier of the core that runs `init` and owns the single existing
+/// scheduler on single-core platforms. Used as the default value for the
+/// `CORE` const generic on every thread and lock type, so user code that
+/// doesn't care about core affinity behaves as if pinned to this core.
+pub const DEFAULT_CORE: u8 = 0;
+
+pub trait CoreController: Sync {
     type StackAlignment: Alignment;
     type Context: ContextInfo;
     type HardwareError: Fault;
+
+    /// Number of independently scheduled cores on the platform.
+    ///
+    /// Must be at least 1. The kernel allocates per-core state of this
+    /// size at compile time, so this is fixed for a given target.
+    const NUM_CORES: usize;
+
+    /// Identifier of the core executing the calling context.
+    ///
+    /// The returned value is in `0..NUM_CORES`. It is stable within a
+    /// single execution context (thread body or interrupt handler) and
+    /// changes only across context switches that migrate execution to
+    /// a different core. Single-core platforms always return `0`.
+    fn current_core_id() -> u8;
+
+    /// Asynchronously request a service-call dispatch on `core`.
+    ///
+    /// The target core observes the request at its next service-call
+    /// dispatch point. `core` may equal [`current_core_id`], in which
+    /// case the effect is identical to [`pend_service_call`].
+    ///
+    /// [`current_core_id`]: Self::current_core_id
+    /// [`pend_service_call`]: Self::pend_service_call
+    fn pend_service_call_on(core: u8);
 
     /// Start the first thread.
     ///
@@ -618,7 +657,7 @@ pub trait FlowController: Sync {
 }
 
 pub trait HardwareAbstractionLayer:
-    AlarmClockController + InterruptController + FlowController + Sync
+    AlarmClockController + InterruptController + CoreController + Sync
 {
     const NAME: &'static str;
 

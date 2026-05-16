@@ -10,7 +10,7 @@ pub use defmt::println as printkln;
 use defmt_rtt as _;
 use portable_atomic::AtomicU64;
 use scars_arch_cortex_m0::{
-    CURRENT_THREAD_CONTEXT, impl_flow_controller, init_kernel_priorities, nvic,
+    CURRENT_THREAD_CONTEXT, impl_core_controller, init_kernel_priorities, nvic,
 };
 use scars_khal::*;
 
@@ -256,7 +256,7 @@ impl AlarmClockController for STM32F0 {
     }
 }
 
-impl_flow_controller!(STM32F0, on_idle = scars_arch_cortex_m0::on_idle_active());
+impl_core_controller!(STM32F0, on_idle = scars_arch_cortex_m0::on_idle_active());
 
 unsafe impl Sync for STM32F0 {}
 

@@ -1,6 +1,6 @@
 use crate::kernel::hal;
 use scars_fault::Fault;
-use scars_khal::FlowController;
+use scars_khal::CoreController;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn abort() -> ! {

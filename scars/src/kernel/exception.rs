@@ -5,7 +5,7 @@ use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::printkln;
 use core::panic::{Location, PanicInfo};
 use scars_fault::{Fault, FaultContextNode, FaultInfo, fault_handler};
-use scars_khal::FlowController;
+use scars_khal::CoreController;
 
 #[macro_export]
 macro_rules! runtime_error {
@@ -59,6 +59,10 @@ pub enum RuntimeError {
 
     /// Inheritance locks may not be acquired while holding any ceiling locks.
     InheritanceLockNotAllowed,
+
+    /// Attempt to access a thread or lock from a core other than the one
+    /// it was bound to via its `CORE` const-generic parameter.
+    WrongCore,
 }
 
 #[track_caller]

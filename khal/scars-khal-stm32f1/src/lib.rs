@@ -10,7 +10,7 @@ pub use defmt::println as printkln;
 use defmt_rtt as _;
 use portable_atomic::AtomicU64;
 use scars_arch_cortex_m::{
-    CURRENT_THREAD_CONTEXT, impl_flow_controller, init_pendsv_priority, nvic,
+    CURRENT_THREAD_CONTEXT, impl_core_controller, init_pendsv_priority, nvic,
 };
 use scars_khal::*;
 
@@ -301,7 +301,7 @@ impl AlarmClockController for STM32F1 {
 // F1 uses the active-idle hook instead of the default `wfi` so that
 // probe-rs's SWD-driven RTT polling can observe kernel-timer output
 // between thread ticks. See `scars_arch_cortex_m::on_idle_active`.
-impl_flow_controller!(STM32F1, on_idle = scars_arch_cortex_m::on_idle_active());
+impl_core_controller!(STM32F1, on_idle = scars_arch_cortex_m::on_idle_active());
 
 unsafe impl Sync for STM32F1 {}
 
