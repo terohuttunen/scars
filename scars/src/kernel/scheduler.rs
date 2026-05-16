@@ -535,18 +535,39 @@ impl RawScheduler {
         }
 
         let current_priority = self.current_thread.priority(pkey);
+        // Threads at or below any held mutex's ceiling cannot run while
+        // the holder is still in its critical section — otherwise they
+        // could try to take the same mutex and the immediate-ceiling
+        // protocol would be violated (panic at ceiling_lock.rs:140).
+        // The blocking primitives below (`delay_thread_until`,
+        // `wait_current_thread`, `wait_current_thread_event`) apply the
+        // same filter; yield must do so too or a `thread_yield()` from
+        // a boosted holder can hand the CPU to a same-priority peer
+        // that immediately panics inside `lock()`.
+        let locks_ceiling = self
+            .as_ref()
+            .locks_priority_ceiling(pkey)
+            .unwrap_or_default(Priority::MIN);
 
         let next = if (kind & RESCHEDULE_KIND_YIELD_TO_EQUAL) != 0 {
-            // Any thread that has equal or higher priority than the current thread
+            // Any thread at or above current priority, but strictly
+            // above any held lock's ceiling.
             self.as_mut()
                 .ready_queue_mut()
-                .pop_front_if(|ready| ready.priority.get(pkey) >= current_priority)
+                .pop_front_if(|ready| {
+                    let p = ready.priority.get(pkey);
+                    p >= current_priority && p > locks_ceiling
+                })
                 .unwrap_or(self.current_thread)
         } else if (kind & RESCHEDULE_KIND_YIELD_TO_HIGHER) != 0 {
-            // Any thread that has higher priority than the current thread
+            // Any thread strictly above current priority, and above
+            // any held lock's ceiling.
             self.as_mut()
                 .ready_queue_mut()
-                .pop_front_if(|ready| ready.priority.get(pkey) > current_priority)
+                .pop_front_if(|ready| {
+                    let p = ready.priority.get(pkey);
+                    p > current_priority && p > locks_ceiling
+                })
                 .unwrap_or(self.current_thread)
         } else {
             unreachable!();
