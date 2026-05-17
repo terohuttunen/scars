@@ -2,8 +2,8 @@
 //! lock. The global locks provide sections where the lock is acquired, and force release
 //! of nested locks in reverse order as they were acquired.
 //!
-//! - `InterruptLock`: Critical section that blocks all interrupts.
-//! - `PreemptLock`: Prevents thread switching, but allows interrupts.
+//! - `CoreInterruptLock`: Critical section that blocks all interrupts.
+//! - `CorePreemptLock`: Prevents thread switching, but allows interrupts.
 //! - `CeilingLock`: Prevents thread switching or interrupts below the lock ceiling, and
 //!    allows anything above the ceiling.
 //!
@@ -40,19 +40,19 @@ pub mod shared;
 //pub use async_mutex::{AsyncMutex, AsyncMutexGuard};
 pub use channel::{CeilingChannel, Channel};
 pub use condvar::{CeilingCondvar, Condvar};
-pub use mutex::{CeilingMutex, LockedMutex, Mutex, MutexGuard};
+pub use mutex::{CeilingMutex, Locked, Mutex, MutexGuard};
 pub use once::Once;
 pub use once_lock::OnceLock;
 pub use shared::Shared;
 
 pub use ::portable_atomic as atomic;
 
-pub use ceiling_lock::{CeilingLock, RawCeilingLock};
+pub use ceiling_lock::{CeilingLock, CoreCeilingLock, RawCeilingLock};
 pub use critical_section::{self, CriticalSection};
-pub use inheritance_lock::InheritanceLock;
-pub use interrupt_lock::InterruptLock;
+pub use inheritance_lock::{CoreInheritanceLock, InheritanceLock};
+pub use interrupt_lock::{CoreInterruptLock, InterruptLock, InterruptLockKey};
 pub use no_lock::NoLock;
-pub use preempt_lock::PreemptLock;
+pub use preempt_lock::{CorePreemptLock, PreemptLock, PreemptLockKey};
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 pub type TryLockResult<Guard> = Result<Guard, TryLockError>;
@@ -68,10 +68,7 @@ pub trait Unlock {
     fn relock(&mut self);
 }
 
-pub trait ScopedLock {
-    // Const initializer
-    const DEFAULT: Self;
-
+pub trait LockOps {
     // RAII-style lock guard that releases the lock when dropped. Guards
     // may be dropped in any order.
     type Guard<'lock>
@@ -88,6 +85,11 @@ pub trait ScopedLock {
     {
         unsafe { Self::get_key_unchecked() }
     }
+}
+
+pub trait ScopedLock: LockOps {
+    // Const initializer.
+    const DEFAULT: Self;
 }
 
 // A lock that can be acquired and released in a nested fashion. The lock is released

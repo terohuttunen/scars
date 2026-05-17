@@ -15,7 +15,7 @@ use crate::kernel::{
 use crate::local::LocalStorage;
 use crate::priority::PriorityStatus;
 use crate::sync::atomic::{AtomicPtr, Ordering};
-use crate::sync::{InheritanceLock, PreemptLock, RawCeilingLock, preempt_lock::PreemptLockKey};
+use crate::sync::{InheritanceLock, PreemptLock, PreemptLockKey, RawCeilingLock};
 use crate::time::Instant;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
@@ -46,6 +46,10 @@ pub enum ThreadExecutionState {
     Suspended,
 }
 
+/// Per-thread kernel data. CORE-erased: stored in the per-core
+/// scheduler's intrusive queues without static `CORE` typing. The
+/// runtime `core: u8` field is the truth; per-method wrong-core
+/// checks raise [`RuntimeError::WrongCore`] before any cell access.
 #[repr(align(16))]
 #[repr(C)]
 pub(crate) struct RawThread {
@@ -60,6 +64,12 @@ pub(crate) struct RawThread {
 
     // Thread base priority
     pub base_priority: Priority,
+
+    // Core this thread is bound to. The scheduler enqueues this thread
+    // into the per-core ready/blocked lists indexed by `core`; the
+    // thread runs only on that core. All cell accessors check
+    // `pkey.core == self.core` before touching the cells.
+    pub core: crate::kernel::hal::CoreId,
 
     // Nesting ceiling lock priority
     pub nesting_lock_priority: LockedCell<PriorityStatus, PreemptLock>,
@@ -114,6 +124,7 @@ impl RawThread {
     pub(crate) const fn new(
         name: &'static str,
         base_priority: Priority,
+        core: crate::kernel::hal::CoreId,
         main_fn: *const (),
     ) -> RawThread {
         RawThread {
@@ -121,6 +132,7 @@ impl RawThread {
             state: LockedCell::new(ThreadExecutionState::Created),
             name,
             base_priority,
+            core,
             nesting_lock_priority: LockedCell::new(PriorityStatus::invalid()),
             inherited_priority: LockedCell::new(PriorityStatus::invalid()),
             priority: LockedCell::new(base_priority),
@@ -142,7 +154,7 @@ impl RawThread {
 
     pub unsafe fn init_at(this: *mut Self) {
         unsafe {
-            (*this).wait_entry.init_for::<RawThread>(&*this);
+            (*this).wait_entry.init_for::<Self>(&*this);
         }
     }
 
@@ -157,7 +169,7 @@ impl RawThread {
         self.get_timer().arm(pkey, scheduler, self, deadline);
     }
 
-    pub(crate) fn get_timer(self: Pin<&Self>) -> Pin<&Timer<RawThread>> {
+    pub(crate) fn get_timer(self: Pin<&Self>) -> Pin<&Timer<Self>> {
         unsafe { self.map_unchecked(|t| &t.timer) }
     }
 
@@ -166,7 +178,7 @@ impl RawThread {
     }
 
     pub(crate) fn get_pending_work(self: Pin<&Self>) -> Pin<&RawPendingWorkEntry> {
-        let typed: Pin<&PendingWorkEntry<RawThread>> =
+        let typed: Pin<&PendingWorkEntry<Self>> =
             unsafe { self.map_unchecked(|t| &t.pending_work) };
         typed.raw()
     }
@@ -183,12 +195,16 @@ impl RawThread {
 
     #[allow(dead_code)]
     pub fn get_info(&self, pkey: PreemptLockKey<'_>) -> ThreadInfo {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         let stack_addr = unsafe { self.stack.assume_init_ref() }.bottom_ptr() as *const ();
         let stack_size = unsafe { self.stack.assume_init_ref() }.alloc_size();
         ThreadInfo {
             name: self.name,
             state: self.state.get(pkey),
             base_priority: self.base_priority,
+            core: self.core,
             stack_addr,
             stack_size,
             entry: self.main_fn,
@@ -218,6 +234,13 @@ impl RawThread {
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        debug_assert_eq!(
+            lock.core, self.core,
+            "ceiling lock and thread on different cores"
+        );
         // Add lock to thread's owned ceiling locks list (ordered by priority)
         let ceiling_priority = lock.ceiling_priority;
         self.ceiling_locks()
@@ -233,6 +256,13 @@ impl RawThread {
         pkey: PreemptLockKey<'key>,
         lock: Pin<&RawCeilingLock>,
     ) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        debug_assert_eq!(
+            lock.core, self.core,
+            "ceiling lock and thread on different cores"
+        );
         // Remove lock from thread's owned ceiling locks list
         self.ceiling_locks().borrow_mut(pkey).as_mut().remove(lock);
 
@@ -244,6 +274,9 @@ impl RawThread {
         pkey: PreemptLockKey<'key>,
         lock: Pin<&InheritanceLock>,
     ) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         if self.ceiling_lock_priority(pkey).is_valid() {
             // Inheritance locks may not be acquired while holding any ceiling locks.
             crate::runtime_error!(RuntimeError::InheritanceLockNotAllowed);
@@ -258,6 +291,9 @@ impl RawThread {
         pkey: PreemptLockKey<'key>,
         lock: Pin<&InheritanceLock>,
     ) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         let mut inheritance_locks = self.inheritance_locks().borrow_mut(pkey);
         inheritance_locks.as_mut().remove(lock);
 
@@ -276,6 +312,9 @@ impl RawThread {
         pkey: PreemptLockKey<'key>,
         priority: Priority,
     ) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         // Inherited priority can only be increased, until the thread releases
         // all inheritance locks.
         self.inherited_priority.set(
@@ -295,6 +334,9 @@ impl RawThread {
         self: Pin<&Self>,
         pkey: PreemptLockKey<'key>,
     ) -> PriorityStatus {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         let nesting_lock_priority = self.nesting_lock_priority.get(pkey);
 
         let scoped_lock_priority =
@@ -313,10 +355,16 @@ impl RawThread {
     /// owns any locks, the highest owned lock priority will be returned; otherwise,
     /// returns the thread base priority.
     pub(crate) fn priority<'key>(self: Pin<&Self>, pkey: PreemptLockKey<'key>) -> Priority {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         self.priority.get(pkey)
     }
 
     fn update_priority<'key>(self: Pin<&Self>, pkey: PreemptLockKey<'key>) -> bool {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         let lock_priority = self.ceiling_lock_priority(pkey);
         let inherited_priority = self.inherited_priority.get(pkey);
 
@@ -334,6 +382,9 @@ impl RawThread {
         new_priority: Priority,
     ) -> PriorityStatus {
         PreemptLock::with(|pkey| {
+            if self.core != pkey.core {
+                crate::runtime_error!(RuntimeError::WrongCore);
+            }
             let old_priority = self.nesting_lock_priority.get(pkey);
 
             // Priorities can only be increased.
@@ -351,6 +402,9 @@ impl RawThread {
 
     pub(crate) fn set_nesting_lock_priority(self: Pin<&Self>, new_priority: PriorityStatus) {
         PreemptLock::with(|pkey| {
+            if self.core != pkey.core {
+                crate::runtime_error!(RuntimeError::WrongCore);
+            }
             self.nesting_lock_priority.set(pkey, new_priority);
             self.update_priority(pkey);
         });
@@ -365,6 +419,9 @@ impl RawThread {
         wait_queue: Option<WaitQueueHandle>,
         pkey: PreemptLockKey<'_>,
     ) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
         self.wait_queue.set(pkey, wait_queue);
     }
 

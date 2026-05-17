@@ -1,13 +1,16 @@
+use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
 use crate::sync::{
-    CeilingLock, InterruptLock, MutexGuard, NestingLock, PreemptLock, ScopedLock, Unlock,
+    CoreCeilingLock, CoreInterruptLock, CorePreemptLock, LockOps, MutexGuard, NestingLock, Unlock,
     mutex::guard_raw,
 };
 use crate::{interrupt::in_interrupt, kernel::waiter::WaitQueue};
 
-pub type Condvar = LockedCondvar<PreemptLock>;
-pub type CeilingCondvar<const CEILING: Priority> = LockedCondvar<CeilingLock<CEILING>>;
-pub type InterruptCondvar = LockedCondvar<InterruptLock>;
+pub type Condvar<const CORE: CoreId = { CoreId::DEFAULT }> = LockedCondvar<CorePreemptLock<CORE>>;
+pub type CeilingCondvar<const CEILING: Priority, const CORE: CoreId = { CoreId::DEFAULT }> =
+    LockedCondvar<CoreCeilingLock<CEILING, CORE>>;
+pub type InterruptCondvar<const CORE: CoreId = { CoreId::DEFAULT }> =
+    LockedCondvar<CoreInterruptLock<CORE>>;
 
 pub struct WaitTimeoutResult(bool);
 
@@ -29,7 +32,7 @@ impl<L: NestingLock> LockedCondvar<L> {
     }
 
     #[inline(never)]
-    fn wait_lock<G: ScopedLock>(&self, guard: &mut G::Guard<'_>)
+    fn wait_lock<G: LockOps>(&self, guard: &mut G::Guard<'_>)
     where
         for<'a> G::Guard<'a>: Unlock,
     {
@@ -43,10 +46,7 @@ impl<L: NestingLock> LockedCondvar<L> {
     }
 
     #[inline(always)]
-    pub fn wait<'a, T, G: ScopedLock>(
-        &self,
-        mut guard: MutexGuard<'a, T, G>,
-    ) -> MutexGuard<'a, T, G>
+    pub fn wait<'a, T, G: LockOps>(&self, mut guard: MutexGuard<'a, T, G>) -> MutexGuard<'a, T, G>
     where
         for<'b> G::Guard<'b>: Unlock,
     {
@@ -61,7 +61,7 @@ impl<L: NestingLock> LockedCondvar<L> {
         guard
     }
 
-    pub fn wait_while<'a, T, G: ScopedLock, F>(
+    pub fn wait_while<'a, T, G: LockOps, F>(
         &self,
         mut guard: MutexGuard<'a, T, G>,
         mut condition: F,
@@ -81,7 +81,7 @@ impl<L: NestingLock> LockedCondvar<L> {
         guard
     }
 
-    pub async fn async_wait<'a, T, G: ScopedLock>(
+    pub async fn async_wait<'a, T, G: LockOps>(
         &'static self,
         mut guard: MutexGuard<'static, T, G>,
     ) -> MutexGuard<'static, T, G>
@@ -101,7 +101,7 @@ impl<L: NestingLock> LockedCondvar<L> {
         guard
     }
 
-    pub async fn async_wait_while<T, G: ScopedLock, F>(
+    pub async fn async_wait_while<T, G: LockOps, F>(
         &'static self,
         mut guard: MutexGuard<'static, T, G>,
         condition: F,

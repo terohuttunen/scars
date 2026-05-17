@@ -7,8 +7,8 @@ use crate::kernel::waiter::{
     SUSPENDABLE_PENDING_WAKEUP, WaitQueueEntry,
 };
 use crate::priority::Priority;
+use crate::sync::PreemptLockKey;
 use crate::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
-use crate::sync::preempt_lock::PreemptLockKey;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::pin::Pin;

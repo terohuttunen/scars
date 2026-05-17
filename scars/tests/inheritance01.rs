@@ -27,7 +27,7 @@ const MEDIUM_PRIORITY: Priority = Priority::thread(4);
 
 const CHECKER_PRIORITY: Priority = Priority::thread(1);
 
-static LOCK1: InheritanceLock = InheritanceLock::new();
+static LOCK1: InheritanceLock = InheritanceLock::new(scars::CoreId::DEFAULT);
 static STATE: AtomicU32 = AtomicU32::new(0);
 
 type LowThreadF = impl ThreadFn;

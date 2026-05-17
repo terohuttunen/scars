@@ -1,16 +1,22 @@
 use crate::kernel::Priority;
+use crate::kernel::hal::CoreId;
 use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::sync::condvar::LockedCondvar;
 use crate::sync::{
-    CeilingLock, InheritanceLock, NestingLock, PreemptLock, ScopedLock, Unlock, mutex::LockedMutex,
+    CoreCeilingLock, CoreInheritanceLock, CorePreemptLock, LockOps, NestingLock, ScopedLock,
+    Unlock, mutex::Locked,
 };
 use core::mem::MaybeUninit;
 
 #[macro_export]
 macro_rules! make_channel {
-    ($ty:path, $size:expr, $prio:expr) => {{
-        static mut CHANNEL: $crate::sync::channel::CeilingChannel<$ty, { $size }, { $prio }> =
-            $crate::sync::channel::CeilingChannel::new();
+    ($ty:path, $size:expr, $prio:expr $(, core = $core:expr)?) => {{
+        static mut CHANNEL: $crate::sync::channel::CeilingChannel<
+            $ty,
+            { $size },
+            { $prio },
+            { $crate::make_channel!(@core $($core)?) },
+        > = $crate::sync::channel::CeilingChannel::new();
 
         unsafe { CHANNEL.split() }
     }};
@@ -20,22 +26,37 @@ macro_rules! make_channel {
 
         unsafe { CHANNEL.split() }
     }};
+    (@core) => {$crate::CoreId::DEFAULT};
+    (@core $core:expr) => { $core };
 }
 
 pub use make_channel;
 
-pub type CeilingChannel<T, const CAPACITY: usize, const CEILING: Priority> =
-    LockedChannel<T, CAPACITY, CeilingLock<CEILING>, CeilingLock<CEILING>>;
-pub type CeilingSender<T, const CAPACITY: usize, const CEILING: Priority> =
-    LockedSender<T, CAPACITY, CeilingLock<CEILING>, CeilingLock<CEILING>>;
-pub type CeilingReceiver<T, const CAPACITY: usize, const CEILING: Priority> =
-    LockedReceiver<T, CAPACITY, CeilingLock<CEILING>, CeilingLock<CEILING>>;
+pub type CeilingChannel<
+    T,
+    const CAPACITY: usize,
+    const CEILING: Priority,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> = LockedChannel<T, CAPACITY, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
+pub type CeilingSender<
+    T,
+    const CAPACITY: usize,
+    const CEILING: Priority,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> = LockedSender<T, CAPACITY, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
+pub type CeilingReceiver<
+    T,
+    const CAPACITY: usize,
+    const CEILING: Priority,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> = LockedReceiver<T, CAPACITY, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
 
-pub type Channel<T, const CAPACITY: usize> =
-    LockedChannel<T, CAPACITY, InheritanceLock, PreemptLock>;
-pub type Sender<T, const CAPACITY: usize> = LockedSender<T, CAPACITY, InheritanceLock, PreemptLock>;
-pub type Receiver<T, const CAPACITY: usize> =
-    LockedReceiver<T, CAPACITY, InheritanceLock, PreemptLock>;
+pub type Channel<T, const CAPACITY: usize, const CORE: CoreId = { CoreId::DEFAULT }> =
+    LockedChannel<T, CAPACITY, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
+pub type Sender<T, const CAPACITY: usize, const CORE: CoreId = { CoreId::DEFAULT }> =
+    LockedSender<T, CAPACITY, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
+pub type Receiver<T, const CAPACITY: usize, const CORE: CoreId = { CoreId::DEFAULT }> =
+    LockedReceiver<T, CAPACITY, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
 
 pub struct FIFO<T, const CAPACITY: usize> {
     // Where new data can be written (unless full)
@@ -154,26 +175,28 @@ pub enum TrySendError<T> {
     Full(T),
 }
 
-pub struct LockedChannel<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> {
+pub struct LockedChannel<T, const CAPACITY: usize, L: LockOps, N: NestingLock> {
     receiver_acquired: AtomicBool,
-    fifo: LockedMutex<FIFO<T, CAPACITY>, L>,
+    fifo: Locked<FIFO<T, CAPACITY>, L>,
     receivers: LockedCondvar<N>,
     senders: LockedCondvar<N>,
 }
 
-impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedChannel<T, CAPACITY, L, N>
-where
-    for<'a> L::Guard<'a>: Unlock,
-{
+impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedChannel<T, CAPACITY, L, N> {
     pub const fn new() -> LockedChannel<T, CAPACITY, L, N> {
         LockedChannel {
             receiver_acquired: AtomicBool::new(false),
-            fifo: LockedMutex::new(FIFO::new()),
+            fifo: Locked::new(FIFO::new()),
             receivers: LockedCondvar::new(),
             senders: LockedCondvar::new(),
         }
     }
+}
 
+impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> LockedChannel<T, CAPACITY, L, N>
+where
+    for<'a> L::Guard<'a>: Unlock,
+{
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         let mut fifo_guard = self.fifo.lock();
 
@@ -289,13 +312,13 @@ where
 pub struct LockedSender<
     T: 'static,
     const CAPACITY: usize,
-    L: ScopedLock + 'static,
+    L: LockOps + 'static,
     N: NestingLock + 'static,
 > {
     channel: &'static LockedChannel<T, CAPACITY, L, N>,
 }
 
-impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedSender<T, CAPACITY, L, N>
+impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> LockedSender<T, CAPACITY, L, N>
 where
     for<'a> L::Guard<'a>: Unlock,
 {
@@ -320,17 +343,17 @@ where
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Send
+unsafe impl<T: Send, const CAPACITY: usize, L: LockOps, N: NestingLock> Send
     for LockedSender<T, CAPACITY, L, N>
 {
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Sync
+unsafe impl<T: Send, const CAPACITY: usize, L: LockOps, N: NestingLock> Sync
     for LockedSender<T, CAPACITY, L, N>
 {
 }
 
-impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Clone
+impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> Clone
     for LockedSender<T, CAPACITY, L, N>
 {
     fn clone(&self) -> Self {
@@ -343,13 +366,13 @@ impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Clone
 pub struct LockedReceiver<
     T: 'static,
     const CAPACITY: usize,
-    L: ScopedLock + 'static,
+    L: LockOps + 'static,
     N: NestingLock + 'static,
 > {
     channel: &'static LockedChannel<T, CAPACITY, L, N>,
 }
 
-impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedReceiver<T, CAPACITY, L, N>
+impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> LockedReceiver<T, CAPACITY, L, N>
 where
     for<'a> L::Guard<'a>: Unlock,
 {
@@ -378,7 +401,7 @@ where
     }
 }
 
-impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Drop
+impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> Drop
     for LockedReceiver<T, CAPACITY, L, N>
 {
     fn drop(&mut self) {
@@ -388,7 +411,7 @@ impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Drop
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, L: ScopedLock, N: NestingLock> Send
+unsafe impl<T: Send, const CAPACITY: usize, L: LockOps, N: NestingLock> Send
     for LockedReceiver<T, CAPACITY, L, N>
 {
 }

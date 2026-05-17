@@ -11,7 +11,7 @@
 //! Use [`make_rendezvous!`] to construct a `(LockedEntry,
 //! LockedAccept)` pair. With a `ceiling` argument the underlying
 //! mutexes use [`CeilingLock`]; without it they use [`InheritanceLock`]
-//! plus [`PreemptLock`].
+//! plus [`CorePreemptLock`].
 //!
 //! ```ignore
 //! use scars::sync::rendezvous::make_rendezvous;
@@ -29,15 +29,16 @@
 //! ```
 
 use crate::Priority;
+use crate::kernel::hal::CoreId;
 use crate::sync::{
-    CeilingLock, InheritanceLock, NestingLock, PreemptLock, ScopedLock, Unlock,
-    condvar::LockedCondvar, mutex::LockedMutex,
+    CoreCeilingLock, CoreInheritanceLock, CorePreemptLock, LockOps, NestingLock, ScopedLock,
+    Unlock, condvar::LockedCondvar, mutex::Locked,
 };
 
 /// Allocates a static `Rendezvous` and returns a `(LockedEntry,
 /// LockedAccept)` pair. With a `$prio` argument the rendezvous uses
 /// [`CeilingLock<$prio>`]; without one it uses [`InheritanceLock`]
-/// plus [`PreemptLock`].
+/// plus [`CorePreemptLock`].
 #[macro_export]
 macro_rules! make_rendezvous {
     ($prio:expr) => {{
@@ -60,22 +61,27 @@ macro_rules! make_rendezvous {
 
 pub use make_rendezvous;
 
-pub type CeilingRendezvous<A, R, const CEILING: Priority> =
-    LockedRendezvous<A, R, CeilingLock<CEILING>, CeilingLock<CEILING>>;
+pub type CeilingRendezvous<
+    A,
+    R,
+    const CEILING: Priority,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> = LockedRendezvous<A, R, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
 
-pub type Rendezvous<A, R> = LockedRendezvous<A, R, InheritanceLock, PreemptLock>;
+pub type Rendezvous<A, R, const CORE: CoreId = { CoreId::DEFAULT }> =
+    LockedRendezvous<A, R, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
 
 /// Two-thread RPC channel parameterised over its mutex lock type `L`
 /// and the nesting-lock kind `N` used by the internal condvar. Use
 /// the [`Rendezvous`] / [`CeilingRendezvous`] aliases for the
 /// supported configurations.
-pub struct LockedRendezvous<A, R, L: ScopedLock, N: NestingLock>
+pub struct LockedRendezvous<A, R, L: LockOps, N: NestingLock>
 where
     A: Send + 'static,
     R: Send + 'static,
 {
-    arg: LockedMutex<Option<A>, L>,
-    result: LockedMutex<Option<R>, L>,
+    arg: Locked<Option<A>, L>,
+    result: Locked<Option<R>, L>,
     waiter: LockedCondvar<N>,
 }
 
@@ -86,8 +92,8 @@ where
 {
     pub const fn new() -> LockedRendezvous<A, R, L, N> {
         LockedRendezvous {
-            arg: LockedMutex::new(None),
-            result: LockedMutex::new(None),
+            arg: Locked::new(None),
+            result: Locked::new(None),
             waiter: LockedCondvar::new(),
         }
     }
@@ -104,7 +110,7 @@ where
 
 /// Caller-side handle of a rendezvous. Hand the argument to
 /// [`entry`](Self::entry) and block until the callee returns a value.
-pub struct LockedEntry<A, R, L: ScopedLock + 'static, N: NestingLock + 'static>
+pub struct LockedEntry<A, R, L: LockOps + 'static, N: NestingLock + 'static>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -112,7 +118,7 @@ where
     rendezvous: &'static LockedRendezvous<A, R, L, N>,
 }
 
-impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> LockedEntry<A, R, L, N>
+impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> LockedEntry<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -142,8 +148,7 @@ where
     }
 }
 
-unsafe impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> Send
-    for LockedEntry<A, R, L, N>
+unsafe impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> Send for LockedEntry<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -153,7 +158,7 @@ where
 /// Callee-side handle of a rendezvous. Wait for an argument with
 /// [`accept`](Self::accept), run a closure on it, and stash the
 /// closure's result for the caller side to retrieve.
-pub struct LockedAccept<A, R, L: ScopedLock + 'static, N: NestingLock + 'static>
+pub struct LockedAccept<A, R, L: LockOps + 'static, N: NestingLock + 'static>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -161,7 +166,7 @@ where
     rendezvous: &'static LockedRendezvous<A, R, L, N>,
 }
 
-impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> LockedAccept<A, R, L, N>
+impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> LockedAccept<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -193,8 +198,7 @@ where
     }
 }
 
-unsafe impl<A, R, L: ScopedLock + 'static, N: NestingLock + 'static> Send
-    for LockedAccept<A, R, L, N>
+unsafe impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> Send for LockedAccept<A, R, L, N>
 where
     A: Send + 'static,
     R: Send + 'static,

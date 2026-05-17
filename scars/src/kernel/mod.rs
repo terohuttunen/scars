@@ -11,7 +11,7 @@ use crate::printkln;
 pub(crate) use crate::priority::{
     AnyPriority, AtomicPriority, InterruptPriority, Priority, ThreadPriority,
 };
-use crate::sync::interrupt_lock::InterruptLockKey;
+use crate::sync::interrupt_lock::CoreInterruptLockKey;
 use core::cell::UnsafeCell;
 pub(crate) use exception::{RuntimeError, handle_runtime_error};
 use scars_khal::{ContextInfo, CoreController, HardwareAbstractionLayer};

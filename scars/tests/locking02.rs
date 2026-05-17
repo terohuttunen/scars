@@ -4,7 +4,7 @@
 
 use scars::Stack;
 use scars::prelude::*;
-use scars::sync::CeilingLock;
+use scars::sync::CoreCeilingLock;
 use scars::thread::{Thread, ThreadFn};
 use scars::time::Duration;
 use scars_test;
@@ -62,7 +62,7 @@ fn init() {
     LOW_THREAD
         .init(LOW_STACK.init())
         .attach(move || {
-            let lock: CeilingLock<CEILING> = CeilingLock::new();
+            let lock: CoreCeilingLock<CEILING> = CoreCeilingLock::new();
 
             // Low priority thread raises its priority with a ceiling lock
             let pinned = core::pin::pin!(lock);

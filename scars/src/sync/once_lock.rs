@@ -1,7 +1,7 @@
 use crate::cell::LockedOnceCell;
-use crate::sync::{InterruptLock, NestingLock};
+use crate::sync::{CoreInterruptLock, NestingLock};
 
-pub struct OnceLock<T, L: NestingLock = InterruptLock> {
+pub struct OnceLock<T, L: NestingLock = CoreInterruptLock> {
     cell: LockedOnceCell<T, L>,
 }
 

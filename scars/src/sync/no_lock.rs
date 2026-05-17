@@ -1,5 +1,5 @@
 use super::TryLockError;
-use crate::sync::{NestingLock, ScopedLock};
+use crate::sync::{LockOps, NestingLock, ScopedLock};
 use core::cell::Cell;
 use core::marker::PhantomData;
 
@@ -36,11 +36,7 @@ pub struct NoLockGuard<'lock> {
     _private: PhantomData<&'lock ()>,
 }
 
-impl ScopedLock for NoLock {
-    const DEFAULT: Self = NoLock {
-        _phantom: PhantomData,
-    };
-
+impl LockOps for NoLock {
     type Guard<'guard> = NoLockGuard<'guard>;
 
     fn lock(&self) -> Self::Guard<'_> {
@@ -54,6 +50,12 @@ impl ScopedLock for NoLock {
             _private: PhantomData,
         })
     }
+}
+
+impl ScopedLock for NoLock {
+    const DEFAULT: Self = NoLock {
+        _phantom: PhantomData,
+    };
 }
 
 impl NestingLock for NoLock {

@@ -5,7 +5,7 @@
 use scars::Stack;
 use scars::cell::LockedCell;
 use scars::prelude::*;
-use scars::sync::CeilingLock;
+use scars::sync::CoreCeilingLock;
 use scars::thread::{Thread, ThreadFn};
 use scars::time::Duration;
 use scars_test;
@@ -45,7 +45,7 @@ static CHECKER_THREAD: Thread<CHECKER_PRIORITY, CheckerF> = Thread::new("checker
 #[define_opaque(LowThreadF, MediumThreadF, CheckerF)]
 fn init() {
     let (sender0, receiver) = make_channel!(u32, CAPACITY, MEDIUM_PRIORITY);
-    let protected_data: LockedCell<usize, CeilingLock<CEILING>> = LockedCell::new(0);
+    let protected_data: LockedCell<usize, CoreCeilingLock<CEILING>> = LockedCell::new(0);
 
     let medium_sender = sender0.clone();
 
@@ -53,7 +53,7 @@ fn init() {
         .init(LOW_STACK.init())
         .attach(move || {
             // Low priority thread raises its priority with a ceiling lock section
-            CeilingLock::with(|ckey| {
+            CoreCeilingLock::<CEILING>::with(|ckey| {
                 protected_data.set(ckey, 1);
 
                 let medium_sender_inner = medium_sender.clone();

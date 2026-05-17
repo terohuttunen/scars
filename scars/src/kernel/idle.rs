@@ -1,5 +1,6 @@
 use crate::Scheduler;
 use crate::Stack;
+use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
 use crate::sync::PreemptLock;
 use crate::task::ThreadExecutor;

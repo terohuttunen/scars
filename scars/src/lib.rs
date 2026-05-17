@@ -34,10 +34,10 @@ pub use events::{
     WaitTimeoutError,
 };
 pub use kernel::abort::abort;
-pub use kernel::hal::{CoreId, CoreToken, NUM_CORES, clock_ticks, current_core_id};
 pub use kernel::hal::kernel_hal as khal;
 pub use kernel::hal::kernel_hal::{printk, printkln};
 pub use kernel::hal::pac;
+pub use kernel::hal::{CoreId, CoreToken, NUM_CORES, clock_ticks};
 pub use kernel::scheduler::{EventTimer, Scheduler};
 pub use kernel::stack::Stack;
 pub use priority::{AnyPriority, Priority};

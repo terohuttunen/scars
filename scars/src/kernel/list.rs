@@ -312,6 +312,17 @@ macro_rules! impl_linked {
             }
         }
     };
+    ($node_name:ident, $t:ty, $n:ty, $($generics:tt)+) => {
+        impl<$($generics)+> $crate::kernel::list::LinkedListNode<$n> for $t {
+            fn get_node<'item>(&'item self) -> &'item $crate::kernel::list::Node<Self, $n> {
+                &self.$node_name
+            }
+
+            fn node_offset() -> usize {
+                ::core::mem::offset_of!($t, $node_name)
+            }
+        }
+    };
 }
 
 pub(crate) use impl_linked;

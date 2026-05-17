@@ -101,7 +101,7 @@ pub unsafe fn _hardware_exception_handler(error: &HardwareFault) -> ! {
 ///
 /// Reads `LockedCell` thread fields via `as_ptr` because the fault
 /// path must not take any preempt locks — the cells are written under
-/// `PreemptLock`, but here we are heading to `-> !` and a torn read is
+/// `CorePreemptLock`, but here we are heading to `-> !` and a torn read is
 /// preferable to a deadlock.
 fn dispatch_fault(info: &FaultInfo) -> ! {
     if !Scheduler::is_initialized() {

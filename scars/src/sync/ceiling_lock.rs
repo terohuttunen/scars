@@ -1,5 +1,6 @@
 use super::TryLockError;
 use crate::interrupt::RawInterruptHandler;
+use crate::kernel::hal::{CoreId, CoreToken};
 use crate::kernel::{
     Priority,
     list::{Node, impl_linked},
@@ -8,7 +9,7 @@ use crate::kernel::{
 use crate::priority::PriorityStatus;
 use crate::runtime_error;
 use crate::sync::atomic::{AtomicPtr, Ordering};
-use crate::sync::{NestingLock, PreemptLock, ScopedLock, TryLockResult, Unlock};
+use crate::sync::{LockOps, NestingLock, PreemptLock, ScopedLock, TryLockResult, Unlock};
 use crate::thread::{IDLE_THREAD_ID, LockListTag, RawThread};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
@@ -29,6 +30,9 @@ pub struct RawCeilingLock {
     // Ceiling priority
     pub ceiling_priority: Priority,
 
+    // Core this lock is bound to.
+    pub core: CoreId,
+
     // The owning thread or interrupt ptr, or null if free
     pub(crate) owner: AtomicPtr<()>,
 
@@ -44,9 +48,10 @@ unsafe impl Send for RawCeilingLock {}
 unsafe impl Sync for RawCeilingLock {}
 
 impl RawCeilingLock {
-    pub const fn new(ceiling_priority: Priority) -> RawCeilingLock {
+    pub const fn new(ceiling_priority: Priority, core: CoreId) -> RawCeilingLock {
         RawCeilingLock {
             ceiling_priority,
+            core,
             owner: AtomicPtr::new(core::ptr::null_mut()),
             lock_list_node: Node::new(),
         }
@@ -365,6 +370,25 @@ impl Drop for RawCeilingLockGuard<'_> {
     }
 }
 
+pub struct CeilingLockRestoreState {
+    saved_priority: PriorityStatus,
+}
+
+/// CORE-erased ceiling lock primitive. `CEILING` is typed (the ceiling
+/// priority is a compile-time constant), but the core affinity is
+/// stored at runtime (`raw.core`).
+///
+/// Two complementary APIs:
+///
+/// - **Static**: [`CeilingLock::with`] / [`CeilingLock::try_with`]
+///   take no instance; they raise the calling core's ceiling without
+///   instance state. The acquire-side check enforces the priority
+///   ceiling protocol against the calling thread/interrupt priority.
+///
+/// - **Instance**: [`CeilingLock::lock`] / [`CeilingLock::try_lock`]
+///   act on an owned `CeilingLock` instance; check
+///   `CoreId::current() == self.raw.core` before acquiring; return a
+///   [`CeilingLockGuard`] that releases on drop.
 #[pin_project]
 pub struct CeilingLock<const CEILING: Priority> {
     #[pin]
@@ -372,13 +396,28 @@ pub struct CeilingLock<const CEILING: Priority> {
 }
 
 impl<const CEILING: Priority> CeilingLock<CEILING> {
-    pub const fn new() -> CeilingLock<CEILING> {
-        CeilingLock {
-            raw: RawCeilingLock::new(CEILING),
+    pub const fn new(core: CoreId) -> Self {
+        Self {
+            raw: RawCeilingLock::new(CEILING, core),
         }
     }
 
     pub fn lock(self: Pin<&Self>) -> CeilingLockGuard<'_, CEILING> {
+        if CoreId::current() != self.raw.core {
+            runtime_error!(RuntimeError::WrongCore);
+        }
+        unsafe { self.lock_unchecked() }
+    }
+
+    /// Acquire without the wrong-core check.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `CoreId::current() == self.raw.core`. Use a
+    /// CORE-typed wrapper ([`CoreCeilingLock<CEILING, CORE>`]) that
+    /// vends a [`CoreToken<CORE>`] for a safe entry point.
+    #[inline(always)]
+    pub unsafe fn lock_unchecked(self: Pin<&Self>) -> CeilingLockGuard<'_, CEILING> {
         let this = self.project_ref();
         let raw_guard = this.raw.lock();
         CeilingLockGuard { raw: raw_guard }
@@ -392,7 +431,7 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
     }
 
     #[inline(always)]
-    pub fn with<R>(f: impl FnOnce(<Self as NestingLock>::Key<'_>) -> R) -> R {
+    pub fn with<R>(f: impl FnOnce(CeilingLockKey<'_, CEILING>) -> R) -> R {
         let restore_state = unsafe { RawCeilingLock::acquire_nesting_lock(CEILING) };
         let key = unsafe { CeilingLockKey::new() };
 
@@ -404,20 +443,10 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
 
     #[inline(always)]
     pub fn try_with<R>(
-        f: impl FnOnce(<Self as NestingLock>::Key<'_>) -> R,
+        f: impl FnOnce(CeilingLockKey<'_, CEILING>) -> R,
     ) -> Result<R, TryLockError> {
         Ok(Self::with(f))
     }
-}
-
-impl<const CEILING: Priority> Default for CeilingLock<CEILING> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct CeilingLockRestoreState {
-    saved_priority: PriorityStatus,
 }
 
 pub struct CeilingLockGuard<'lock, const CEILING: Priority> {
@@ -436,8 +465,7 @@ impl<'lock, const CEILING: Priority> Unlock for CeilingLockGuard<'lock, CEILING>
     }
 }
 
-impl<const CEILING: Priority> ScopedLock for CeilingLock<CEILING> {
-    const DEFAULT: Self = Self::new();
+impl<const CEILING: Priority> LockOps for CeilingLock<CEILING> {
     type Guard<'guard> = CeilingLockGuard<'guard, CEILING>;
 
     fn lock(&self) -> Self::Guard<'_> {
@@ -448,6 +476,10 @@ impl<const CEILING: Priority> ScopedLock for CeilingLock<CEILING> {
     fn try_lock(&self) -> TryLockResult<Self::Guard<'_>> {
         Ok(self.lock())
     }
+}
+
+impl<const CEILING: Priority> ScopedLock for CeilingLock<CEILING> {
+    const DEFAULT: Self = Self::new(CoreId::DEFAULT);
 }
 
 impl<const CEILING: Priority> NestingLock for CeilingLock<CEILING> {
@@ -482,6 +514,170 @@ impl<'key, const CEILING: Priority> CeilingLockKey<'key, CEILING> {
     #[inline(always)]
     pub unsafe fn new() -> Self {
         CeilingLockKey {
+            _private: PhantomData,
+        }
+    }
+}
+
+/// CORE-typed wrapper over [`CeilingLock<CEILING>`].
+/// `CoreCeilingLock::<CEILING, CORE>::new()` constructs a
+/// `CeilingLock::new(CORE)`; lock operations delegate to the inner.
+/// The wrapper adds the static [`CoreToken<CORE>`] wrong-core check at
+/// the API entry, so the inner's runtime core comparison is skipped
+/// via `lock_unchecked`.
+#[repr(transparent)]
+pub struct CoreCeilingLock<const CEILING: Priority, const CORE: CoreId = { CoreId::DEFAULT }> {
+    inner: CeilingLock<CEILING>,
+}
+
+impl<const CEILING: Priority, const CORE: CoreId> CoreCeilingLock<CEILING, CORE> {
+    pub const fn new() -> Self {
+        Self {
+            inner: CeilingLock::new(CORE),
+        }
+    }
+
+    pub fn lock(self: Pin<&Self>) -> CoreCeilingLockGuard<'_, CEILING, CORE> {
+        let _core = CoreToken::<CORE>::current();
+        // SAFETY: `CoreToken::<CORE>::current()` verified
+        // `CoreId::current() == CORE`, and `self.inner.raw.core == CORE`
+        // by construction (`Self::new()` reflects CORE into the inner).
+        let inner = unsafe { self.map_unchecked(|s| &s.inner) };
+        let inner_guard = unsafe { inner.lock_unchecked() };
+        CoreCeilingLockGuard { inner: inner_guard }
+    }
+
+    pub unsafe fn unlock(self: Pin<&Self>) {
+        let inner = unsafe { self.map_unchecked(|s| &s.inner) };
+        unsafe {
+            inner.unlock();
+        }
+    }
+
+    #[inline(always)]
+    pub fn with<R>(f: impl FnOnce(CoreCeilingLockKey<'_, CEILING, CORE>) -> R) -> R {
+        Self::with_core(CoreToken::<CORE>::current(), f)
+    }
+
+    #[inline(always)]
+    pub fn try_with<R>(
+        f: impl FnOnce(CoreCeilingLockKey<'_, CEILING, CORE>) -> R,
+    ) -> Result<R, TryLockError> {
+        Self::try_with_core(CoreToken::<CORE>::current(), f)
+    }
+
+    /// Like [`with`](Self::with) but the caller passes in a
+    /// [`CoreToken<CORE>`] they already hold instead of re-acquiring
+    /// one. Saves the wrong-core check at the call site.
+    #[inline(always)]
+    pub fn with_core<R>(
+        _core: CoreToken<'_, CORE>,
+        f: impl FnOnce(CoreCeilingLockKey<'_, CEILING, CORE>) -> R,
+    ) -> R {
+        let restore_state = unsafe { RawCeilingLock::acquire_nesting_lock(CEILING) };
+        let key = unsafe { CoreCeilingLockKey::new() };
+
+        let result = f(key);
+
+        unsafe { RawCeilingLock::release_nesting_lock(restore_state) };
+        result
+    }
+
+    /// Like [`try_with`](Self::try_with) but the caller passes in a
+    /// [`CoreToken<CORE>`] they already hold.
+    #[inline(always)]
+    pub fn try_with_core<R>(
+        core: CoreToken<'_, CORE>,
+        f: impl FnOnce(CoreCeilingLockKey<'_, CEILING, CORE>) -> R,
+    ) -> Result<R, TryLockError> {
+        Ok(Self::with_core(core, f))
+    }
+}
+
+impl<const CEILING: Priority, const CORE: CoreId> Default for CoreCeilingLock<CEILING, CORE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct CoreCeilingLockGuard<
+    'lock,
+    const CEILING: Priority,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> {
+    // Holds the bare guard directly; Drop runs through it for the
+    // actual release. The const `CORE` parameter is a type-level
+    // witness that the guard came from a CORE-typed entry point.
+    inner: CeilingLockGuard<'lock, CEILING>,
+}
+
+impl<'lock, const CEILING: Priority, const CORE: CoreId> Unlock
+    for CoreCeilingLockGuard<'lock, CEILING, CORE>
+{
+    unsafe fn unlock(&mut self) {
+        unsafe {
+            self.inner.unlock();
+        }
+    }
+
+    fn relock(&mut self) {
+        self.inner.relock();
+    }
+}
+
+impl<const CEILING: Priority, const CORE: CoreId> LockOps for CoreCeilingLock<CEILING, CORE> {
+    type Guard<'guard> = CoreCeilingLockGuard<'guard, CEILING, CORE>;
+
+    fn lock(&self) -> Self::Guard<'_> {
+        let this = unsafe { Pin::new_unchecked(self) };
+        this.lock()
+    }
+
+    fn try_lock(&self) -> TryLockResult<Self::Guard<'_>> {
+        Ok(self.lock())
+    }
+}
+
+impl<const CEILING: Priority, const CORE: CoreId> ScopedLock for CoreCeilingLock<CEILING, CORE> {
+    const DEFAULT: Self = Self::new();
+}
+
+impl<const CEILING: Priority, const CORE: CoreId> NestingLock for CoreCeilingLock<CEILING, CORE> {
+    type Key<'guard> = CoreCeilingLockKey<'guard, CEILING, CORE>;
+
+    fn with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> R {
+        Self::with(f)
+    }
+
+    fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
+        Ok(Self::with(f))
+    }
+
+    unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
+        unsafe { CoreCeilingLockKey::new() }
+    }
+
+    fn required_ceiling() -> Option<i16> {
+        Some(CEILING.into_any())
+    }
+}
+
+unsafe impl<const CEILING: Priority, const CORE: CoreId> Send for CoreCeilingLock<CEILING, CORE> {}
+unsafe impl<const CEILING: Priority, const CORE: CoreId> Sync for CoreCeilingLock<CEILING, CORE> {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CoreCeilingLockKey<
+    'lock,
+    const CEILING: Priority,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> {
+    _private: PhantomData<&'lock ()>,
+}
+
+impl<'key, const CEILING: Priority, const CORE: CoreId> CoreCeilingLockKey<'key, CEILING, CORE> {
+    #[inline(always)]
+    pub unsafe fn new() -> Self {
+        CoreCeilingLockKey {
             _private: PhantomData,
         }
     }

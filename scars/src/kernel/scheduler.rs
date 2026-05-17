@@ -26,8 +26,8 @@ use crate::sync::atomic::Ordering;
 use crate::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
 use crate::sync::preempt_lock::is_preempt_allowed;
 use crate::sync::{
-    InterruptLock, PreemptLock, RawCeilingLock, interrupt_lock::InterruptLockKey,
-    preempt_lock::PreemptLockKey,
+    CoreInterruptLock, CorePreemptLock, PreemptLock, PreemptLockKey, RawCeilingLock,
+    interrupt_lock::CoreInterruptLockKey, preempt_lock::CorePreemptLockKey,
 };
 use crate::thread::{
     IDLE_THREAD_ID, INVALID_THREAD_ID, RawThread, Thread, ThreadExecutionState, ThreadInfo,

@@ -40,8 +40,7 @@ use crate::kernel::waiter::{
 };
 use crate::priority::Priority;
 use crate::sync::atomic::{AtomicPtr, Ordering};
-use crate::sync::interrupt_lock::InterruptLock;
-use crate::sync::preempt_lock::{PreemptLock, PreemptLockKey};
+use crate::sync::{InterruptLock, PreemptLock, PreemptLockKey};
 use crate::time::Instant;
 use core::cell::Cell;
 use core::marker::PhantomData;
