@@ -1,5 +1,6 @@
 use super::{builder::EventHandlerBuilder, raw::RawEventHandler};
 
+use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -12,13 +13,17 @@ impl<F: FnMut() + Send + 'static> EventHandlerFn for F {}
 /// Event handler and closure container
 ///
 /// Event handlers are software interrupts
-pub struct EventHandler<const PRIO: Priority, F: EventHandlerFn> {
+pub struct EventHandler<
+    const PRIO: Priority,
+    F: EventHandlerFn,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> {
     handler: StaticCell<RawEventHandler>,
     closure: UnsafeCell<MaybeUninit<F>>,
 }
 
-impl<const PRIO: Priority, F: EventHandlerFn> EventHandler<PRIO, F> {
-    pub const fn new() -> EventHandler<PRIO, F> {
+impl<const PRIO: Priority, F: EventHandlerFn, const CORE: CoreId> EventHandler<PRIO, F, CORE> {
+    pub const fn new() -> EventHandler<PRIO, F, CORE> {
         assert!(
             PRIO.is_interrupt(),
             "Event handler priority must be an interrupt priority"
@@ -29,8 +34,8 @@ impl<const PRIO: Priority, F: EventHandlerFn> EventHandler<PRIO, F> {
         }
     }
 
-    pub fn init(&'static self) -> EventHandlerBuilder<PRIO, F> {
-        let handler = self.handler.init_with(|| RawEventHandler::new(PRIO));
+    pub fn init(&'static self) -> EventHandlerBuilder<PRIO, F, CORE> {
+        let handler = self.handler.init_with(|| RawEventHandler::new(PRIO, CORE));
         let closure = unsafe { &mut *self.closure.get() };
         EventHandlerBuilder::new(handler, closure)
     }
@@ -46,4 +51,7 @@ impl<const PRIO: Priority, F: EventHandlerFn> EventHandler<PRIO, F> {
     }
 }
 
-unsafe impl<const PRIO: Priority, F: EventHandlerFn> Sync for EventHandler<PRIO, F> {}
+unsafe impl<const PRIO: Priority, F: EventHandlerFn, const CORE: CoreId> Sync
+    for EventHandler<PRIO, F, CORE>
+{
+}

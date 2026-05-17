@@ -3,12 +3,13 @@ use super::executor::{Executor, ExecutorHandle, RawExecutor};
 use super::raw_task::{RawTask, TaskHandle};
 use crate::Priority;
 use crate::events::{EXECUTOR_WAKEUP_EVENT, Events, raw::RawEventHandler, sender::EventReceiver};
+use crate::kernel::hal::CoreId;
 use crate::kernel::scheduler::EventTimer;
 use crate::local::{
     LocalCell, LocalStorage, Publish, PublishCtx, PublishError, SharedStorage,
     SharedStorageProvider,
 };
-use crate::sync::interrupt_lock::InterruptLock;
+use crate::sync::interrupt_lock::CoreInterruptLock;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use static_cell::StaticCell;
@@ -24,10 +25,10 @@ pub struct RawEventHandlerExecutor {
 }
 
 impl RawEventHandlerExecutor {
-    pub const fn new(priority: Priority) -> Self {
+    pub const fn new(priority: Priority, core: CoreId) -> Self {
         Self {
             raw: RawExecutor::new(),
-            event_handler: RawEventHandler::new(priority),
+            event_handler: RawEventHandler::new(priority, core),
             event_timer: EventTimer::new(),
             wakeup_event: (1 << 31),
             handle_cell: LocalCell::new(),
@@ -50,11 +51,11 @@ impl RawEventHandlerExecutor {
     }
 
     /// Attach executor handler
-    pub unsafe fn attach(
+    pub unsafe fn attach<const CORE: CoreId>(
         &mut self,
         handler_fn: fn(*mut ()),
         arg_ptr: *mut (),
-        key: crate::sync::interrupt_lock::InterruptLockKey<'_>,
+        key: crate::sync::interrupt_lock::CoreInterruptLockKey<'_, CORE>,
     ) {
         unsafe { self.event_handler.attach(handler_fn, arg_ptr, key) };
     }
@@ -125,13 +126,13 @@ impl Publish for RawEventHandlerExecutor {
 ///
 /// An executor that runs at interrupt priority and can be triggered by events.
 /// The executor implements its own handler internally to poll async tasks.
-pub struct EventHandlerExecutor<const PRIO: Priority> {
+pub struct EventHandlerExecutor<const PRIO: Priority, const CORE: CoreId = { CoreId::DEFAULT }> {
     raw: StaticCell<RawEventHandlerExecutor>,
 }
 
-impl<const PRIO: Priority> EventHandlerExecutor<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> EventHandlerExecutor<PRIO, CORE> {
     /// Create a new event handler executor
-    pub const fn new() -> EventHandlerExecutor<PRIO> {
+    pub const fn new() -> EventHandlerExecutor<PRIO, CORE> {
         assert!(
             PRIO.is_interrupt(),
             "Event handler executor priority must be an interrupt priority"
@@ -142,20 +143,22 @@ impl<const PRIO: Priority> EventHandlerExecutor<PRIO> {
     }
 
     /// Initialize the event handler executor and return a builder
-    pub fn init(&'static self) -> EventHandlerExecutorBuilder<PRIO> {
-        let raw = self.raw.init_with(|| RawEventHandlerExecutor::new(PRIO));
+    pub fn init(&'static self) -> EventHandlerExecutorBuilder<PRIO, CORE> {
+        let raw = self
+            .raw
+            .init_with(|| RawEventHandlerExecutor::new(PRIO, CORE));
         EventHandlerExecutorBuilder::new(raw)
     }
 }
 
-unsafe impl<const PRIO: Priority> Sync for EventHandlerExecutor<PRIO> {}
+unsafe impl<const PRIO: Priority, const CORE: CoreId> Sync for EventHandlerExecutor<PRIO, CORE> {}
 
 /// Builder for EventHandlerExecutor configuration
-pub struct EventHandlerExecutorBuilder<const PRIO: Priority> {
+pub struct EventHandlerExecutorBuilder<const PRIO: Priority, const CORE: CoreId = { CoreId::DEFAULT }> {
     raw: &'static mut RawEventHandlerExecutor,
 }
 
-impl<const PRIO: Priority> EventHandlerExecutorBuilder<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> EventHandlerExecutorBuilder<PRIO, CORE> {
     pub(crate) fn new(raw: &'static mut RawEventHandlerExecutor) -> Self {
         Self { raw }
     }
@@ -190,10 +193,10 @@ impl<const PRIO: Priority> EventHandlerExecutorBuilder<PRIO> {
     }
 
     /// Finalize the builder and return a handle to the executor
-    pub fn build(self) -> EventHandlerExecutorHandle<PRIO> {
+    pub fn build(self) -> EventHandlerExecutorHandle<PRIO, CORE> {
         // Attach the internal executor poll handler
         let raw_ptr = self.raw as *const RawEventHandlerExecutor as *mut ();
-        InterruptLock::with(|key| unsafe {
+        CoreInterruptLock::<CORE>::with(|key| unsafe {
             self.raw
                 .attach(RawEventHandlerExecutor::executor_poll_handler, raw_ptr, key)
         });
@@ -223,11 +226,11 @@ impl<const PRIO: Priority> EventHandlerExecutorBuilder<PRIO> {
 /// Initialized event handler executor handle
 ///
 /// Uniquely owned reference to an event handler executor
-pub struct EventHandlerExecutorHandle<const PRIO: Priority> {
+pub struct EventHandlerExecutorHandle<const PRIO: Priority, const CORE: CoreId = { CoreId::DEFAULT }> {
     raw: NonNull<RawEventHandlerExecutor>,
 }
 
-impl<const PRIO: Priority> EventHandlerExecutorHandle<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> EventHandlerExecutorHandle<PRIO, CORE> {
     /// Get a static reference to the raw executor
     ///
     /// # Safety
@@ -288,9 +291,12 @@ impl<const PRIO: Priority> EventHandlerExecutorHandle<PRIO> {
     }
 }
 
-impl<const PRIO: Priority> SharedStorageProvider<PRIO> for EventHandlerExecutorHandle<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> SharedStorageProvider<PRIO>
+    for EventHandlerExecutorHandle<PRIO, CORE>
+{
     fn shared_storage(&self) -> SharedStorage<PRIO> {
-        // SAFETY: executor runs at PRIO; sharers run at the same priority.
+        // SAFETY: executor runs at PRIO on CORE; sharers run at the
+        // same priority on the same core.
         unsafe { SharedStorage::from_head(self.raw().local_storage().head()) }
     }
 }

@@ -9,21 +9,28 @@ use super::{
     sender::{EventReceiver, EventSender},
 };
 use crate::events::Events;
+use crate::kernel::hal::CoreId;
 use crate::local::{LocalStorage, SharedStorage, SharedStorageProvider};
 use crate::priority::Priority;
-use crate::sync::interrupt_lock::InterruptLock;
+use crate::sync::interrupt_lock::CoreInterruptLock;
 use crate::task::{ExecutorHandle, JoinHandle, TaskHandle};
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
 /// Event handler builder for configuration before attachment
-pub struct EventHandlerBuilder<const PRIO: Priority, F: EventHandlerFn> {
+pub struct EventHandlerBuilder<
+    const PRIO: Priority,
+    F: EventHandlerFn,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> {
     handler: &'static mut RawEventHandler,
     closure: &'static mut MaybeUninit<F>,
 }
 
-impl<const PRIO: Priority, F: EventHandlerFn> EventHandlerBuilder<PRIO, F> {
+impl<const PRIO: Priority, F: EventHandlerFn, const CORE: CoreId>
+    EventHandlerBuilder<PRIO, F, CORE>
+{
     pub(crate) fn new(
         handler: &'static mut RawEventHandler,
         closure: &'static mut MaybeUninit<F>,
@@ -43,12 +50,15 @@ impl<const PRIO: Priority, F: EventHandlerFn> EventHandlerBuilder<PRIO, F> {
     }
 
     /// Attach a closure to this event handler
-    pub fn attach(self, closure: F) -> EventHandlerHandle<PRIO> {
+    pub fn attach(self, closure: F) -> EventHandlerHandle<PRIO, CORE> {
         let closure_ref = self.closure.write(closure);
         let closure_ptr = closure_ref as *const F as *mut _;
-        InterruptLock::with(|key| unsafe {
-            self.handler
-                .attach(EventHandler::<PRIO, F>::closure_wrapper, closure_ptr, key)
+        CoreInterruptLock::<CORE>::with(|key| unsafe {
+            self.handler.attach(
+                EventHandler::<PRIO, F, CORE>::closure_wrapper,
+                closure_ptr,
+                key,
+            )
         });
 
         // SAFETY: self.handler is a valid &'static mut from StaticCell
@@ -78,11 +88,11 @@ impl<const PRIO: Priority, F: EventHandlerFn> EventHandlerBuilder<PRIO, F> {
 /// Initialized event handler after it has been built
 ///
 /// Uniquely owned reference to an event handler
-pub struct EventHandlerHandle<const PRIO: Priority> {
+pub struct EventHandlerHandle<const PRIO: Priority, const CORE: CoreId = { CoreId::DEFAULT }> {
     handler: NonNull<RawEventHandler>,
 }
 
-impl<const PRIO: Priority> EventHandlerHandle<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> EventHandlerHandle<PRIO, CORE> {
     /// Get a static reference to the raw event handler
     ///
     /// # Safety
@@ -144,12 +154,15 @@ impl<const PRIO: Priority> EventHandlerHandle<PRIO> {
     }
 }
 
-unsafe impl<const PRIO: Priority> Send for EventHandlerHandle<PRIO> {}
-unsafe impl<const PRIO: Priority> Sync for EventHandlerHandle<PRIO> {}
+unsafe impl<const PRIO: Priority, const CORE: CoreId> Send for EventHandlerHandle<PRIO, CORE> {}
+unsafe impl<const PRIO: Priority, const CORE: CoreId> Sync for EventHandlerHandle<PRIO, CORE> {}
 
-impl<const PRIO: Priority> SharedStorageProvider<PRIO> for EventHandlerHandle<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> SharedStorageProvider<PRIO>
+    for EventHandlerHandle<PRIO, CORE>
+{
     fn shared_storage(&self) -> SharedStorage<PRIO> {
-        // SAFETY: handler runs at PRIO; sharers run at the same priority.
+        // SAFETY: handler runs at PRIO on CORE; sharers run at the
+        // same priority on the same core.
         unsafe { SharedStorage::from_head(self.raw().local_storage.head()) }
     }
 }

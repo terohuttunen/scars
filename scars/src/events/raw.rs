@@ -4,6 +4,7 @@ use super::pending::PendingEvents;
 use super::sender::EventReceiver;
 use crate::events::Events;
 use crate::kernel::atomic_queue::AtomicNode;
+use crate::kernel::hal::CoreId;
 use crate::kernel::scheduler::Scheduler;
 use crate::kernel::scheduler::event_queue::PendingNotifyTag;
 use crate::local::LocalStorage;
@@ -18,6 +19,10 @@ use core::pin::Pin;
 pub struct RawEventHandler {
     priority: Priority,
 
+    /// Core this handler is bound to. Set at construction from the
+    /// wrapping `EventHandler<PRIO, F, CORE>`.
+    pub core: CoreId,
+
     /// The handler function to call when an event is received
     handler_fn: fn(*mut ()),
     arg_ptr: *mut (),
@@ -31,9 +36,10 @@ pub struct RawEventHandler {
 }
 
 impl RawEventHandler {
-    pub const fn new(priority: Priority) -> RawEventHandler {
+    pub const fn new(priority: Priority, core: CoreId) -> RawEventHandler {
         RawEventHandler {
             priority,
+            core,
             handler_fn: |_| {},
             arg_ptr: core::ptr::null_mut(),
             pending_event_processing_node: AtomicNode::new(),
@@ -106,11 +112,11 @@ impl RawEventHandler {
     }
 
     /// Attach event handler
-    pub unsafe fn attach(
+    pub unsafe fn attach<const CORE: CoreId>(
         &mut self,
         handler_fn: fn(*mut ()),
         arg_ptr: *mut (),
-        _key: crate::sync::interrupt_lock::InterruptLockKey<'_>,
+        _key: crate::sync::interrupt_lock::CoreInterruptLockKey<'_, CORE>,
     ) {
         self.handler_fn = handler_fn;
         self.arg_ptr = arg_ptr;
