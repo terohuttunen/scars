@@ -205,16 +205,20 @@ impl LocalStorage {
     }
 }
 
-/// Handle to a shared local-storage namespace at priority `PRIO`.
+/// Handle to a shared local-storage namespace at priority `PRIO` on
+/// core `CORE`. Both bounds matter: storage sharers must run
+/// mutually exclusively, which is only the case for handlers at the
+/// same priority *and* pinned to the same core.
 #[derive(Copy, Clone)]
-pub struct SharedStorage<const PRIO: Priority> {
+pub struct SharedStorage<const PRIO: Priority, const CORE: crate::kernel::hal::CoreId> {
     head: &'static StorageListHead,
 }
 
-impl<const PRIO: Priority> SharedStorage<PRIO> {
+impl<const PRIO: Priority, const CORE: crate::kernel::hal::CoreId> SharedStorage<PRIO, CORE> {
     /// # Safety
     /// Caller asserts that all sharers of `head` run mutually
-    /// exclusively at priority `PRIO` (no preemption between them).
+    /// exclusively — same priority `PRIO` and pinned to the same
+    /// core `CORE`.
     pub(crate) const unsafe fn from_head(head: &'static StorageListHead) -> Self {
         Self { head }
     }
@@ -224,9 +228,9 @@ impl<const PRIO: Priority> SharedStorage<PRIO> {
     }
 }
 
-/// Source of a [`SharedStorage`] for same-priority storage sharing.
-pub trait SharedStorageProvider<const PRIO: Priority> {
-    fn shared_storage(&self) -> SharedStorage<PRIO>;
+/// Source of a [`SharedStorage`] for same-priority, same-core storage sharing.
+pub trait SharedStorageProvider<const PRIO: Priority, const CORE: crate::kernel::hal::CoreId> {
+    fn shared_storage(&self) -> SharedStorage<PRIO, CORE>;
 }
 
 #[cfg(test)]

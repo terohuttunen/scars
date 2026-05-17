@@ -63,12 +63,12 @@ impl<const PRIO: Priority, F: InterruptHandlerFn, const CORE: CoreId>
         self
     }
 
-    pub fn set_shared_storage<S: SharedStorageProvider<PRIO>>(self, provider: &S) {
+    pub fn set_shared_storage<S: SharedStorageProvider<PRIO, CORE>>(self, provider: &S) {
         let head = provider.shared_storage().head();
         self.handler.local_storage.share_with(head);
     }
 
-    pub fn with_shared_storage<S: SharedStorageProvider<PRIO>>(self, provider: &S) -> Self {
+    pub fn with_shared_storage<S: SharedStorageProvider<PRIO, CORE>>(self, provider: &S) -> Self {
         let head = provider.shared_storage().head();
         self.handler.local_storage.share_with(head);
         self
@@ -174,10 +174,10 @@ impl<const PRIO: Priority, const CORE: CoreId> InterruptHandlerHandle<PRIO, CORE
     }
 }
 
-impl<const PRIO: Priority, const CORE: CoreId> SharedStorageProvider<PRIO>
+impl<const PRIO: Priority, const CORE: CoreId> SharedStorageProvider<PRIO, CORE>
     for InterruptHandlerHandle<PRIO, CORE>
 {
-    fn shared_storage(&self) -> SharedStorage<PRIO> {
+    fn shared_storage(&self) -> SharedStorage<PRIO, CORE> {
         // SAFETY: handler runs at PRIO on CORE; sharers run at the
         // same priority on the same core.
         unsafe { SharedStorage::from_head(self.raw().local_storage.head()) }
