@@ -1,7 +1,7 @@
 use crate::kernel::hal;
 use crate::priority::{AnyPriority, Priority};
 use crate::sync::atomic::Ordering;
-use crate::sync::{InterruptLock, NestingLock, interrupt_lock::InterruptLockKey};
+use crate::sync::{CoreInterruptLock, NestingLock, interrupt_lock::CoreInterruptLockKey};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
 use crate::{
@@ -107,14 +107,44 @@ pub(crate) fn start_thread(thread: &mut RawThread) {
     let _ = syscall(SYSCALL_ID_START_THREAD, thread as *mut _ as usize, 0, 0);
 }
 
-static SYSCALL_INTERRUPT_HANDLER: SyncUnsafeCell<RawInterruptHandler> =
-    SyncUnsafeCell::new(RawInterruptHandler::new(Priority::interrupt(0)));
+/// Per-core syscall/service-call interrupt context. Each core runs
+/// its own syscall handler under its own preempt and ceiling state,
+/// so the `RawInterruptHandler`'s non-`Sync` interior cells
+/// (`owned_locks`, `current_event_handler`, `closure_ptr`) must not
+/// be shared between cores. One handler per core; each carries its
+/// own `core` field for the debug-asserts that compare key.core to
+/// handler.core.
+static SYSCALL_INTERRUPT_HANDLERS: [SyncUnsafeCell<RawInterruptHandler>;
+    crate::kernel::hal::NUM_CORES] = {
+    let arr = [const {
+        SyncUnsafeCell::new(RawInterruptHandler::new(
+            Priority::interrupt(0),
+            crate::kernel::hal::CoreId::DEFAULT,
+        ))
+    }; crate::kernel::hal::NUM_CORES];
+    let mut i = 0;
+    while i < crate::kernel::hal::NUM_CORES {
+        // SAFETY: in this const initializer `arr` is exclusive — no
+        // other references exist. We patch each handler's `core` from
+        // the placeholder `DEFAULT` to its real per-core id.
+        unsafe {
+            (*arr[i].get()).core = crate::kernel::hal::CoreId::from_u8_unchecked(i as u8);
+        }
+        i += 1;
+    }
+    arr
+};
+
+#[inline]
+fn local_syscall_handler() -> *mut RawInterruptHandler {
+    SYSCALL_INTERRUPT_HANDLERS[crate::kernel::hal::CoreId::current().as_usize()].get()
+}
 
 #[unsafe(no_mangle)]
 unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
     let rval = 0;
     unsafe {
-        interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {
+        interrupt_context(local_syscall_handler(), || {
             match id {
                 SYSCALL_ID_YIELD => {
                     Scheduler::yield_current_thread_isr();
@@ -164,7 +194,7 @@ pub(crate) unsafe fn _kernel_service_call_handler() {
         // context-aware functions, must be done within an interrupt context. Service call
         // is like an asynchronous syscall without any parameters or a return value. It
         // shares the same interrupt handler as syscall.
-        interrupt_context(SYSCALL_INTERRUPT_HANDLER.get(), || {
+        interrupt_context(local_syscall_handler(), || {
             Scheduler::process_all_pending_events();
             Scheduler::execute_pending_reschedule();
         });

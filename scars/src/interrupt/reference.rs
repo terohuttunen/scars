@@ -4,6 +4,7 @@
 //! and managing their lifecycle.
 
 use super::{InterruptNumber, RawInterruptHandler};
+use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
 use crate::sync::interrupt_lock::InterruptLock;
 
@@ -20,10 +21,22 @@ impl InterruptRef {
         InterruptRef(NonNull::from(handler))
     }
 
-    /// Create an InterruptRef from a raw pointer (unsafe)
+    /// Create an InterruptRef from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point at a fully-constructed `RawInterruptHandler`
+    /// living for `'static` — in particular its `core` field must be
+    /// set, since [`Self::enable`] / [`Self::disable`] read it for the
+    /// wrong-core check.
     #[allow(dead_code)]
     pub(crate) unsafe fn from_ptr(ptr: *const RawInterruptHandler) -> InterruptRef {
         InterruptRef(unsafe { NonNull::new_unchecked(ptr as *mut RawInterruptHandler) })
+    }
+
+    /// Core this interrupt handler is bound to.
+    pub fn core(&self) -> CoreId {
+        unsafe { self.as_ref() }.core
     }
 
     /// Get the base priority of this interrupt
@@ -36,15 +49,34 @@ impl InterruptRef {
         unsafe { self.as_ref() }.interrupt_number()
     }
 
-    /// Enable this interrupt
+    /// Whether the underlying handler has been attached (its vector
+    /// slot is non-null). Trips `WrongCore` if called from a different
+    /// core than the handler is bound to.
+    pub fn is_attached(&self) -> bool {
+        let handler = unsafe { self.as_ref() };
+        InterruptLock::with_core(handler.core, |key| handler.is_attached(key))
+    }
+
+    /// Enable this interrupt. Trips `WrongCore` if called from a
+    /// different core than the handler is bound to — NVIC writes are
+    /// local-core only.
     pub fn enable(&self) {
-        InterruptLock::with(|key| {
-            let handler = unsafe { self.as_ref() };
+        let handler = unsafe { self.as_ref() };
+        InterruptLock::with_core(handler.core, |key| {
             if !handler.is_attached(key) {
                 panic!("Attempt to enable interrupt that has not been attached");
             }
             handler.enable_interrupt(key);
-        })
+        });
+    }
+
+    /// Disable this interrupt. Trips `WrongCore` if called from a
+    /// different core than the handler is bound to.
+    pub fn disable(&self) {
+        let handler = unsafe { self.as_ref() };
+        InterruptLock::with_core(handler.core, |key| {
+            handler.disable_interrupt(key);
+        });
     }
 
     /// Get a reference to the underlying RawInterruptHandler

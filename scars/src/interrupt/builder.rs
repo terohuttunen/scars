@@ -4,20 +4,27 @@
 //! interrupt handlers
 
 use super::{InterruptHandler, InterruptHandlerFn, InterruptNumber, RawInterruptHandler};
+use crate::kernel::hal::CoreId;
 use crate::local::{ConstLocalCell, LocalCell, LocalStorage, SharedStorage, SharedStorageProvider};
 use crate::priority::Priority;
-use crate::sync::interrupt_lock::InterruptLock;
+use crate::sync::interrupt_lock::CoreInterruptLock;
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
 /// Interrupt builder for configuration before attachment
-pub struct InterruptBuilder<const PRIO: Priority, F: InterruptHandlerFn> {
+pub struct InterruptBuilder<
+    const PRIO: Priority,
+    F: InterruptHandlerFn,
+    const CORE: CoreId = { CoreId::DEFAULT },
+> {
     handler: &'static mut RawInterruptHandler,
     closure: &'static mut MaybeUninit<F>,
 }
 
-impl<const PRIO: Priority, F: InterruptHandlerFn> InterruptBuilder<PRIO, F> {
+impl<const PRIO: Priority, F: InterruptHandlerFn, const CORE: CoreId>
+    InterruptBuilder<PRIO, F, CORE>
+{
     /// Create a new InterruptBuilder
     pub(crate) fn new(
         handler: &'static mut RawInterruptHandler,
@@ -68,12 +75,12 @@ impl<const PRIO: Priority, F: InterruptHandlerFn> InterruptBuilder<PRIO, F> {
     }
 
     /// Attach a closure to this interrupt handler
-    pub fn attach(self, closure: F) -> InterruptHandlerHandle<PRIO> {
+    pub fn attach(self, closure: F) -> InterruptHandlerHandle<PRIO, CORE> {
         let closure_ref = self.closure.write(closure);
         let closure_ptr = closure_ref as *const F as *const ();
-        InterruptLock::with(|key| unsafe {
+        CoreInterruptLock::<CORE>::with(|key| unsafe {
             self.handler.attach(
-                InterruptHandler::<PRIO, F>::closure_wrapper as *const (),
+                InterruptHandler::<PRIO, F, CORE>::closure_wrapper as *const (),
                 closure_ptr,
                 key,
             )
@@ -98,11 +105,11 @@ impl<const PRIO: Priority, F: InterruptHandlerFn> InterruptBuilder<PRIO, F> {
 /// Initialized interrupt handler after attachment
 ///
 /// Uniquely owned reference to an interrupt handler
-pub struct InterruptHandlerHandle<const PRIO: Priority> {
+pub struct InterruptHandlerHandle<const PRIO: Priority, const CORE: CoreId = { CoreId::DEFAULT }> {
     handler: NonNull<RawInterruptHandler>,
 }
 
-impl<const PRIO: Priority> InterruptHandlerHandle<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> InterruptHandlerHandle<PRIO, CORE> {
     /// Get a static reference to the raw interrupt handler
     ///
     /// # Safety
@@ -130,15 +137,30 @@ impl<const PRIO: Priority> InterruptHandlerHandle<PRIO> {
         &self.raw().local_storage
     }
 
-    /// Enable the interrupt and return a reference
+    /// Enable the interrupt at the hardware level.
     pub fn enable(&self) {
         let handler = self.raw();
-        InterruptLock::with(|key| {
-            if !handler.is_attached(key) {
+        CoreInterruptLock::<CORE>::with(|key| {
+            if !handler.is_attached(key.erase()) {
                 panic!("Attempt to enable interrupt that has not been attached");
             }
-            handler.enable_interrupt(key);
+            handler.enable_interrupt(key.erase());
         })
+    }
+
+    /// Disable the interrupt at the hardware level.
+    pub fn disable(&self) {
+        let handler = self.raw();
+        CoreInterruptLock::<CORE>::with(|key| {
+            handler.disable_interrupt(key.erase());
+        })
+    }
+
+    /// Type-erase to an [`InterruptRef`]. The resulting ref reads its
+    /// core from the underlying [`RawInterruptHandler`], which matches
+    /// `CORE`.
+    pub fn as_interrupt_ref(&self) -> super::InterruptRef {
+        super::InterruptRef::new(self.raw())
     }
 
     /// Get the interrupt number
@@ -152,9 +174,12 @@ impl<const PRIO: Priority> InterruptHandlerHandle<PRIO> {
     }
 }
 
-impl<const PRIO: Priority> SharedStorageProvider<PRIO> for InterruptHandlerHandle<PRIO> {
+impl<const PRIO: Priority, const CORE: CoreId> SharedStorageProvider<PRIO>
+    for InterruptHandlerHandle<PRIO, CORE>
+{
     fn shared_storage(&self) -> SharedStorage<PRIO> {
-        // SAFETY: handler runs at PRIO; sharers run at the same priority.
+        // SAFETY: handler runs at PRIO on CORE; sharers run at the
+        // same priority on the same core.
         unsafe { SharedStorage::from_head(self.raw().local_storage.head()) }
     }
 }
