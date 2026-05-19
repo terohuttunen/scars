@@ -2,14 +2,10 @@
 pub mod nvic;
 
 use core::arch::{asm, naked_asm};
-use core::sync::atomic::AtomicPtr;
 use cortex_m::register::basepri;
 use cortex_m_rt::exception;
 use scars_fault::*;
 use scars_khal::*;
-
-#[unsafe(no_mangle)]
-pub static CURRENT_THREAD_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
 
 #[repr(C)]
 #[derive(Debug)]
@@ -142,7 +138,6 @@ pub struct CortexMContext {
 
 pub fn start_first_thread(idle_context: *mut Context) -> ! {
     unsafe {
-        CURRENT_THREAD_CONTEXT.store(idle_context, core::sync::atomic::Ordering::SeqCst);
         asm!(
             // Stash idle_context in r6 so the basepri load below can
             // reach the context after `ldmia` clobbers r0 with frame.r0.
@@ -204,10 +199,8 @@ pub fn on_exit(exit_code: i32) -> ! {
     }
 }
 
-pub fn on_fault(info: &FaultInfo) -> ! {
-    let plat = CortexMContext {
-        frame: CURRENT_THREAD_CONTEXT.load(core::sync::atomic::Ordering::SeqCst) as *const _,
-    };
+pub fn on_fault(info: &FaultInfo, frame: *const Context) -> ! {
+    let plat = CortexMContext { frame };
     let plat_node = FaultContextNode {
         frame: &plat,
         next: info.context,
@@ -301,6 +294,72 @@ macro_rules! impl_core_controller {
     // scars-khal-stm32f1, which can't use wfi for the RTT-streaming
     // reason documented on `on_idle_active`.
     ($struct_name:ident, on_idle = $on_idle:expr) => {
+        // Single-core current-thread-context slot. Multi-core KHALs
+        // (e.g. scars-khal-rp2350) must NOT use `impl_core_controller!`
+        // — they hand-write the trampolines below with their own
+        // CPUID-indexed asm.
+        //
+        // The slot is no_mangle so this crate's other naked-asm sites
+        // (e.g. TIM2 trampolines in scars-khal-stm32f4) can resolve it
+        // via `sym CURRENT_THREAD_CONTEXT` in `naked_asm!`. No
+        // Rust API outside the macro reads it.
+        #[unsafe(no_mangle)]
+        static CURRENT_THREAD_CONTEXT: ::core::sync::atomic::AtomicPtr<$crate::Context> =
+            ::core::sync::atomic::AtomicPtr::new(::core::ptr::null_mut());
+
+        /// SVC exception handler. `r0`–`r3` arrive holding the syscall
+        /// id + 3 args (the exception frame pushed them on PSP; they
+        /// remain in registers across SVC entry).
+        #[unsafe(naked)]
+        #[unsafe(export_name = "SVCall")]
+        #[unsafe(link_section = ".SVCall.user")]
+        pub unsafe extern "C" fn _scars_svcall() {
+            ::core::arch::naked_asm!(
+                "push   {{r4, r5, r6, lr}}",        // r5, r6 alignment padding
+                "ldr    r4, ={slot}",
+                "ldr    r4, [r4]",                  // r4 = old Context*
+                "bl     _kernel_syscall_handler",
+                "mrs    r1, psp",
+                "str    r0, [r1]",                  // write return value to PSP[0]
+                "ldr    r0, ={slot}",
+                "ldr    r1, [r0]",                  // r1 = new Context*
+                "mov    r0, r4",                    // r0 = old Context*
+                "pop    {{r4, r5, r6, lr}}",
+                "b      _switch_context",
+                slot = sym CURRENT_THREAD_CONTEXT,
+            );
+        }
+
+        #[unsafe(naked)]
+        #[unsafe(export_name = "PendSV")]
+        #[unsafe(link_section = ".PendSV.user")]
+        pub unsafe extern "C" fn _scars_pendsv() {
+            ::core::arch::naked_asm!(
+                "push   {{r4, r5, r6, lr}}",
+                "ldr    r4, ={slot}",
+                "ldr    r4, [r4]",                  // r4 = old Context*
+                "bl     _kernel_service_call_handler",
+                "ldr    r0, ={slot}",
+                "ldr    r1, [r0]",                  // r1 = new Context*
+                "mov    r0, r4",                    // r0 = old Context*
+                "pop    {{r4, r5, r6, lr}}",
+                "b      _switch_context",
+                slot = sym CURRENT_THREAD_CONTEXT,
+            );
+        }
+
+        #[unsafe(naked)]
+        #[unsafe(export_name = "DefaultHandler")]
+        #[unsafe(link_section = ".DefaultHandler.user")]
+        pub unsafe extern "C" fn _scars_default_handler() {
+            ::core::arch::naked_asm!(
+                "push   {{r4, lr}}",                // r4 alignment padding
+                "bl     _kernel_interrupt_handler",
+                "pop    {{r4, lr}}",
+                "bx     lr",
+            );
+        }
+
         impl ::scars_khal::CoreController for $struct_name {
             type StackAlignment = ::scars_khal::A8;
             type Context = $crate::Context;
@@ -320,6 +379,10 @@ macro_rules! impl_core_controller {
 
             #[inline(always)]
             fn start_first_thread(idle_context: *mut Self::Context) -> ! {
+                // Populate the slot before the arch asm hands off to
+                // the idle thread; once we're in asm any exception
+                // will load this pointer via the getter.
+                <Self as ::scars_khal::CoreController>::set_current_thread_context(idle_context);
                 $crate::start_first_thread(idle_context)
             }
 
@@ -335,7 +398,9 @@ macro_rules! impl_core_controller {
 
             #[inline(always)]
             fn on_fault(info: &::scars_khal::FaultInfo) -> ! {
-                $crate::on_fault(info)
+                let frame = CURRENT_THREAD_CONTEXT
+                    .load(::core::sync::atomic::Ordering::Relaxed) as *const _;
+                $crate::on_fault(info, frame)
             }
 
             #[inline(always)]
@@ -355,13 +420,16 @@ macro_rules! impl_core_controller {
 
             #[inline(always)]
             fn current_thread_context() -> *const Self::Context {
-                CURRENT_THREAD_CONTEXT.load(core::sync::atomic::Ordering::Relaxed)
+                CURRENT_THREAD_CONTEXT
+                    .load(::core::sync::atomic::Ordering::Relaxed) as *const _
             }
 
             #[inline(always)]
             fn set_current_thread_context(context: *const Self::Context) {
-                CURRENT_THREAD_CONTEXT
-                    .store(context as *mut _, core::sync::atomic::Ordering::Relaxed);
+                CURRENT_THREAD_CONTEXT.store(
+                    context as *mut _,
+                    ::core::sync::atomic::Ordering::Relaxed,
+                );
             }
 
             #[inline(always)]
@@ -375,30 +443,6 @@ macro_rules! impl_core_controller {
             }
         }
     };
-}
-
-/// SVC exception handler. The function signature is fictional —
-/// SVCall receives state through the exception frame on PSP, not via
-/// the C ABI — but a typed naked symbol gives LLVM the right metadata
-/// and lets cortex-m-rt's vector table pick it up.
-#[unsafe(naked)]
-#[unsafe(export_name = "SVCall")]
-#[unsafe(link_section = ".SVCall.user")]
-pub unsafe extern "C" fn svcall() {
-    naked_asm!(
-        "push   {{r0, lr}}",
-        "ldr    lr, =CURRENT_THREAD_CONTEXT",
-        "ldr    lr, [lr]",
-        "str    lr, [sp]",
-        "bl     _kernel_syscall_handler",
-        // Copy syscall return value in r0 to thread stack
-        "mrs    r1, psp",
-        "str    r0, [r1]",
-        "pop    {{r0, lr}}",
-        "ldr    r1, =CURRENT_THREAD_CONTEXT",
-        "ldr    r1, [r1]",
-        "b      _switch_context",
-    );
 }
 
 /// Context-switch primitive entered from `b _switch_context` at the
@@ -446,23 +490,6 @@ pub unsafe extern "C" fn _switch_context(_old: *mut Context, _new: *const Contex
     );
 }
 
-/// Common entry for any IRQ that doesn't have its own dedicated
-/// handler. Routes through `_kernel_interrupt_handler` which
-/// looks up the per-IRQ closure registered via `InterruptHandler`.
-#[unsafe(naked)]
-#[unsafe(export_name = "DefaultHandler")]
-#[unsafe(link_section = ".DefaultHandler.user")]
-pub unsafe extern "C" fn default_handler() {
-    naked_asm!(
-        "ldr    r0, =CURRENT_THREAD_CONTEXT",
-        "ldr    r0, [r0]",
-        "push   {{r0, lr}}",
-        "bl     _kernel_interrupt_handler",
-        "pop    {{r0, lr}}",
-        "bx     lr",
-    );
-}
-
 #[exception]
 unsafe fn HardFault(_frame: &::cortex_m_rt::ExceptionFrame) -> ! {
     loop {}
@@ -496,23 +523,4 @@ unsafe fn UsageFault() -> ! {
 #[exception]
 unsafe fn DebugMonitor() -> ! {
     loop {}
-}
-
-/// PendSV handler — the kernel's deferred-work / context-switch
-/// trampoline. Pended via `pend_service_call`; runs at the lowest
-/// hardware priority so all other ISRs finish first.
-#[unsafe(naked)]
-#[unsafe(export_name = "PendSV")]
-#[unsafe(link_section = ".PendSV.user")]
-pub unsafe extern "C" fn pendsv() {
-    naked_asm!(
-        "ldr    r0, =CURRENT_THREAD_CONTEXT",
-        "ldr    r0, [r0]",
-        "push   {{r0, lr}}",
-        "bl     _kernel_service_call_handler",
-        "pop    {{r0, lr}}",
-        "ldr    r1, =CURRENT_THREAD_CONTEXT",
-        "ldr    r1, [r1]",
-        "b      _switch_context",
-    );
 }

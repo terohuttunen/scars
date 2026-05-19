@@ -9,9 +9,7 @@ pub use defmt::println as printk;
 pub use defmt::println as printkln;
 use defmt_rtt as _;
 use portable_atomic::AtomicU64;
-use scars_arch_cortex_m::{
-    CURRENT_THREAD_CONTEXT, impl_core_controller, init_pendsv_priority, nvic,
-};
+use scars_arch_cortex_m::{impl_core_controller, init_pendsv_priority, nvic};
 use scars_khal::*;
 
 pub use stm32f1::*;
@@ -358,14 +356,22 @@ extern "C" fn _scars_stm32f1_tim2_irq() {
 #[unsafe(link_section = ".TIM2.user")]
 pub unsafe extern "C" fn tim2() {
     core::arch::naked_asm!(
-        "ldr    r0, =CURRENT_THREAD_CONTEXT",
-        "ldr    r0, [r0]",
-        "push   {{r0, lr}}",
+        // Inline the slot load instead of bl-ing into the macro-
+        // generated getter. The slot is the `CURRENT_THREAD_CONTEXT`
+        // static emitted by `impl_core_controller!` in this crate;
+        // `sym` resolves it to its linker name. r4 caches the old
+        // Context pointer across the handler (callee-saved by AAPCS);
+        // r5/r6 pad the push to a 4-register / 16-byte aligned shape.
+        "push   {{r4, r5, r6, lr}}",
+        "ldr    r4, ={slot}",
+        "ldr    r4, [r4]",
         "bl     _scars_stm32f1_tim2_irq",
-        "pop    {{r0, lr}}",
-        "ldr    r1, =CURRENT_THREAD_CONTEXT",
-        "ldr    r1, [r1]",
+        "ldr    r0, ={slot}",
+        "ldr    r1, [r0]",
+        "mov    r0, r4",
+        "pop    {{r4, r5, r6, lr}}",
         "b      _switch_context",
+        slot = sym crate::CURRENT_THREAD_CONTEXT,
     );
 }
 
