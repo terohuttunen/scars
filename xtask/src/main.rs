@@ -25,14 +25,24 @@ enum Cmd {
         board: BoardSel,
     },
     /// `cargo build` for one or all boards.
+    ///
+    /// With `--example NAME`, builds a specific example crate against
+    /// the board (does not run it). Useful for producing an ELF you
+    /// hand to external tools like `picotool`. `--example` requires
+    /// a specific `--board` (not `all`) and is mutually exclusive
+    /// with `--package`.
     Build {
         #[arg(long)]
         board: BoardSel,
         #[arg(long, default_value_t = true)]
         release: bool,
         /// Override the package built (default: the board's `package`).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "example")]
         package: Option<String>,
+        /// Build a specific example for this board. Produces the
+        /// example's ELF without invoking the board's runner.
+        #[arg(long)]
+        example: Option<String>,
     },
     /// `cargo test` for one or all boards. probe-rs boards skipped unless --include-hw.
     Test {
@@ -162,7 +172,38 @@ fn cmd_build(
     sel: BoardSel,
     release: bool,
     package: Option<String>,
+    example: Option<String>,
 ) -> Result<()> {
+    if let Some(example) = example {
+        // Example build: resolve via the same path as `run`, but stop
+        // at the link step. Pass only `board.features` (chip-* flags,
+        // same as `cmd_run`); kernel-only features like `bench-large`
+        // don't belong on example crates.
+        let board_name = match sel {
+            BoardSel::One(name) => name,
+            BoardSel::All => bail!("`--example` requires a specific `--board` (not `all`)"),
+        };
+        let board = load_board(root, &board_name)?;
+        let dir = resolve_example(root, &board, &example)?;
+        eprintln!(
+            "==> build {} :: {} ({})",
+            board.name,
+            example,
+            dir.display()
+        );
+        let manifest = dir.join("Cargo.toml");
+        cargo::run_cargo(
+            sh,
+            root,
+            &board,
+            "build",
+            CargoTarget::Manifest(&manifest),
+            release,
+            &[],
+            &board.features,
+        )?;
+        return Ok(());
+    }
     for b in boards_for(&sel, root)? {
         eprintln!("==> build {}", b.name);
         let pkg = package.clone().unwrap_or_else(|| b.package.clone());
@@ -374,7 +415,8 @@ fn main() -> Result<()> {
             board,
             release,
             package,
-        } => cmd_build(&sh, &root, board, release, package),
+            example,
+        } => cmd_build(&sh, &root, board, release, package, example),
         Cmd::Test {
             board,
             filter,

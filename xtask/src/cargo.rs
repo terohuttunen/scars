@@ -15,7 +15,22 @@ use xshell::{Shell, cmd};
 /// build CWD, not the workspace root).
 pub fn project_env(board: &Board, workspace_root: &Path) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    let triple_key = board.target.replace('-', "_").to_uppercase();
+    // Cargo's `CARGO_TARGET_<triple>_*` lookup uppercases the triple
+    // and replaces every non-alphanumeric byte with `_` — not just
+    // `-`. Targets with a `.` (e.g. `thumbv8m.main-none-eabihf`)
+    // silently miss if we only swap dashes, and the linker script /
+    // runner never apply.
+    let triple_key: String = board
+        .target
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
 
     if let Some(linker) = &board.linker {
         let mut flags: Vec<String> = Vec::new();
