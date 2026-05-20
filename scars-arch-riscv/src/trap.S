@@ -24,7 +24,7 @@ _start_first_thread:
 	lw 	    t0, (30 * 4)(t6)
 	li      t1, 0x1880  # mask for mpie (7) and mpp (11,12) bits
 	and     t0, t0, t1
-	csrrc   x0, mstatus, t1   
+	csrrc   x0, mstatus, t1
 	csrrs   x0, mstatus, t0
 
 	j		restore_callee
@@ -68,7 +68,7 @@ save_context_to_stack:
 	sw		x28, (12*4)(sp)
 	sw		x29, (13*4)(sp)
 	sw		x30, (14*4)(sp)
-	
+
 	# original value of t6 is in mscratch
 	csrr	t6, mscratch
 	sw 		x31, (15*4)(sp)
@@ -203,7 +203,7 @@ return_to_thread:
 	lw 	    t0, (30 * 4)(t6)
 	li      t1, 0x1880  # mask for mpie (7) and mpp (11,12) bits
 	and     t0, t0, t1
-	csrrc   x0, mstatus, t1   
+	csrrc   x0, mstatus, t1
 	csrrs   x0, mstatus, t0
 
 	mv 		a0, t6
@@ -243,7 +243,7 @@ restore_callee:
 	lw      x23, (20*4)(t6)
 	lw      x24, (21*4)(t6)
 	lw      x25, (22*4)(t6)
-	lw      x26, (23*4)(t6)	
+	lw      x26, (23*4)(t6)
 	lw      x27, (24*4)(t6)
 
 restore_caller:
@@ -269,4 +269,4 @@ restore_caller:
 	lw		x30, (27*4)(t6)
 	lw		x31, (28*4)(t6)  # x31 == t6
 
-	mret 
+	mret

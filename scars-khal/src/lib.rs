@@ -58,7 +58,7 @@
 //!   - Handles platform-independent error processing
 //!
 //! - [`kernel_service_call_handler`]: Called by the HAL when a service call executes
-//!   - Implemented by the kernel to handle deferred operations  
+//!   - Implemented by the kernel to handle deferred operations
 //!   - Called when execution flow allows (typically at lowest interrupt priority)
 //!   - Used for event processing and context switching
 //!
@@ -467,7 +467,7 @@ pub trait InterruptController: Sync {
     /// This function acquires the interrupt lock, which prevents other interrupts
     /// from occurring until the lock is released.
     ///
-    /// # Returns   
+    /// # Returns
     ///
     /// The previous interrupt status before acquiring the lock.
     fn acquire() -> bool;
@@ -584,7 +584,7 @@ pub trait CoreController: Sync {
 
     /// Called when the kernel is aborted.
     ///
-    /// This function is called when the kernel is aborted. It should not return.   
+    /// This function is called when the kernel is aborted. It should not return.
     fn on_abort() -> !;
 
     /// Called when the kernel is exiting.

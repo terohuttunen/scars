@@ -139,7 +139,7 @@ fn main() {
 
 ## Immediate Priority Ceiling Protocol
 threads and interrupt handlers have fixed base priorities, and all priority based
-locking primitives have a priority ceiling, which is the maximum priority of any 
+locking primitives have a priority ceiling, which is the maximum priority of any
 thread or an interrupt that can acquire the lock. Acquiring a priority based lock
 immediately raises the active priority of the thread or an interrupt to the ceiling
 priority of that lock, preventing other threads or interrupts from acquiring the lock.
@@ -171,7 +171,7 @@ simulation has not yet been implemented.
 
 ## Running tests
 ### khal-e310x
-Configuration in .cargo/config.toml is for QEMU.  
+Configuration in .cargo/config.toml is for QEMU.
 
 ```text
 $ cargo test --release --package=scars --features="khal-e310x" --target=riscv32imac-unknown-none-elf

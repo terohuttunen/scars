@@ -79,7 +79,7 @@ pub enum WaitTimeoutError {
 ///     .events(0b0001)
 ///     .no_wait()
 ///     .build();
-///     
+///
 /// match context.try_wait() {
 ///     Ok(events) => println!("Event received: {}", events),
 ///     Err(TryWaitError::WouldBlock(pending)) => {
@@ -614,7 +614,7 @@ mod wait_events_state {
 ///
 /// # Examples
 ///
-/// ```rust,ignore  
+/// ```rust,ignore
 /// // Valid combinations
 /// let context1 = WaitEvents::builder()
 ///     .events(0x05)

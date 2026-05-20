@@ -188,5 +188,3 @@ mod tests {
 - All priority ceiling protocol based synchronization primitives require const generic priority ceiling parameter
 - Avoid monomorphization of generic functions. Generic code should be used for ergonomics in the
   interface, but the underlying implementation should not generate new code for each instantiation.
-  
-  

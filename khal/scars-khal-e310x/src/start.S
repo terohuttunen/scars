@@ -48,5 +48,3 @@ skip_bss_init:
 	# an interrupt.
 park:	wfi
 	j	park
-
-
