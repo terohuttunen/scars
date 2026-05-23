@@ -1,4 +1,4 @@
-use super::TryLockError;
+use super::{LockOps, PreemptLock, ScopedLock, TryLockError, TryLockResult, Unlock};
 use crate::kernel::hal::{CoreId, CoreToken};
 use crate::kernel::{
     list::{Node, impl_linked},
@@ -7,7 +7,6 @@ use crate::kernel::{
 };
 use crate::runtime_error;
 use crate::sync::atomic::{AtomicPtr, Ordering};
-use crate::sync::{LockOps, PreemptLock, ScopedLock, TryLockResult, Unlock};
 use crate::thread::{InheritanceLockListTag, RawThread};
 use core::pin::Pin;
 

@@ -7,7 +7,7 @@ use super::{InterruptHandler, InterruptHandlerFn, InterruptNumber, RawInterruptH
 use crate::kernel::hal::CoreId;
 use crate::local::{ConstLocalCell, LocalCell, LocalStorage, SharedStorage, SharedStorageProvider};
 use crate::priority::Priority;
-use crate::sync::interrupt_lock::CoreInterruptLock;
+use crate::sync::lock::interrupt_lock::CoreInterruptLock;
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;

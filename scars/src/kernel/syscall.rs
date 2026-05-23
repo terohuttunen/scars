@@ -1,7 +1,8 @@
 use crate::kernel::hal;
 use crate::priority::{AnyPriority, Priority};
 use crate::sync::atomic::Ordering;
-use crate::sync::{CoreInterruptLock, NestingLock, interrupt_lock::CoreInterruptLockKey};
+use crate::sync::lock::interrupt_lock::CoreInterruptLockKey;
+use crate::sync::{CoreInterruptLock, NestingLock};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
 use crate::{

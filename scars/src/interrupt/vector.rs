@@ -1,7 +1,7 @@
 use super::{InterruptNumber, MAX_INTERRUPT_NUMBER, RawInterruptHandler};
 use crate::cell::LockedCell;
 use crate::kernel::hal::NUM_CORES;
-use crate::sync::interrupt_lock::{InterruptLock, InterruptLockKey};
+use crate::sync::lock::interrupt_lock::{InterruptLock, InterruptLockKey};
 
 /// One vector table per core.
 static INTERRUPT_VECTORS: [LockedCell<[InterruptVector; MAX_INTERRUPT_NUMBER + 1], InterruptLock>;

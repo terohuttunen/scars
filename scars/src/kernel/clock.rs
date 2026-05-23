@@ -1,6 +1,6 @@
 use crate::priority::Priority;
 use crate::sync::atomic::{AtomicUsize, Ordering};
-use crate::sync::preempt_lock::CorePreemptLockKey;
+use crate::sync::lock::preempt_lock::CorePreemptLockKey;
 use crate::{
     interrupt::{
         RawInterruptHandler, in_interrupt, interrupt_context, restore_current_interrupt,

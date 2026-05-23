@@ -1,4 +1,4 @@
-use super::TryLockError;
+use super::{LockOps, NestingLock, PreemptLock, ScopedLock, TryLockError, TryLockResult, Unlock};
 use crate::interrupt::RawInterruptHandler;
 use crate::kernel::hal::{CoreId, CoreToken};
 use crate::kernel::{
@@ -9,7 +9,6 @@ use crate::kernel::{
 use crate::priority::PriorityStatus;
 use crate::runtime_error;
 use crate::sync::atomic::{AtomicPtr, Ordering};
-use crate::sync::{LockOps, NestingLock, PreemptLock, ScopedLock, TryLockResult, Unlock};
 use crate::thread::{IDLE_THREAD_ID, LockListTag, RawThread};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};

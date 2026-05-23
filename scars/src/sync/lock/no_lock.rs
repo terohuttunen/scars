@@ -1,5 +1,4 @@
-use super::TryLockError;
-use crate::sync::{LockOps, NestingLock, ScopedLock};
+use super::{LockOps, NestingLock, ScopedLock, TryLockError};
 use core::cell::Cell;
 use core::marker::PhantomData;
 

@@ -116,7 +116,7 @@ impl RawEventHandler {
         &mut self,
         handler_fn: fn(*mut ()),
         arg_ptr: *mut (),
-        _key: crate::sync::interrupt_lock::CoreInterruptLockKey<'_, CORE>,
+        _key: crate::sync::lock::interrupt_lock::CoreInterruptLockKey<'_, CORE>,
     ) {
         self.handler_fn = handler_fn;
         self.arg_ptr = arg_ptr;

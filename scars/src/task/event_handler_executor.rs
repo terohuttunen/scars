@@ -9,7 +9,7 @@ use crate::local::{
     LocalCell, LocalStorage, Publish, PublishCtx, PublishError, SharedStorage,
     SharedStorageProvider,
 };
-use crate::sync::interrupt_lock::CoreInterruptLock;
+use crate::sync::lock::interrupt_lock::CoreInterruptLock;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use static_cell::StaticCell;
@@ -55,7 +55,7 @@ impl RawEventHandlerExecutor {
         &mut self,
         handler_fn: fn(*mut ()),
         arg_ptr: *mut (),
-        key: crate::sync::interrupt_lock::CoreInterruptLockKey<'_, CORE>,
+        key: crate::sync::lock::interrupt_lock::CoreInterruptLockKey<'_, CORE>,
     ) {
         unsafe { self.event_handler.attach(handler_fn, arg_ptr, key) };
     }

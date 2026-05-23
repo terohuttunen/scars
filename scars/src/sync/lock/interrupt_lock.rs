@@ -1,7 +1,6 @@
-use super::TryLockError;
+use super::{LockOps, NestingLock, ScopedLock, TryLockError};
 use crate::kernel::hal::{CoreId, CoreToken, NUM_CORES, acquire, restore};
 use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use crate::sync::{LockOps, NestingLock, ScopedLock};
 use core::marker::PhantomData;
 use core::pin::Pin;
 

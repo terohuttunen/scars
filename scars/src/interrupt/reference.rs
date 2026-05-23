@@ -6,7 +6,7 @@
 use super::{InterruptNumber, RawInterruptHandler};
 use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
-use crate::sync::interrupt_lock::InterruptLock;
+use crate::sync::lock::interrupt_lock::InterruptLock;
 
 use core::ptr::NonNull;
 

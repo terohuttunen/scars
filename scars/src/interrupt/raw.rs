@@ -10,7 +10,7 @@ use crate::kernel::hal::CoreId;
 use crate::kernel::list::LinkedList;
 use crate::local::LocalStorage;
 use crate::priority::{AtomicPriority, AtomicPriorityStatus, Priority, PriorityStatus};
-use crate::sync::{ceiling_lock::RawCeilingLock, interrupt_lock::CoreInterruptLockKey};
+use crate::sync::lock::{ceiling_lock::RawCeilingLock, interrupt_lock::CoreInterruptLockKey};
 use crate::thread::LockListTag;
 
 use crate::sync::atomic::Ordering;
@@ -153,7 +153,7 @@ impl RawInterruptHandler {
     /// the caller holds the interrupt lock; `debug_assert` checks that
     /// it's the lock for this handler's core (NVIC writes are
     /// local-core only).
-    pub fn enable_interrupt(&self, key: crate::sync::interrupt_lock::InterruptLockKey<'_>) {
+    pub fn enable_interrupt(&self, key: crate::sync::lock::interrupt_lock::InterruptLockKey<'_>) {
         debug_assert_eq!(key.core, self.core);
         let _ = key;
         crate::kernel::hal::enable_interrupt(self.intnum);
@@ -161,7 +161,7 @@ impl RawInterruptHandler {
 
     /// Disable this interrupt at the hardware level. Same `key`-core
     /// constraint as [`enable_interrupt`].
-    pub fn disable_interrupt(&self, key: crate::sync::interrupt_lock::InterruptLockKey<'_>) {
+    pub fn disable_interrupt(&self, key: crate::sync::lock::interrupt_lock::InterruptLockKey<'_>) {
         debug_assert_eq!(key.core, self.core);
         let _ = key;
         crate::kernel::hal::disable_interrupt(self.intnum);
@@ -258,7 +258,10 @@ impl RawInterruptHandler {
         );
     }
 
-    pub fn is_attached(&self, key: crate::sync::interrupt_lock::InterruptLockKey<'_>) -> bool {
+    pub fn is_attached(
+        &self,
+        key: crate::sync::lock::interrupt_lock::InterruptLockKey<'_>,
+    ) -> bool {
         debug_assert_eq!(key.core, self.core);
         !super::get_interrupt_vector(self.intnum, key)
             .handler_ptr

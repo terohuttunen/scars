@@ -129,7 +129,7 @@ pub(crate) unsafe fn _kernel_interrupt_handler() {
         panic!("unexpected interrupt (IRQn={})", interrupt_number);
     }
 
-    let cs = unsafe { crate::sync::interrupt_lock::InterruptLockKey::new(CoreId::current()) };
+    let cs = unsafe { crate::sync::lock::interrupt_lock::InterruptLockKey::new(CoreId::current()) };
 
     let vector = get_interrupt_vector(interrupt_number as u16, cs);
     let handler_fn: fn(*const RawInterruptHandler) =

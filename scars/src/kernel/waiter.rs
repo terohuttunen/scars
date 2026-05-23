@@ -6,10 +6,8 @@ use crate::kernel::atomic_queue::{AtomicNode, impl_atomic_linked};
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, Node, impl_linked};
 use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
 use crate::sync::atomic::{AtomicU32, Ordering};
-use crate::sync::{
-    CeilingLock, CorePreemptLock, NestingLock, PreemptLock, PreemptLockKey,
-    preempt_lock::CorePreemptLockKey,
-};
+use crate::sync::lock::preempt_lock::CorePreemptLockKey;
+use crate::sync::{CeilingLock, CorePreemptLock, NestingLock, PreemptLock, PreemptLockKey};
 use crate::syscall;
 use crate::task::raw_task::RawTask;
 use crate::thread::RawThread;

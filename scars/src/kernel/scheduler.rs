@@ -21,10 +21,10 @@ use crate::printkln;
 use crate::priority::{AnyPriority, AtomicPriorityStatus, Priority, PriorityStatus};
 use crate::sync::atomic::Ordering;
 use crate::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
-use crate::sync::preempt_lock::is_preempt_allowed;
+use crate::sync::lock::preempt_lock::is_preempt_allowed;
+use crate::sync::lock::{interrupt_lock::CoreInterruptLockKey, preempt_lock::CorePreemptLockKey};
 use crate::sync::{
     CoreInterruptLock, CorePreemptLock, PreemptLock, PreemptLockKey, RawCeilingLock,
-    interrupt_lock::CoreInterruptLockKey, preempt_lock::CorePreemptLockKey,
 };
 use crate::thread::{
     IDLE_THREAD_ID, INVALID_THREAD_ID, RawThread, Thread, ThreadExecutionState, ThreadInfo,

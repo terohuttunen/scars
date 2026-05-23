@@ -12,7 +12,7 @@ use crate::events::Events;
 use crate::kernel::hal::CoreId;
 use crate::local::{LocalStorage, SharedStorage, SharedStorageProvider};
 use crate::priority::Priority;
-use crate::sync::interrupt_lock::CoreInterruptLock;
+use crate::sync::lock::interrupt_lock::CoreInterruptLock;
 use crate::task::{ExecutorHandle, JoinHandle, TaskHandle};
 
 use core::mem::MaybeUninit;
