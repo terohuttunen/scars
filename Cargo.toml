@@ -29,9 +29,11 @@ exclude = [
     # Long-standing standalone F4 examples; not listed in members.
     "examples/stm32f4/nested_irq",
     "examples/stm32f4/fpu_test",
-    # RP2350 example shares the `hello` crate name with examples/sim/hello;
-    # kept outside the workspace so xtask drives it via --manifest-path.
+    # RP2350 examples are kept out of the workspace so xtask drives
+    # them via --manifest-path (matches the `hello` / `multicore_start`
+    # pattern). `hello` would otherwise collide with examples/sim/hello.
     "examples/rp2350/hello",
+    "examples/rp2350/multicore_start",
 ]
 default-members = [
     "khal/scars-khal-e310x",
