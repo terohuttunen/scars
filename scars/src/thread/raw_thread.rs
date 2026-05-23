@@ -3,7 +3,8 @@ use crate::cell::{LockedCell, LockedPinRefCell};
 use crate::events::{AtomicEvents, Events, WaitEvents, sender::EventReceiver};
 use crate::kernel::waiter::{WaitQueueEntry, WaitQueueEntryHandler};
 use crate::kernel::{
-    Priority, hal,
+    Priority,
+    hal::{self, CoreId},
     list::{LinkedList, Node, impl_linked},
     scheduler::ExecStateTag,
     scheduler::RawScheduler,
@@ -121,6 +122,16 @@ pub(crate) struct RawThread {
 }
 
 impl RawThread {
+    /// Bits passed via `PendingWorkHandler::complete(ops)` to dispatch a
+    /// deferred thread operation. Bits are interpreted exclusively by
+    /// [`PendingWorkHandler for RawThread`] — they share no namespace with
+    /// other handlers' op masks.
+    pub(crate) const OP_RESUME: u32 = 1 << 0;
+    pub(crate) const OP_WAKEUP: u32 = 1 << 1;
+    pub(crate) const OP_SUSPEND: u32 = 1 << 2;
+    pub(crate) const OP_START: u32 = 1 << 3;
+    pub(crate) const OP_CHECK_EVENTS: u32 = 1 << 4;
+
     pub(crate) const fn new(
         name: &'static str,
         base_priority: Priority,
@@ -155,6 +166,14 @@ impl RawThread {
     pub unsafe fn init_at(this: *mut Self) {
         unsafe {
             (*this).wait_entry.init_for::<Self>(&*this);
+            // Bind the pending-work entry's receiver. The scheduler may
+            // dispatch via this entry from any core (cross-core start
+            // posts onto the target's deferred-work queue); binding
+            // here ensures `RawPendingWorkEntry::complete` finds a
+            // receiver before any such dispatch is possible.
+            (*this)
+                .pending_work
+                .set_receiver(core::pin::Pin::new_unchecked(&*this));
         }
     }
 
@@ -183,6 +202,13 @@ impl RawThread {
         typed.raw()
     }
 
+    /// Post `op` to the deferred-work queue belonging to this thread's
+    /// core. Same-core posts ride the next preempt-lock release; remote
+    /// posts ping the target's service call automatically.
+    pub(crate) fn schedule_deferred_op(self: Pin<&Self>, op: u32) {
+        Scheduler::schedule_deferred_operation_on(self.core, self.get_pending_work(), op);
+    }
+
     pub unsafe fn start(&'static mut self) {
         if *self.state.get_mut() != ThreadExecutionState::Created {
             panic!("Cannot start thread twice");
@@ -190,7 +216,16 @@ impl RawThread {
 
         *self.state.get_mut() = ThreadExecutionState::Started;
 
-        crate::thread_start(self);
+        if self.core == CoreId::current() {
+            // Same-core path: trap into the local kernel via syscall.
+            crate::thread_start(self);
+        } else {
+            // Cross-core path: post a START op onto the target core's
+            // deferred-work queue and ping its service call. The
+            // target's `_kernel_service_call_handler` will drain the
+            // queue and run `Scheduler::resume_thread(self)`.
+            Pin::static_ref(&*self).schedule_deferred_op(Self::OP_START);
+        }
     }
 
     #[allow(dead_code)]
@@ -426,10 +461,20 @@ impl RawThread {
     }
 
     pub fn send_events(&'static self, events: Events) {
-        // Update pending events mask
+        // Update pending events mask. The atomic OR is cross-core safe;
+        // the target reads it under its own preempt lock during dispatch.
         let all_pending = self.pending_events.fetch_or(events, Ordering::SeqCst) | events;
 
-        // Check if thread is waiting and should be woken
+        if self.core != CoreId::current() {
+            // Foreign-core target: hand the resume decision to the
+            // owning core. The handler will re-read `pending_events`
+            // and `current_wait_events`, which may have changed since
+            // this post, so we don't act on the snapshot we just took.
+            Pin::static_ref(self).schedule_deferred_op(Self::OP_CHECK_EVENTS);
+            return;
+        }
+
+        // Same-core fast path: check if thread is waiting and should be woken.
         let wait_events_ptr = self.current_wait_events.load(Ordering::SeqCst);
         if !wait_events_ptr.is_null() {
             let wait_events = unsafe { &*wait_events_ptr };
@@ -462,18 +507,70 @@ impl TimerHandler for RawThread {
         mut sched: Pin<&mut RawScheduler>,
         pkey: PreemptLockKey<'_>,
     ) {
-        sched.as_mut().wakeup_thread(pkey, this);
+        if sched.as_mut().try_wakeup_thread(pkey, this).is_err() {
+            // Ceiling too high to act inline; route through the work
+            // queue. The drain re-attempts when priority allows.
+            this.schedule_deferred_op(RawThread::OP_WAKEUP);
+        }
     }
 }
 
 impl PendingWorkHandler for RawThread {
     fn complete(
-        _this: Pin<&'static Self>,
-        _pkey: PreemptLockKey<'_>,
-        _sched: Pin<&mut RawScheduler>,
-        _ops: u32,
-    ) {
-        // Stub: deferred work for threads is not yet wired up.
+        this: Pin<&'static Self>,
+        pkey: PreemptLockKey<'_>,
+        mut sched: Pin<&mut RawScheduler>,
+        ops: u32,
+    ) -> bool {
+        // The work-queue drain already holds this core's preempt lock,
+        // so we drive the internal `RawScheduler` methods directly.
+        // Each `try_*` call reports back if the ceiling blocked the
+        // op; we collect those bits and tell the drain to re-queue.
+        let mut retry: u32 = 0;
+
+        if ops & Self::OP_START != 0 {
+            crate::kernel::tracing::thread_new(this.as_thread_ref());
+            if sched.as_mut().try_resume_thread(pkey, this).is_err() {
+                retry |= Self::OP_START;
+            }
+        }
+        if ops & Self::OP_RESUME != 0 {
+            if sched.as_mut().try_resume_thread(pkey, this).is_err() {
+                retry |= Self::OP_RESUME;
+            }
+        }
+        if ops & Self::OP_WAKEUP != 0 {
+            if sched.as_mut().try_wakeup_thread(pkey, this).is_err() {
+                retry |= Self::OP_WAKEUP;
+            }
+        }
+        if ops & Self::OP_SUSPEND != 0 {
+            // `suspend_thread` has no ceiling gating; it always
+            // completes.
+            sched.as_mut().suspend_thread(pkey, Some(this));
+        }
+        if ops & Self::OP_CHECK_EVENTS != 0 {
+            // Re-read state under the preempt lock so the resume
+            // decision sees the same `pending_events` /
+            // `current_wait_events` the waiter would observe.
+            let pending = this.pending_events.load(Ordering::SeqCst);
+            let wait_events_ptr = this.current_wait_events.load(Ordering::SeqCst);
+            if !wait_events_ptr.is_null() {
+                let wait_events = unsafe { &*wait_events_ptr };
+                if wait_events.should_resume(pending) {
+                    if sched.as_mut().try_resume_thread(pkey, this).is_err() {
+                        retry |= Self::OP_CHECK_EVENTS;
+                    }
+                }
+            }
+        }
+
+        if retry != 0 {
+            this.get_pending_work().set_pending(retry);
+            false
+        } else {
+            true
+        }
     }
 }
 

@@ -43,10 +43,8 @@ macro_rules! make_interrupt_handler {
 pub use crate::kernel::hal::MAX_INTERRUPT_NUMBER;
 
 use crate::kernel::hal::{
-    CoreId, NUM_CORES, claim_interrupt, complete_interrupt, pend_service_call,
-    set_interrupt_threshold,
+    CoreId, NUM_CORES, claim_interrupt, complete_interrupt, set_interrupt_threshold,
 };
-use crate::kernel::scheduler::Scheduler;
 use crate::priority::PriorityStatus;
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr::NonNull;
@@ -145,8 +143,4 @@ pub(crate) unsafe fn _kernel_interrupt_handler() {
     }
 
     complete_interrupt(claim);
-
-    if Scheduler::is_reschedule_pending() {
-        pend_service_call();
-    }
 }

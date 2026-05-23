@@ -13,12 +13,9 @@ use crate::kernel::{
     RuntimeError, Stack, ThreadPriority,
     atomic_queue::{AtomicNode, AtomicQueue},
     exception::{KernelError, handle_kernel_error},
-    hal::{self, Context, set_alarm, set_current_thread_context, start_first_thread},
+    hal::{self, Context, CoreId, set_alarm, set_current_thread_context, start_first_thread},
     handle_runtime_error, syscall,
-    waiter::{
-        SUSPENDABLE_PENDING_RECONFIGURE, SUSPENDABLE_PENDING_RESUME, SUSPENDABLE_PENDING_SUSPEND,
-        SUSPENDABLE_PENDING_WAKEUP, WaitQueueEntry, WaitQueueHandle, WaitQueueTag,
-    },
+    waiter::{WaitQueueEntry, WaitQueueHandle, WaitQueueTag},
 };
 use crate::printkln;
 use crate::priority::{AnyPriority, AtomicPriorityStatus, Priority, PriorityStatus};
@@ -268,32 +265,26 @@ impl RawScheduler {
 
 // Thread scheduling
 impl RawScheduler {
-    // Resume thread due to wakeup while rescheduling
-    pub(crate) fn wakeup_thread(
+    /// Try to wakeup a thread. If removing the thread
+    /// from the wait queue is not safe right now, returns Err(()).
+    pub(crate) fn try_wakeup_thread(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
         thread: Pin<&'static RawThread>,
-    ) {
+    ) -> Result<(), ()> {
         if thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread may not be woken up");
         }
 
-        // Remove thread from a wait queue if it is waiting in one, or postpone the operation,
-        // if removal is not safe to do from the current context.
+        // Remove thread from a wait queue if it is waiting in one. If
+        // the queue's ceiling exceeds our current priority, removal is
+        // not safe. Return Err(()) so the caller can re-queue.
         if let Some(wait_queue) = thread.wait_queue.get(pkey) {
             let wait_entry = thread.get_wait_entry();
 
-            // If the wait queue lock is a ceiling lock, and it is not safe to acquire
-            // the lock from the current context, then the resuming operation is postponed
-            // until it is safe to do so.
             if let Some(required_ceiling) = wait_queue.required_ceiling() {
                 if Scheduler::current_priority(pkey) > required_ceiling {
-                    Scheduler::schedule_deferred_operation(
-                        thread.get_pending_work(),
-                        SUSPENDABLE_PENDING_WAKEUP,
-                        Some(required_ceiling),
-                    );
-                    return;
+                    return Err(());
                 }
             }
 
@@ -322,31 +313,25 @@ impl RawScheduler {
         }
 
         // Note: does not check for need to reschedule, as this is called from reschedule.
+        Ok(())
     }
 
-    // Resume thread due to notification. Will set pending reschedule flag if the resumed thread has
-    // higher priority than the current thread.
-    fn resume_thread(
+    /// Try to resume a thread. If removing the thread
+    /// from the wait queue is not safe right now, returns Err(()).
+    pub(crate) fn try_resume_thread(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
         thread: Pin<&'static RawThread>,
-    ) {
-        // Remove thread from a wait queue if it is waiting in one, or postpone the operation,
-        // if removal is not safe to do from the current context.
+    ) -> Result<(), ()> {
+        // Remove thread from a wait queue if it is waiting in one. If
+        // the queue's ceiling exceeds our current priority, removal is
+        // not safe — report back so the caller can re-queue.
         if let Some(wait_queue) = thread.wait_queue.get(pkey) {
             let wait_entry = thread.get_wait_entry();
 
-            // If the wait queue lock is a ceiling lock, and it is not safe to acquire
-            // the lock from the current context, then the resuming operation is postponed
-            // until it is safe to do so.
             if let Some(required_ceiling) = wait_queue.required_ceiling() {
                 if Scheduler::current_priority(pkey) > required_ceiling {
-                    Scheduler::schedule_deferred_operation(
-                        thread.get_pending_work(),
-                        SUSPENDABLE_PENDING_RESUME,
-                        Some(required_ceiling),
-                    );
-                    return;
+                    return Err(());
                 }
             }
 
@@ -387,6 +372,7 @@ impl RawScheduler {
         if min_priority < thread.priority(pkey) {
             Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER)
         }
+        Ok(())
     }
 
     fn block_thread(
@@ -401,7 +387,7 @@ impl RawScheduler {
         self.insert_to_blocked_queue(pkey, thread);
     }
 
-    fn suspend_thread(
+    pub(crate) fn suspend_thread(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
         maybe_thread: Option<Pin<&'static RawThread>>,
@@ -903,24 +889,33 @@ impl Scheduler {
         scheduler.pending_reschedule_kind.load(Ordering::Relaxed) != RESCHEDULE_KIND_NONE
     }
 
-    pub(crate) fn schedule_deferred_operation(
-        suspendable: Pin<&RawPendingWorkEntry>,
-        mask: u32,
-        required_ceiling: Option<Priority>,
+    /// Post `ops` to `target`'s `deferred_work_queue`. Producer-safe
+    /// from any core; [`AtomicWorkQueue`] is MPSC.
+    ///
+    /// The service call is pended on `target` whenever the post might
+    /// otherwise sit: remote targets always need the IPI; same-core
+    /// posts made outside a held preempt lock need a local pend so a
+    /// drain runs without waiting for an unrelated lock release. A
+    /// same-core post inside a held preempt lock skips the pend — the
+    /// lock's release path drains the queue.
+    ///
+    /// The handler's [`PendingWorkHandler::complete`] runs under
+    /// `target`'s preempt lock and owns any ceiling-based re-deferral,
+    /// which it expresses by calling this function again from inside
+    /// the dispatch.
+    pub(crate) fn schedule_deferred_operation_on(
+        target: CoreId,
+        pending_work: Pin<&RawPendingWorkEntry>,
+        ops: u32,
     ) {
-        let _ = Scheduler::instance().deferred_work_queue.queue_work(
-            suspendable,
-            mask,
-            required_ceiling,
-        );
-    }
-
-    pub(crate) fn complete_deferred_work(pkey: PreemptLockKey<'_>) {
-        let scheduler = Scheduler::pin_instance();
-        let mut raw_scheduler = scheduler.borrow_mut(pkey);
-        Scheduler::instance()
+        Scheduler::instance_for(target)
             .deferred_work_queue
-            .complete_work(pkey, raw_scheduler.as_mut());
+            .queue_work(pending_work, ops);
+        if target != CoreId::current() {
+            hal::pend_service_call_on(target);
+        } else if is_preempt_allowed() {
+            hal::pend_service_call();
+        }
     }
 
     pub(crate) fn is_deferred_work_pending() -> bool {
@@ -928,49 +923,92 @@ impl Scheduler {
         scheduler.deferred_work_queue.work_pending()
     }
 
-    // ISR context
-    pub(crate) fn execute_pending_reschedule() {
-        match Scheduler::instance()
+    /// Drain everything the local kernel has queued for dispatch:
+    /// pending event handlers, deferred-work queue, and any pending
+    /// reschedule. Single entry point for both `_kernel_syscall_handler`
+    /// and `_kernel_service_call_handler`. Resolves the local scheduler
+    /// once and reuses it across all three sweeps.
+    pub(crate) fn process_pending_work() {
+        let scheduler: &'static Scheduler = Scheduler::instance();
+
+        // Pending event-handler queue. No preempt lock needed; handlers
+        // run in their own event-handler context.
+        scheduler.pending_events.process_pending_events();
+
+        // Deferred-work queue. Each handler dispatch needs the preempt
+        // lock; bail when someone else holds it (their release path
+        // will pick up the rest).
+        while scheduler.deferred_work_queue.work_pending() {
+            if PreemptLock::try_with(|pkey| {
+                let mut raw = Pin::static_ref(scheduler).borrow_mut(pkey);
+                scheduler
+                    .deferred_work_queue
+                    .complete_work(pkey, raw.as_mut());
+            })
+            .is_err()
+            {
+                break;
+            }
+        }
+
+        // Pending reschedule. Same shape as `execute_pending_reschedule`,
+        // but reuses the resolved `scheduler` instead of looking it up
+        // again.
+        let kind = scheduler
             .pending_reschedule_kind
-            .swap(RESCHEDULE_KIND_NONE, Ordering::AcqRel)
-        {
-            RESCHEDULE_KIND_NONE => (),
-            kind => {
-                if let Err(_) = PreemptLock::try_with(|pkey| {
-                    Scheduler::pin_instance()
-                        .borrow_mut(pkey)
-                        .as_mut()
-                        .reschedule(pkey, kind);
-                }) {
-                    // Thread or lower priority interrupt handler is holding the lock.
-                    // Postpone thread switch execution to lock release.
-                    Scheduler::set_pending_reschedule(kind);
-                };
+            .swap(RESCHEDULE_KIND_NONE, Ordering::AcqRel);
+        if kind != RESCHEDULE_KIND_NONE {
+            if PreemptLock::try_with(|pkey| {
+                Pin::static_ref(scheduler)
+                    .borrow_mut(pkey)
+                    .as_mut()
+                    .reschedule(pkey, kind);
+            })
+            .is_err()
+            {
+                // Re-pend without going through `set_pending_reschedule`,
+                // which would re-resolve the instance.
+                scheduler
+                    .pending_reschedule_kind
+                    .fetch_or(kind, Ordering::Relaxed);
+                if is_preempt_allowed() {
+                    hal::pend_service_call();
+                }
             }
         }
     }
 
     // Thread or ISR context
     pub(crate) fn resume_thread(thread: Pin<&'static RawThread>) {
-        match PreemptLock::try_with(|pkey| {
+        if thread.core != CoreId::current() {
+            // Foreign-core target: drop the op onto the owning core's
+            // deferred-work queue. The target's
+            // `RawThread::PendingWorkHandler::complete` will run
+            // `sched.try_resume_thread(pkey, this)` against its own
+            // scheduler instance, honoring every per-core invariant.
+            thread.schedule_deferred_op(RawThread::OP_RESUME);
+            return;
+        }
+        let result = PreemptLock::try_with(|pkey| {
             Self::pin_instance()
                 .borrow_mut(pkey)
                 .as_mut()
-                .resume_thread(pkey, thread);
-        }) {
-            Ok(()) => (),
-            Err(_) => {
-                // Could not acquire pre-emption lock, because some thread or ongoing lower
-                // priority ISR holds the lock.
-                // Store unblocked thread in pending ready list instead, from which it will be
-                // moved to ready list when the preempt lock is released.
-                let _ = Self::schedule_deferred_operation(
-                    thread.get_pending_work(),
-                    SUSPENDABLE_PENDING_RESUME,
-                    None,
-                );
+                .try_resume_thread(pkey, thread)
+        });
+        match result {
+            // Lock acquired and operation completed inline.
+            Ok(Ok(())) => (),
+            // Lock acquired but the ceiling blocked us; defer through
+            // the work queue.
+            Ok(Err(())) => {
+                thread.schedule_deferred_op(RawThread::OP_RESUME);
             }
-        };
+            // Lock held by another context — defer; the lock-release
+            // path will drain.
+            Err(_) => {
+                thread.schedule_deferred_op(RawThread::OP_RESUME);
+            }
+        }
     }
 
     // Delay
@@ -992,6 +1030,17 @@ impl Scheduler {
     }
 
     pub(crate) fn suspend_thread(maybe_thread: Option<Pin<&'static RawThread>>) {
+        if let Some(thread) = maybe_thread {
+            if thread.core != CoreId::current() {
+                // Foreign-core target: dispatch via owning core's
+                // deferred-work queue. `maybe_thread == None` (suspend
+                // current thread) is intrinsically same-core, so the
+                // foreign branch only fires when the caller named a
+                // specific target.
+                thread.schedule_deferred_op(RawThread::OP_SUSPEND);
+                return;
+            }
+        }
         match PreemptLock::try_with(|pkey| {
             Scheduler::pin_instance()
                 .borrow_mut(pkey)
@@ -1001,11 +1050,7 @@ impl Scheduler {
             Ok(()) => (),
             Err(_) => match maybe_thread {
                 Some(thread) => {
-                    Scheduler::schedule_deferred_operation(
-                        thread.get_pending_work(),
-                        SUSPENDABLE_PENDING_SUSPEND,
-                        None,
-                    );
+                    thread.schedule_deferred_op(RawThread::OP_SUSPEND);
                 }
                 None => {
                     panic!("Cannot suspend the current thread while holding the preemption lock")
@@ -1014,13 +1059,7 @@ impl Scheduler {
         }
     }
 
-    pub(crate) fn start_thread(mut thread: Pin<&'static mut RawThread>) {
-        unsafe {
-            let ptr: *mut RawThread = thread.as_mut().get_unchecked_mut();
-            RawThread::init_at(ptr);
-            //thread.as_mut().init_at();
-        }
-
+    pub(crate) fn start_thread(thread: Pin<&'static mut RawThread>) {
         crate::printkln!("Starting thread {}", thread.name);
 
         // Thread mutability ends

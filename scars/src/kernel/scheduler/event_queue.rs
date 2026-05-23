@@ -124,13 +124,6 @@ impl Scheduler {
             .queue_event_handler(event_handler);
         hal::pend_service_call();
     }
-
-    /// Process all pending events
-    pub(crate) fn process_all_pending_events() {
-        Scheduler::instance()
-            .pending_events
-            .process_pending_events();
-    }
 }
 
 #[cfg(test)]

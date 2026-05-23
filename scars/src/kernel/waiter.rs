@@ -23,11 +23,6 @@ pub struct WaitQueueTag {}
 
 impl LinkedListTag for WaitQueueTag {}
 
-pub(crate) const SUSPENDABLE_PENDING_RESUME: u32 = 1;
-pub(crate) const SUSPENDABLE_PENDING_WAKEUP: u32 = 2;
-pub(crate) const SUSPENDABLE_PENDING_SUSPEND: u32 = 4;
-pub(crate) const SUSPENDABLE_PENDING_RECONFIGURE: u32 = 8;
-
 pub struct WaitQueueEntry {
     priority: Priority,
 

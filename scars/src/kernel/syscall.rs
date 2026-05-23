@@ -181,7 +181,11 @@ unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usi
                 }
                 _ => panic!("Invalid syscall {:?}", id),
             }
-            Scheduler::execute_pending_reschedule();
+            // No tail-drain here: producers either pended PendSV
+            // directly (preempt allowed) or the preempt-lock release
+            // inside the syscall body did. The service call handler
+            // runs on the next safe boundary (after this SVCall trap
+            // returns) and drains there.
         });
     }
     rval
@@ -195,8 +199,7 @@ pub(crate) unsafe fn _kernel_service_call_handler() {
         // is like an asynchronous syscall without any parameters or a return value. It
         // shares the same interrupt handler as syscall.
         interrupt_context(local_syscall_handler(), || {
-            Scheduler::process_all_pending_events();
-            Scheduler::execute_pending_reschedule();
+            Scheduler::process_pending_work();
         });
     }
 }

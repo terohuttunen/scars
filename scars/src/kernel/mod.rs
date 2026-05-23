@@ -28,7 +28,9 @@ pub mod waiter;
 
 #[unsafe(no_mangle)]
 pub fn start_kernel() -> ! {
-    crate::kernel::hal::init_hal();
-
-    Scheduler::start_on(crate::kernel::hal::CoreId::DEFAULT);
+    let core = crate::kernel::hal::CoreId::current();
+    if core == crate::kernel::hal::CoreId::DEFAULT {
+        crate::kernel::hal::init_hal();
+    }
+    Scheduler::start_on(core);
 }

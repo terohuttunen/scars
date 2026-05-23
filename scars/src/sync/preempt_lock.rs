@@ -1,5 +1,5 @@
 use super::{LockOps, NestingLock, ScopedLock, TryLockError};
-use crate::kernel::hal::{CoreId, CoreToken, NUM_CORES, acquire, restore};
+use crate::kernel::hal::{CoreId, CoreToken, NUM_CORES, acquire, pend_service_call, restore};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::marker::PhantomData;
@@ -474,49 +474,29 @@ unsafe fn release_nesting_lock_inner(restore_state: PreemptLockRestoreState) {
             core_id,
             "preempt-lock released on different core than acquired"
         );
-        // Erased key honestly carries the originating core for the
-        // dispatch into Scheduler::complete_deferred_work below.
-        let key = unsafe { PreemptLockKey::new(core_id) };
         let core = core_id.as_usize();
 
-        // This is the lock that was first acquired, and now released last.
-        // Complete any pending operations while we still have the ownership of
-        // the lock.
-        loop {
-            // Completion of pending operations and release of the preemption lock
-            // is made atomically.
-            let int_restore = acquire();
-
-            if !Scheduler::is_deferred_work_pending() {
-                // Release the lock
-                PREEMPT_LOCK[core].store(core::ptr::null_mut(), Ordering::Release);
-                restore(int_restore);
-                break;
-            }
-
-            restore(int_restore);
-
-            Scheduler::complete_deferred_work(key);
-        }
-
-        // Rescheduling was not allowed while the preemption lock was held.
-        // If any operations were made that require rescheduling, a pending
-        // reschedule flag is set, and the pending reschedule is executed
-        // as soon as it is again possible, which is after the preemption lock
-        // is released.
+        // Release the preempt lock and hand off any work queued behind
+        // it to the service call (PendSV). Producers conditional-pend
+        // PendSV behind `is_preempt_allowed()`; while we held the lock
+        // they skipped the pend, so we compensate here for any
+        // deferred work or reschedule they queued. IRQs are disabled
+        // for the brief window to close the race where a producer
+        // checks the lock state right as we flip it.
         //
-        // Execution of any pending reschedule is done differently in threads
-        // and interrupts:
-        //  - Threads: Pending reschedules are executed when preemption lock
-        //    is released. (below)
-        //
-        //  - Interrupts: Pending reschedule is executed only once when exiting
-        //    the interrupt context, regardless of how many preemption
-        //    locks were acquired during the interrupt.
-        if !restore_state.is_interrupt() {
-            if Scheduler::is_reschedule_pending() {
-                crate::thread_yield();
-            }
+        // On Cortex-M the service call (PendSV) waits for BASEPRI to
+        // drop; on the sim the SYSCALL_SIGNAL handler installs masks
+        // such that `pthread_sigqueue(SYSCALL_SIGNAL)` queues until
+        // the surrounding IRQ unwinds. Either way the actual
+        // event-drain / context-switch happens at a safe point after
+        // we return from here.
+        let int_restore = acquire();
+        let any_pending =
+            Scheduler::is_reschedule_pending() || Scheduler::is_deferred_work_pending();
+        PREEMPT_LOCK[core].store(core::ptr::null_mut(), Ordering::Release);
+        if any_pending {
+            pend_service_call();
         }
+        restore(int_restore);
     }
 }

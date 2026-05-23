@@ -34,10 +34,6 @@ use crate::kernel::scheduler::work_queue::{
     PendingWorkEntry, PendingWorkHandler, RawPendingWorkEntry,
 };
 use crate::kernel::scheduler::{ExecStateTag, Scheduler};
-use crate::kernel::waiter::{
-    SUSPENDABLE_PENDING_RECONFIGURE, SUSPENDABLE_PENDING_RESUME, SUSPENDABLE_PENDING_SUSPEND,
-    SUSPENDABLE_PENDING_WAKEUP, WaitQueueEntry,
-};
 use crate::priority::Priority;
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::sync::{InterruptLock, PreemptLock, PreemptLockKey};
@@ -259,6 +255,11 @@ pub struct EventTimer {
 }
 
 impl EventTimer {
+    /// Bit passed to `PendingWorkHandler::complete(ops)` to commit a
+    /// staged config from `pending` into `current` and reprogram the
+    /// alarm. Interpreted only by [`PendingWorkHandler for EventTimer`].
+    pub(crate) const OP_RECONFIGURE: u32 = 1 << 0;
+
     pub const fn new() -> Self {
         Self {
             timer: Timer::new(),
@@ -317,11 +318,9 @@ impl EventTimer {
             // Required before queueing: a pending_work entry with a null
             // receiver is skipped on dispatch.
             self.pending_work.set_receiver(self);
-            Scheduler::instance().deferred_work_queue.queue_work(
-                self.get_pending_work(),
-                SUSPENDABLE_PENDING_RECONFIGURE,
-                None,
-            );
+            Scheduler::instance()
+                .deferred_work_queue
+                .queue_work(self.get_pending_work(), Self::OP_RECONFIGURE);
         }
     }
 
@@ -347,11 +346,11 @@ impl PendingWorkHandler for EventTimer {
         pkey: PreemptLockKey<'_>,
         scheduler: Pin<&mut RawScheduler>,
         work: u32,
-    ) {
-        if work & SUSPENDABLE_PENDING_RECONFIGURE == 0 {
-            return;
+    ) -> bool {
+        if work & Self::OP_RECONFIGURE != 0 {
+            this.reconfigure(pkey, scheduler);
         }
-        this.reconfigure(pkey, scheduler);
+        true
     }
 }
 
