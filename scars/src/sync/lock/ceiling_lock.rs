@@ -261,47 +261,38 @@ impl RawCeilingLock {
     }
 
     pub(crate) unsafe fn acquire_nesting_lock(ceiling: Priority) -> CeilingLockRestoreState {
+        unsafe { Self::try_acquire_nesting_lock(ceiling) }
+            .unwrap_or_else(|_| runtime_error!(RuntimeError::CeilingPriorityViolation))
+    }
+
+    /// Like [`Self::acquire_nesting_lock`] but returns `Err(())` on
+    /// ceiling violation instead of faulting. Used by `try_with`-style
+    /// callers that prefer to defer rather than panic.
+    pub(crate) unsafe fn try_acquire_nesting_lock(
+        ceiling: Priority,
+    ) -> Result<CeilingLockRestoreState, ()> {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
-                // Ceiling check: If locking interrupt has priority higher than the
-                // ceiling, then it violates the priority ceiling protocol.
                 if current_interrupt.priority() > ceiling {
-                    runtime_error!(RuntimeError::CeilingPriorityViolation);
+                    return Err(());
                 }
-
-                // Set ceiling threshold BEFORE updating priority to prevent race conditions
-                // This prevents higher priority interrupts from acquiring locks before
-                // the nesting lock is properly established.
                 let ceiling_priority_status = PriorityStatus::from(ceiling);
                 Scheduler::set_ceiling(ceiling_priority_status);
-
                 let saved_priority = current_interrupt.raise_nesting_lock_priority(ceiling);
-
-                CeilingLockRestoreState { saved_priority }
+                Ok(CeilingLockRestoreState { saved_priority })
             }
-            ExecutionContext::Thread(current_thread) => {
-                PreemptLock::with(|pkey| {
-                    if current_thread.thread_id == IDLE_THREAD_ID {
-                        runtime_error!(RuntimeError::IdleThreadCeilingLock);
-                    }
-
-                    // Ceiling check: If locking thread has priority higher than the
-                    // ceiling, then it violates the priority ceiling protocol.
-                    if current_thread.priority(pkey) > ceiling {
-                        runtime_error!(RuntimeError::CeilingPriorityViolation);
-                    }
-
-                    // Set ceiling threshold BEFORE updating priority to prevent race conditions
-                    // This prevents lower or equal priority interrupts and threads from acquiring
-                    // locks before the nesting lock is properly established.
-                    let ceiling_priority_status = PriorityStatus::from(ceiling);
-                    Scheduler::set_ceiling(ceiling_priority_status);
-
-                    let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
-
-                    CeilingLockRestoreState { saved_priority }
-                })
-            }
+            ExecutionContext::Thread(current_thread) => PreemptLock::with(|pkey| {
+                if current_thread.thread_id == IDLE_THREAD_ID {
+                    runtime_error!(RuntimeError::IdleThreadCeilingLock);
+                }
+                if current_thread.priority(pkey) > ceiling {
+                    return Err(());
+                }
+                let ceiling_priority_status = PriorityStatus::from(ceiling);
+                Scheduler::set_ceiling(ceiling_priority_status);
+                let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
+                Ok(CeilingLockRestoreState { saved_priority })
+            }),
         }
     }
 
@@ -444,7 +435,12 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
     pub fn try_with<R>(
         f: impl FnOnce(CeilingLockKey<'_, CEILING>) -> R,
     ) -> Result<R, TryLockError> {
-        Ok(Self::with(f))
+        let restore_state = unsafe { RawCeilingLock::try_acquire_nesting_lock(CEILING) }
+            .map_err(|_| TryLockError::WouldBlock)?;
+        let key = unsafe { CeilingLockKey::new() };
+        let result = f(key);
+        unsafe { RawCeilingLock::release_nesting_lock(restore_state) };
+        Ok(result)
     }
 }
 
@@ -489,7 +485,7 @@ impl<const CEILING: Priority> NestingLock for CeilingLock<CEILING> {
     }
 
     fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
-        Ok(Self::with(f))
+        Self::try_with(f)
     }
 
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
@@ -586,10 +582,15 @@ impl<const CEILING: Priority, const CORE: CoreId> CoreCeilingLock<CEILING, CORE>
     /// [`CoreToken<CORE>`] they already hold.
     #[inline(always)]
     pub fn try_with_core<R>(
-        core: CoreToken<'_, CORE>,
+        _core: CoreToken<'_, CORE>,
         f: impl FnOnce(CoreCeilingLockKey<'_, CEILING, CORE>) -> R,
     ) -> Result<R, TryLockError> {
-        Ok(Self::with_core(core, f))
+        let restore_state = unsafe { RawCeilingLock::try_acquire_nesting_lock(CEILING) }
+            .map_err(|_| TryLockError::WouldBlock)?;
+        let key = unsafe { CoreCeilingLockKey::new() };
+        let result = f(key);
+        unsafe { RawCeilingLock::release_nesting_lock(restore_state) };
+        Ok(result)
     }
 }
 
@@ -649,7 +650,7 @@ impl<const CEILING: Priority, const CORE: CoreId> NestingLock for CoreCeilingLoc
     }
 
     fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
-        Ok(Self::with(f))
+        Self::try_with(f)
     }
 
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
