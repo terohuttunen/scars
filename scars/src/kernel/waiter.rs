@@ -8,7 +8,6 @@ use crate::kernel::scheduler::{ExecStateTag, ExecutionContext, Scheduler};
 use crate::sync::atomic::{AtomicU32, Ordering};
 use crate::sync::lock::preempt_lock::CorePreemptLockKey;
 use crate::sync::{CeilingLock, CorePreemptLock, NestingLock, PreemptLock, PreemptLockKey};
-use crate::syscall;
 use crate::task::raw_task::RawTask;
 use crate::thread::RawThread;
 use crate::time::Instant;
@@ -80,20 +79,20 @@ pub(crate) struct WaitQueueHandle {
 
 #[allow(dead_code)]
 impl WaitQueueHandle {
-    pub unsafe fn insert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
-        unsafe { (self.vtable.insert)(self.queue, pkey, suspendable.get_ref()) }
+    pub unsafe fn try_remove(
+        &self,
+        pkey: PreemptLockKey<'_>,
+        suspendable: Pin<&WaitQueueEntry>,
+    ) -> Result<(), ()> {
+        unsafe { (self.vtable.try_remove)(self.queue, pkey, suspendable.get_ref()) }
     }
 
-    pub unsafe fn remove(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
-        unsafe { (self.vtable.remove)(self.queue, pkey, suspendable.get_ref()) }
-    }
-
-    pub unsafe fn reinsert(&self, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
-        unsafe { (self.vtable.reinsert)(self.queue, pkey, suspendable.get_ref()) }
-    }
-
-    pub fn required_ceiling(&self) -> Option<Priority> {
-        (self.vtable.required_ceiling)(self.queue)
+    pub unsafe fn try_reinsert(
+        &self,
+        pkey: PreemptLockKey<'_>,
+        suspendable: Pin<&WaitQueueEntry>,
+    ) -> Result<(), ()> {
+        unsafe { (self.vtable.try_reinsert)(self.queue, pkey, suspendable.get_ref()) }
     }
 
     pub fn to_raw(&self) -> (*const (), *const WaitQueueVTable) {
@@ -110,10 +109,10 @@ impl WaitQueueHandle {
 
 #[allow(dead_code)]
 pub(crate) struct WaitQueueVTable {
-    insert: unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry),
-    remove: unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry),
-    reinsert: unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry), // reinsert after priority change
-    required_ceiling: fn(*const ()) -> Option<Priority>,
+    pub(crate) try_remove:
+        unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry) -> Result<(), ()>,
+    pub(crate) try_reinsert:
+        unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry) -> Result<(), ()>,
 }
 
 pub struct WaitQueue<L: NestingLock> {
@@ -122,10 +121,8 @@ pub struct WaitQueue<L: NestingLock> {
 
 impl<L: NestingLock> WaitQueue<L> {
     const WAIT_QUEUE_VTABLE: &'static WaitQueueVTable = &WaitQueueVTable {
-        insert: Self::insert_unsafe,
-        remove: Self::remove_unsafe,
-        reinsert: Self::reinsert_unsafe,
-        required_ceiling: Self::required_ceiling,
+        try_remove: Self::try_remove_unsafe,
+        try_reinsert: Self::try_reinsert_unsafe,
     };
 
     pub const fn new() -> WaitQueue<L> {
@@ -134,77 +131,41 @@ impl<L: NestingLock> WaitQueue<L> {
         }
     }
 
-    fn insert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
-        L::try_with(|key| {
-            let key = L::upcast_key(key);
-            let priority = suspendable.priority(pkey);
-
-            let queue = unsafe { self.map_unchecked(|s| &s.queue) };
-            queue
-                .borrow_mut(key)
-                .as_mut()
-                .insert_after(suspendable, |s| s.priority(pkey) >= priority);
-        })
-        .unwrap_or_else(|_| unreachable!());
-    }
-
-    fn remove(self: Pin<&Self>, _pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
-        L::try_with(|key| {
-            let key = L::upcast_key(key);
-            let queue = unsafe { self.map_unchecked(|s| &s.queue) };
-            queue.borrow_mut(key).as_mut().remove(suspendable);
-        })
-        .unwrap_or_else(|_| unreachable!());
-    }
-
-    fn reinsert(self: Pin<&Self>, pkey: PreemptLockKey<'_>, suspendable: Pin<&WaitQueueEntry>) {
-        L::try_with(|key| {
-            let key = L::upcast_key(key);
-            let priority = suspendable.priority(pkey);
-            let queue = unsafe { self.map_unchecked(|s| &s.queue) };
-            queue.borrow_mut(key).as_mut().remove(suspendable);
-            queue
-                .borrow_mut(key)
-                .as_mut()
-                .insert_after(suspendable, |s| s.priority(pkey) >= priority);
-        })
-        .unwrap_or_else(|_| unreachable!());
-    }
-
-    unsafe fn insert_unsafe(
+    unsafe fn try_remove_unsafe(
         queue: *const (),
-        pkey: PreemptLockKey<'_>,
+        _pkey: PreemptLockKey<'_>,
         suspendable: *const WaitQueueEntry,
-    ) {
+    ) -> Result<(), ()> {
         let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
         let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const WaitQueueEntry)) };
-        queue.insert(pkey, suspendable);
-    }
-
-    unsafe fn remove_unsafe(
-        queue: *const (),
-        pkey: PreemptLockKey<'_>,
-        suspendable: *const WaitQueueEntry,
-    ) {
-        let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
-        let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const WaitQueueEntry)) };
-        if suspendable.wait_queue_link.in_list() {
-            queue.remove(pkey, suspendable);
+        if !suspendable.wait_queue_link.in_list() {
+            return Ok(());
         }
+        L::try_with(|key| {
+            let key = L::upcast_key(key);
+            let q = unsafe { queue.map_unchecked(|s| &s.queue) };
+            q.borrow_mut(key).as_mut().remove(suspendable);
+        })
+        .map_err(|_| ())
     }
 
-    unsafe fn reinsert_unsafe(
+    unsafe fn try_reinsert_unsafe(
         queue: *const (),
         pkey: PreemptLockKey<'_>,
         suspendable: *const WaitQueueEntry,
-    ) {
+    ) -> Result<(), ()> {
         let queue = unsafe { Pin::new_unchecked(&*(queue as *const WaitQueue<L>)) };
         let suspendable = unsafe { Pin::new_unchecked(&*(suspendable as *const WaitQueueEntry)) };
-        queue.reinsert(pkey, suspendable);
-    }
-
-    fn required_ceiling(_queue: *const ()) -> Option<Priority> {
-        L::required_ceiling().map(|c| Priority::from_any(c))
+        L::try_with(|key| {
+            let key = L::upcast_key(key);
+            let priority = suspendable.priority(pkey);
+            let q = unsafe { queue.map_unchecked(|s| &s.queue) };
+            q.borrow_mut(key).as_mut().remove(suspendable);
+            q.borrow_mut(key)
+                .as_mut()
+                .insert_after(suspendable, |s| s.priority(pkey) >= priority);
+        })
+        .map_err(|_| ())
     }
 
     pub fn wait(&self) {
@@ -218,14 +179,18 @@ impl<L: NestingLock> WaitQueue<L> {
                     let (queue_ptr, vtable) = self.to_raw();
                     let handle = unsafe { WaitQueueHandle::from_raw(queue_ptr, vtable) };
 
-                    PreemptLock::with(|pkey| {
-                        thread.wait_queue.set(pkey, Some(handle));
-                    });
+                    PreemptLock::with(|pkey| thread.arm_wait(pkey, handle));
                 });
-
-                // If the thread is resumed before the wait-syscall is called, it
-                // will return immediately and not block.
-                syscall::thread_wait(self);
+                // L is released here. Pend the block *outside* L::with so
+                // the ceiling threshold drops before `block_current` runs
+                // and picks the next ready thread.
+                Scheduler::set_pending_reschedule(
+                    crate::kernel::scheduler::RESCHEDULE_KIND_BLOCK_CURRENT,
+                );
+                // `L::with`'s release path pends the service-call IRQ;
+                // the drain runs `block_current`. If the thread was
+                // resumed before the drain, the gate in `block_current`
+                // returns without suspending.
             }
             ExecutionContext::Interrupt(_) => {
                 crate::runtime_error!(RuntimeError::InterruptHandlerViolation);

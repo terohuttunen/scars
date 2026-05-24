@@ -1,8 +1,8 @@
 use crate::kernel::hal;
 use crate::priority::{AnyPriority, Priority};
+use crate::sync::CoreInterruptLock;
 use crate::sync::atomic::Ordering;
 use crate::sync::lock::interrupt_lock::CoreInterruptLockKey;
-use crate::sync::{CoreInterruptLock, NestingLock};
 use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
         hal::{clock_ticks, syscall},
         list::LinkedList,
         scheduler::Scheduler,
-        waiter::{WaitQueue, WaitQueueEntry, WaitQueueHandle, WaitQueueTag},
+        waiter::{WaitQueueEntry, WaitQueueHandle, WaitQueueTag},
     },
 };
 use core::cell::SyncUnsafeCell;
@@ -25,7 +25,6 @@ use core::ptr::NonNull;
 use scars_khal::{CoreController, Fault};
 
 pub const SYSCALL_ID_YIELD: usize = 1;
-pub const SYSCALL_ID_WAIT: usize = 2;
 pub const SYSCALL_ID_WAIT_EVENT: usize = 3;
 pub const SYSCALL_ID_WAIT_EVENT_UNTIL: usize = 4;
 pub const SYSCALL_ID_DELAY_UNTIL: usize = 5;
@@ -35,17 +34,6 @@ pub const SYSCALL_ID_SUSPEND: usize = 8;
 
 pub fn thread_yield() {
     let _ = syscall(SYSCALL_ID_YIELD, 0, 0, 0);
-}
-
-pub(crate) fn thread_wait<'a, L: NestingLock>(wait_queue: &WaitQueue<L>) {
-    if in_interrupt() {
-        // Error: cannot wait in an interrupt handler
-        crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
-    }
-
-    let (queue, vtable) = wait_queue.to_raw();
-
-    let _ = syscall(SYSCALL_ID_WAIT, queue as usize, vtable as usize, 0);
 }
 
 pub(crate) fn thread_wait_event(wait_events: *mut crate::WaitEvents) {
@@ -149,10 +137,6 @@ unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usi
             match id {
                 SYSCALL_ID_YIELD => {
                     Scheduler::yield_current_thread_isr();
-                }
-                SYSCALL_ID_WAIT => {
-                    let wait_queue = WaitQueueHandle::from_raw(arg0 as *const (), arg1 as *const _);
-                    Scheduler::wait_current_thread_isr(wait_queue);
                 }
                 SYSCALL_ID_WAIT_EVENT => {
                     let wait_events = arg0 as *mut crate::WaitEvents;

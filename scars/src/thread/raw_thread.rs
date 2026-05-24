@@ -109,6 +109,17 @@ pub(crate) struct RawThread {
     // Holds reference to the wait queue that the thread is waiting on, if any.
     pub wait_queue: LockedCell<Option<WaitQueueHandle>, PreemptLock>,
 
+    // Set by the timer-fire wake path when a deadlined wait expired
+    // without a notifier reaching it. Read and cleared by
+    // `Scheduler::take_last_wait_timed_out` after the syscall returns.
+    pub wait_timed_out: LockedCell<bool, PreemptLock>,
+
+    // Deadline the next drain-driven block will arm. Written by the
+    // commit site inside `Protected::with_barrier_until` and consumed
+    // (reset to `None`) by `Scheduler::block_current`. `None` means
+    // "block without a timer."
+    pub pending_block_deadline: LockedCell<Option<Instant>, PreemptLock>,
+
     // Event system fields
     pub pending_events: AtomicEvents,
     pub current_wait_events: AtomicPtr<WaitEvents>,
@@ -131,6 +142,7 @@ impl RawThread {
     pub(crate) const OP_SUSPEND: u32 = 1 << 2;
     pub(crate) const OP_START: u32 = 1 << 3;
     pub(crate) const OP_CHECK_EVENTS: u32 = 1 << 4;
+    pub(crate) const OP_REINSERT_WAIT_QUEUE: u32 = 1 << 5;
 
     pub(crate) const fn new(
         name: &'static str,
@@ -156,6 +168,8 @@ impl RawThread {
             timer: Timer::new(),
             pending_work: PendingWorkEntry::new(),
             wait_queue: LockedCell::new(None),
+            wait_timed_out: LockedCell::new(false),
+            pending_block_deadline: LockedCell::new(None),
             pending_events: AtomicEvents::new(0),
             current_wait_events: AtomicPtr::new(ptr::null_mut()),
             local_storage: LocalStorage::new(),
@@ -449,15 +463,65 @@ impl RawThread {
         Scheduler::resume_thread(Pin::static_ref(self));
     }
 
-    pub(crate) fn set_wait_queue(
+    /// Set `wait_queue` to `handle`. The caller must have already
+    /// enqueued this thread on the wait list referenced by `handle`;
+    /// the commit then fires via
+    /// `Scheduler::set_pending_reschedule(RESCHEDULE_KIND_BLOCK_CURRENT)`.
+    pub(crate) fn arm_wait(&self, pkey: PreemptLockKey<'_>, handle: WaitQueueHandle) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        self.wait_queue.set(pkey, Some(handle));
+    }
+
+    /// Clear `wait_queue`. Used by the scheduler wake paths after a
+    /// successful `try_remove` on the handle returned by `arm_wait`.
+    pub(crate) fn disarm_wait(&self, pkey: PreemptLockKey<'_>) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        self.wait_queue.set(pkey, None);
+    }
+
+    /// Set the per-thread "wait timed out" flag. Called from the
+    /// timer-fire wake path and from `wait_current_thread_until` to
+    /// reset before the suspend.
+    pub(crate) fn set_wait_timed_out(&self, pkey: PreemptLockKey<'_>, value: bool) {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        self.wait_timed_out.set(pkey, value);
+    }
+
+    /// Read and clear the per-thread "wait timed out" flag.
+    pub(crate) fn take_wait_timed_out(&self, pkey: PreemptLockKey<'_>) -> bool {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        self.wait_timed_out.replace(pkey, false)
+    }
+
+    /// Set the deadline for the next drain-driven block. Pass `None`
+    /// to mean "no timer."
+    pub(crate) fn set_pending_block_deadline(
         &self,
-        wait_queue: Option<WaitQueueHandle>,
         pkey: PreemptLockKey<'_>,
+        deadline: Option<Instant>,
     ) {
         if self.core != pkey.core {
             crate::runtime_error!(RuntimeError::WrongCore);
         }
-        self.wait_queue.set(pkey, wait_queue);
+        self.pending_block_deadline.set(pkey, deadline);
+    }
+
+    /// Read the pending-block deadline and reset to `None` so the
+    /// no-deadline path doesn't have to write the cell between
+    /// commits.
+    pub(crate) fn take_pending_block_deadline(&self, pkey: PreemptLockKey<'_>) -> Option<Instant> {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        self.pending_block_deadline.replace(pkey, None)
     }
 
     pub fn send_events(&'static self, events: Events) {
@@ -561,6 +625,14 @@ impl PendingWorkHandler for RawThread {
                     if sched.as_mut().try_resume_thread(pkey, this).is_err() {
                         retry |= Self::OP_CHECK_EVENTS;
                     }
+                }
+            }
+        }
+        if ops & Self::OP_REINSERT_WAIT_QUEUE != 0 {
+            if let Some(handle) = this.wait_queue.get(pkey) {
+                let entry = this.get_wait_entry();
+                if unsafe { handle.try_reinsert(pkey, entry) }.is_err() {
+                    retry |= Self::OP_REINSERT_WAIT_QUEUE;
                 }
             }
         }

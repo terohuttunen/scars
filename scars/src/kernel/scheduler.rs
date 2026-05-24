@@ -57,9 +57,15 @@ pub(crate) enum ExecutionContext {
     Thread(Pin<&'static RawThread>),
 }
 
+/// Returned in the `Err` arm of `Result<_, TimedOut>` when a
+/// deadlined wait expired before completing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimedOut;
+
 const RESCHEDULE_KIND_NONE: usize = 0;
 const RESCHEDULE_KIND_YIELD_TO_HIGHER: usize = 1;
 const RESCHEDULE_KIND_YIELD_TO_EQUAL: usize = 2;
+pub(crate) const RESCHEDULE_KIND_BLOCK_CURRENT: usize = 4;
 
 pub struct RawScheduler {
     // When thread execution state is one of Ready, Blocked, or Suspended, it is in
@@ -239,12 +245,15 @@ impl RawScheduler {
                 Self::blocked_list_order(pkey, queue_thread, thread_priority)
             });
 
-        // If thread is waiting in a queue, reinsert to the wait queue
-        match thread.wait_queue.get(pkey) {
-            Some(wait_queue_handle) => unsafe {
-                wait_queue_handle.reinsert(pkey, thread.get_wait_entry());
-            },
-            None => (),
+        // If thread is waiting in a queue, reinsert at its new priority.
+        // If the queue's lock isn't acquirable from this context, defer
+        // the reorder — the deferred-op path retries with the
+        // then-current priority.
+        if let Some(handle) = thread.wait_queue.get(pkey) {
+            let entry = thread.get_wait_entry();
+            if unsafe { handle.try_reinsert(pkey, entry) }.is_err() {
+                thread.schedule_deferred_op(RawThread::OP_REINSERT_WAIT_QUEUE);
+            }
         }
     }
 
@@ -276,23 +285,21 @@ impl RawScheduler {
             panic!("Idle thread may not be woken up");
         }
 
+        // Per-thread flag for `Notify`-style timed waits. Set
+        // unconditionally on entry so that, even if `try_remove`
+        // below defers (ceiling violation) and the notify path races
+        // ahead, the flag still reflects "this thread's wake was
+        // timer-driven." Read and cleared by
+        // `Scheduler::take_last_wait_timed_out`.
+        thread.set_wait_timed_out(pkey, true);
+
         // Remove thread from a wait queue if it is waiting in one. If
-        // the queue's ceiling exceeds our current priority, removal is
-        // not safe. Return Err(()) so the caller can re-queue.
-        if let Some(wait_queue) = thread.wait_queue.get(pkey) {
+        // the queue's lock isn't acquirable from this context, return
+        // Err(()) so the caller can defer.
+        if let Some(handle) = thread.wait_queue.get(pkey) {
             let wait_entry = thread.get_wait_entry();
-
-            if let Some(required_ceiling) = wait_queue.required_ceiling() {
-                if Scheduler::current_priority(pkey) > required_ceiling {
-                    return Err(());
-                }
-            }
-
-            unsafe {
-                // `remove` will use the queue lock
-                wait_queue.remove(pkey, wait_entry);
-            }
-            thread.set_wait_queue(None, pkey);
+            unsafe { handle.try_remove(pkey, wait_entry)? };
+            thread.disarm_wait(pkey);
         }
 
         // Set timeout flag if thread has current wait events (indicating it timed out)
@@ -324,22 +331,12 @@ impl RawScheduler {
         thread: Pin<&'static RawThread>,
     ) -> Result<(), ()> {
         // Remove thread from a wait queue if it is waiting in one. If
-        // the queue's ceiling exceeds our current priority, removal is
-        // not safe — report back so the caller can re-queue.
-        if let Some(wait_queue) = thread.wait_queue.get(pkey) {
+        // the queue's lock isn't acquirable from this context, return
+        // Err(()) so the caller can defer.
+        if let Some(handle) = thread.wait_queue.get(pkey) {
             let wait_entry = thread.get_wait_entry();
-
-            if let Some(required_ceiling) = wait_queue.required_ceiling() {
-                if Scheduler::current_priority(pkey) > required_ceiling {
-                    return Err(());
-                }
-            }
-
-            unsafe {
-                // `remove` will use the queue lock
-                wait_queue.remove(pkey, wait_entry);
-            }
-            thread.set_wait_queue(None, pkey);
+            unsafe { handle.try_remove(pkey, wait_entry)? };
+            thread.disarm_wait(pkey);
         }
 
         match thread.state.get(pkey) {
@@ -379,11 +376,9 @@ impl RawScheduler {
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
         thread: Pin<&'static RawThread>,
-        timeout_opt: Option<u64>,
+        deadline: Option<Instant>,
     ) {
-        let deadline = timeout_opt.map(|tick| crate::Instant { tick });
         thread.set_wakeup_deadline(pkey, self.as_mut(), deadline);
-
         self.insert_to_blocked_queue(pkey, thread);
     }
 
@@ -520,6 +515,14 @@ impl RawScheduler {
             }
         }
 
+        // Drain-driven block: the commit site has armed the wait and
+        // written `pending_block_deadline`. Any yield bits ORed in
+        // are moot once we switch away from current.
+        if (kind & RESCHEDULE_KIND_BLOCK_CURRENT) != 0 {
+            self.as_mut().block_current(pkey);
+            return;
+        }
+
         let current_priority = self.current_thread.priority(pkey);
         // Threads at or below any held mutex's ceiling cannot run while
         // the holder is still in its critical section — otherwise they
@@ -588,25 +591,35 @@ impl RawScheduler {
 
         let previous = self.as_mut().switch_thread(pkey, next);
         self.as_mut()
-            .block_thread(pkey, previous, Some(wakeup_time));
+            .block_thread(pkey, previous, Some(Instant { tick: wakeup_time }));
     }
 
-    pub(crate) fn wait_current_thread(
-        mut self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        _wait_queue: WaitQueueHandle,
-    ) {
+    /// Drain-driven block: invoked from `reschedule` when the
+    /// `RESCHEDULE_KIND_BLOCK_CURRENT` bit is set. The commit site
+    /// (`Protected::with_barrier{,_until}`) is responsible for
+    /// enqueuing the thread on a wait list (arming `wait_queue`) and
+    /// for writing `pending_block_deadline` before pending the kind.
+    fn block_current(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'_>) {
         if self.current_thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread cannot block");
         }
 
+        // Gate: notify or timer may have removed us between commit and
+        // drain. On that path leave the deadline cell as-is (the next
+        // commit overwrites or `take` resets it) and let
+        // `wait_timed_out` stay false so the post-resume read returns
+        // `Notified`.
         if self.current_thread.wait_queue.get(pkey).is_none() {
-            // Thread has been removed from the wait queue before it could be blocked.
-            // Blocking is cancelled.
             return;
         }
 
-        // Highest priority of any locks held by the current or blocked threads.
+        // From here we definitely suspend. Reset the per-thread
+        // timed-out flag so the post-wake read reflects only this
+        // suspend.
+        self.current_thread.set_wait_timed_out(pkey, false);
+
+        let deadline = self.current_thread.take_pending_block_deadline(pkey);
+
         let locks_ceiling = self
             .as_ref()
             .locks_priority_ceiling(pkey)
@@ -620,7 +633,7 @@ impl RawScheduler {
 
         let blocked_thread = self.as_mut().switch_thread(pkey, next);
 
-        self.block_thread(pkey, blocked_thread, None);
+        self.block_thread(pkey, blocked_thread, deadline);
     }
 
     pub(crate) fn wait_current_thread_event(
@@ -674,7 +687,8 @@ impl RawScheduler {
                 .unwrap_or(self.idle_thread);
 
             let blocked_thread = self.as_mut().switch_thread(pkey, next);
-            self.as_mut().block_thread(pkey, blocked_thread, deadline);
+            self.as_mut()
+                .block_thread(pkey, blocked_thread, deadline.map(|tick| Instant { tick }));
         }
     }
 
@@ -799,13 +813,6 @@ impl Scheduler {
                     .current_thread
                     .as_ref(),
             ),
-        }
-    }
-
-    pub(crate) fn current_priority(pkey: PreemptLockKey<'_>) -> Priority {
-        match Scheduler::current_execution_context() {
-            ExecutionContext::Thread(thread) => thread.priority(pkey),
-            ExecutionContext::Interrupt(interrupt) => interrupt.priority(),
         }
     }
 
@@ -1083,21 +1090,29 @@ impl Scheduler {
         );
     }
 
-    // Blocking
-    // ISR context
-    pub(crate) fn wait_current_thread_isr(wait_list: WaitQueueHandle) {
-        match PreemptLock::try_with(|pkey| {
-            Scheduler::pin_instance()
-                .borrow_mut(pkey)
-                .as_mut()
-                .wait_current_thread(pkey, wait_list);
-        }) {
-            Ok(()) => (),
-            Err(_) => {
-                // Error: Thread is blocking in a wait list while it holds the preempt lock.
-                unreachable!()
+    /// Commit-site helper: stash `deadline` on the current thread so
+    /// `block_current`'s `take_pending_block_deadline` picks it up.
+    /// Must be called from thread context.
+    pub(crate) fn set_current_pending_block_deadline(deadline: Option<Instant>) {
+        PreemptLock::with(|pkey| match Scheduler::current_execution_context() {
+            ExecutionContext::Thread(t) => t.set_pending_block_deadline(pkey, deadline),
+            ExecutionContext::Interrupt(_) => {
+                crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
             }
-        }
+        });
+    }
+
+    pub(crate) fn take_last_wait_timed_out() -> Result<(), TimedOut> {
+        PreemptLock::with(|pkey| match Scheduler::current_execution_context() {
+            ExecutionContext::Thread(t) => {
+                if t.take_wait_timed_out(pkey) {
+                    Err(TimedOut)
+                } else {
+                    Ok(())
+                }
+            }
+            ExecutionContext::Interrupt(_) => Ok(()),
+        })
     }
 
     pub(crate) fn wait_current_thread_event_isr(
