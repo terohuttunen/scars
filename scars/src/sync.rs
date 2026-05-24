@@ -18,6 +18,7 @@ pub mod lock;
 pub mod mutex;
 pub mod once;
 pub mod once_lock;
+pub mod protected;
 pub mod rendezvous;
 pub mod shared;
 
@@ -30,6 +31,8 @@ pub use condvar::{CeilingCondvar, Condvar};
 pub use mutex::{CeilingMutex, Locked, Mutex, MutexGuard};
 pub use once::Once;
 pub use once_lock::OnceLock;
+pub use protected::{BarrierResult, Protected, TimedOut, WaitMarker};
+pub use semaphore::Semaphore;
 pub use shared::Shared;
 
 pub use ::portable_atomic as atomic;
