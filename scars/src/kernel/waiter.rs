@@ -115,6 +115,61 @@ pub(crate) struct WaitQueueVTable {
         unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry) -> Result<(), ()>,
 }
 
+/// Priority-ordered wait list of [`WaitQueueEntry`] without an owning
+/// lock. Intended to live inside a [`Protected`](crate::sync::Protected)
+/// `T` field; mutual exclusion is provided by the enclosing
+/// `Protected::with`. All entries are pinned (they hold intrusive
+/// pointers), so all mutating methods take `Pin<&mut Self>`.
+pub struct WaitList {
+    list: LinkedList<WaitQueueEntry, WaitQueueTag>,
+}
+
+impl WaitList {
+    pub const fn new() -> WaitList {
+        WaitList {
+            list: LinkedList::new(),
+        }
+    }
+
+    pub fn is_empty(self: Pin<&Self>) -> bool {
+        let list = unsafe { self.map_unchecked(|s| &s.list) };
+        list.is_empty()
+    }
+
+    /// Insert `entry` in priority order. Higher-priority entries come
+    /// first; ties insert after existing same-priority entries (FIFO
+    /// within a priority).
+    pub fn push_priority(
+        self: Pin<&mut Self>,
+        pkey: PreemptLockKey<'_>,
+        entry: Pin<&WaitQueueEntry>,
+    ) {
+        let priority = entry.priority(pkey);
+        let list = unsafe { self.map_unchecked_mut(|s| &mut s.list) };
+        list.insert_after(entry, |s| s.priority(pkey) >= priority);
+    }
+
+    pub fn pop_front<'item>(self: Pin<&mut Self>) -> Option<Pin<&'item WaitQueueEntry>> {
+        let list = unsafe { self.map_unchecked_mut(|s| &mut s.list) };
+        list.pop_front()
+    }
+
+    pub fn remove(self: Pin<&mut Self>, entry: Pin<&WaitQueueEntry>) {
+        let list = unsafe { self.map_unchecked_mut(|s| &mut s.list) };
+        list.remove(entry);
+    }
+
+    /// Remove `entry` (assumed currently in the list) and re-insert at
+    /// its current priority. Used by the priority-inheritance reinsert
+    /// path when a waiter's priority changes.
+    pub fn reinsert(self: Pin<&mut Self>, pkey: PreemptLockKey<'_>, entry: Pin<&WaitQueueEntry>) {
+        let priority = entry.priority(pkey);
+        let mut list = unsafe { self.map_unchecked_mut(|s| &mut s.list) };
+        list.as_mut().remove(entry);
+        list.insert_after(entry, |s| s.priority(pkey) >= priority);
+    }
+}
+
 pub struct WaitQueue<L: NestingLock> {
     queue: LockedPinRefCell<LinkedList<WaitQueueEntry, WaitQueueTag>, L>,
 }
