@@ -72,6 +72,14 @@ name = "nopreempt"
 harness = false
 
 [[test]]
+name = "notify"
+harness = false
+
+[[test]]
+name = "notify_until"
+harness = false
+
+[[test]]
 name = "preempt"
 harness = false
 
