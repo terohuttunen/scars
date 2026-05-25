@@ -80,11 +80,19 @@ name = "notify_until"
 harness = false
 
 [[test]]
+name = "semaphore_timeout"
+harness = false
+
+[[test]]
 name = "preempt"
 harness = false
 
 [[test]]
 name = "protected"
+harness = false
+
+[[test]]
+name = "semaphore"
 harness = false
 
 [[test]]

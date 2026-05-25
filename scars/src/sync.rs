@@ -21,6 +21,7 @@ pub mod once;
 pub mod once_lock;
 pub mod protected;
 pub mod rendezvous;
+pub mod semaphore;
 pub mod shared;
 
 //pub use async_channel::AsyncChannel;
