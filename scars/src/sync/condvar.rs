@@ -1,8 +1,8 @@
 use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
+use crate::sync::guarded::guard_raw;
 use crate::sync::{
     CoreCeilingLock, CoreInterruptLock, CorePreemptLock, LockOps, MutexGuard, NestingLock, Unlock,
-    mutex::guard_raw,
 };
 use crate::{interrupt::in_interrupt, kernel::waiter::WaitQueue};
 

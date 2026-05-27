@@ -14,6 +14,7 @@
 //pub mod async_mutex;
 pub mod channel;
 pub mod condvar;
+pub mod guarded;
 pub mod lock;
 pub mod mutex;
 pub mod notify;
@@ -30,6 +31,8 @@ pub mod shared;
 //pub use async_mutex::{AsyncMutex, AsyncMutexGuard};
 pub use channel::{CeilingChannel, Channel};
 pub use condvar::{CeilingCondvar, Condvar};
+pub use guarded::{Guard, Guarded};
+pub use mutex::{CeilingMutex, Mutex, MutexGuard};
 pub use notify::Notify;
 pub use once::Once;
 pub use once_lock::OnceLock;
