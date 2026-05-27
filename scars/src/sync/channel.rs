@@ -1,11 +1,10 @@
 use crate::kernel::Priority;
 use crate::kernel::hal::CoreId;
 use crate::sync::atomic::{AtomicBool, Ordering};
-use crate::sync::condvar::LockedCondvar;
 use crate::sync::{
-    CoreCeilingLock, CoreInheritanceLock, CorePreemptLock, LockOps, NestingLock, ScopedLock,
-    Unlock, mutex::Locked,
+    BarrierResult, CoreCeilingLock, CorePreemptLock, NestingLock, Notify, Protected, TimedOut,
 };
+use crate::time::Instant;
 use core::mem::MaybeUninit;
 
 #[macro_export]
@@ -37,26 +36,26 @@ pub type CeilingChannel<
     const CAPACITY: usize,
     const CEILING: Priority,
     const CORE: CoreId = { CoreId::DEFAULT },
-> = LockedChannel<T, CAPACITY, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
+> = LockedChannel<T, CAPACITY, CoreCeilingLock<CEILING, CORE>>;
 pub type CeilingSender<
     T,
     const CAPACITY: usize,
     const CEILING: Priority,
     const CORE: CoreId = { CoreId::DEFAULT },
-> = LockedSender<T, CAPACITY, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
+> = LockedSender<T, CAPACITY, CoreCeilingLock<CEILING, CORE>>;
 pub type CeilingReceiver<
     T,
     const CAPACITY: usize,
     const CEILING: Priority,
     const CORE: CoreId = { CoreId::DEFAULT },
-> = LockedReceiver<T, CAPACITY, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
+> = LockedReceiver<T, CAPACITY, CoreCeilingLock<CEILING, CORE>>;
 
 pub type Channel<T, const CAPACITY: usize, const CORE: CoreId = { CoreId::DEFAULT }> =
-    LockedChannel<T, CAPACITY, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
+    LockedChannel<T, CAPACITY, CorePreemptLock<CORE>>;
 pub type Sender<T, const CAPACITY: usize, const CORE: CoreId = { CoreId::DEFAULT }> =
-    LockedSender<T, CAPACITY, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
+    LockedSender<T, CAPACITY, CorePreemptLock<CORE>>;
 pub type Receiver<T, const CAPACITY: usize, const CORE: CoreId = { CoreId::DEFAULT }> =
-    LockedReceiver<T, CAPACITY, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
+    LockedReceiver<T, CAPACITY, CorePreemptLock<CORE>>;
 
 pub struct FIFO<T, const CAPACITY: usize> {
     // Where new data can be written (unless full)
@@ -175,100 +174,97 @@ pub enum TrySendError<T> {
     Full(T),
 }
 
-pub struct LockedChannel<T, const CAPACITY: usize, L: LockOps, N: NestingLock> {
+pub struct LockedChannel<T, const CAPACITY: usize, L: NestingLock> {
     receiver_acquired: AtomicBool,
-    fifo: Locked<FIFO<T, CAPACITY>, L>,
-    receivers: LockedCondvar<N>,
-    senders: LockedCondvar<N>,
+    fifo: Protected<FIFO<T, CAPACITY>, L>,
+    senders: Notify<L>,
+    receivers: Notify<L>,
 }
 
-impl<T, const CAPACITY: usize, L: ScopedLock, N: NestingLock> LockedChannel<T, CAPACITY, L, N> {
-    pub const fn new() -> LockedChannel<T, CAPACITY, L, N> {
+impl<T, const CAPACITY: usize, L: NestingLock> LockedChannel<T, CAPACITY, L> {
+    pub const fn new() -> LockedChannel<T, CAPACITY, L> {
         LockedChannel {
             receiver_acquired: AtomicBool::new(false),
-            fifo: Locked::new(FIFO::new()),
-            receivers: LockedCondvar::new(),
-            senders: LockedCondvar::new(),
+            fifo: Protected::new(FIFO::new()),
+            senders: Notify::new(),
+            receivers: Notify::new(),
         }
     }
-}
 
-impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> LockedChannel<T, CAPACITY, L, N>
-where
-    for<'a> L::Guard<'a>: Unlock,
-{
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        let mut fifo_guard = self.fifo.lock();
-
-        if fifo_guard.is_empty() {
-            return Err(TryRecvError::Empty);
-        }
-
-        let item = fifo_guard.pop().unwrap();
-
-        self.senders.notify_one();
-
-        Ok(item)
+        self.fifo.with(|_, fifo| match fifo.pop() {
+            Some(item) => {
+                self.senders.notify_one();
+                Ok(item)
+            }
+            None => Err(TryRecvError::Empty),
+        })
     }
 
-    pub fn recv(&self) -> T {
-        let fifo_guard = self.fifo.lock();
-
-        // Wait file FIFO is empty
-        let mut fifo_guard = self
-            .receivers
-            .wait_while(fifo_guard, |fifo| fifo.is_empty());
-
-        // FIFO is locked and cannot be empty, pop one item
-        let item = fifo_guard.pop().unwrap();
-
-        // Notify blocked senders that there is room in the FIFO
-        self.senders.notify_one();
-
-        item
+    pub fn recv(&'static self) -> T {
+        self.fifo.with_barrier(|key, fifo| match fifo.pop() {
+            Some(v) => {
+                self.senders.notify_one();
+                BarrierResult::Done(v)
+            }
+            None => BarrierResult::Wait(self.receivers.arm(key)),
+        })
     }
 
-    pub async fn async_recv(&'static self) -> T {
-        let fifo_guard = self.fifo.lock();
-
-        // Wait file FIFO is empty
-        let mut fifo_guard = self
-            .receivers
-            .async_wait_while(fifo_guard, |fifo| fifo.is_empty())
-            .await;
-
-        // FIFO is locked and cannot be empty, pop one item
-        let item = fifo_guard.pop().unwrap();
-
-        // Notify blocked senders that there is room in the FIFO
-        self.senders.notify_one();
-
-        item
+    pub fn send(&'static self, item: T) {
+        let mut item = Some(item);
+        self.fifo.with_barrier(|key, fifo| {
+            if !fifo.is_full() {
+                fifo.push(item.take().unwrap());
+                self.receivers.notify_one();
+                BarrierResult::Done(())
+            } else {
+                BarrierResult::Wait(self.senders.arm(key))
+            }
+        });
     }
 
-    pub fn send(&self, item: T) {
-        let fifo_guard = self.fifo.lock();
+    /// Like [`recv`](Self::recv), but bounded by `deadline`.
+    /// Returns `Err(TimedOut)` if the deadline elapses before an
+    /// item arrives.
+    pub fn recv_until(&'static self, deadline: Instant) -> Result<T, TimedOut> {
+        self.fifo
+            .with_barrier_until(deadline, |key, fifo| match fifo.pop() {
+                Some(v) => {
+                    self.senders.notify_one();
+                    BarrierResult::Done(v)
+                }
+                None => BarrierResult::Wait(self.receivers.arm(key)),
+            })
+    }
 
-        // Wait while FIFO is full
-        let mut fifo_guard = self.senders.wait_while(fifo_guard, |fifo| fifo.is_full());
-
-        fifo_guard.push(item);
-
-        self.receivers.notify_one();
+    /// Like [`send`](Self::send), but bounded by `deadline`.
+    /// Returns `Err(TimedOut)` if the deadline elapses before a
+    /// slot becomes free. On timeout the item is dropped.
+    pub fn send_until(&'static self, item: T, deadline: Instant) -> Result<(), TimedOut> {
+        let mut item = Some(item);
+        self.fifo.with_barrier_until(deadline, |key, fifo| {
+            if !fifo.is_full() {
+                fifo.push(item.take().unwrap());
+                self.receivers.notify_one();
+                BarrierResult::Done(())
+            } else {
+                BarrierResult::Wait(self.senders.arm(key))
+            }
+        })
     }
 
     pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
-        let mut fifo_guard = self.fifo.lock();
-
-        if fifo_guard.is_full() {
-            return Err(TrySendError::Full(item));
-        }
-
-        fifo_guard.push(item);
-
-        self.receivers.notify_one();
-
-        Ok(())
+        let mut item = Some(item);
+        self.fifo.with(|_, fifo| {
+            if fifo.is_full() {
+                Err(TrySendError::Full(item.take().unwrap()))
+            } else {
+                fifo.push(item.take().unwrap());
+                self.receivers.notify_one();
+                Ok(())
+            }
+        })
     }
 
     pub const fn capacity(&self) -> usize {
@@ -276,14 +272,14 @@ where
     }
 
     pub fn free(&self) -> usize {
-        self.fifo.lock().free()
+        self.fifo.with(|_, fifo| fifo.free())
     }
 
     pub fn used(&self) -> usize {
-        self.fifo.lock().used()
+        self.fifo.with(|_, fifo| fifo.used())
     }
 
-    pub fn receiver(&'static self) -> LockedReceiver<T, CAPACITY, L, N> {
+    pub fn receiver(&'static self) -> LockedReceiver<T, CAPACITY, L> {
         match self.receiver_acquired.compare_exchange(
             false,
             true,
@@ -295,35 +291,28 @@ where
         }
     }
 
-    pub fn sender(&'static self) -> LockedSender<T, CAPACITY, L, N> {
+    pub fn sender(&'static self) -> LockedSender<T, CAPACITY, L> {
         LockedSender { channel: self }
     }
 
     pub fn split(
         &'static mut self,
-    ) -> (
-        LockedSender<T, CAPACITY, L, N>,
-        LockedReceiver<T, CAPACITY, L, N>,
-    ) {
+    ) -> (LockedSender<T, CAPACITY, L>, LockedReceiver<T, CAPACITY, L>) {
         (self.sender(), self.receiver())
     }
 }
 
-pub struct LockedSender<
-    T: 'static,
-    const CAPACITY: usize,
-    L: LockOps + 'static,
-    N: NestingLock + 'static,
-> {
-    channel: &'static LockedChannel<T, CAPACITY, L, N>,
+pub struct LockedSender<T: 'static, const CAPACITY: usize, L: NestingLock + 'static> {
+    channel: &'static LockedChannel<T, CAPACITY, L>,
 }
 
-impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> LockedSender<T, CAPACITY, L, N>
-where
-    for<'a> L::Guard<'a>: Unlock,
-{
+impl<T, const CAPACITY: usize, L: NestingLock> LockedSender<T, CAPACITY, L> {
     pub fn send(&self, t: T) {
         self.channel.send(t)
+    }
+
+    pub fn send_until(&self, item: T, deadline: Instant) -> Result<(), TimedOut> {
+        self.channel.send_until(item, deadline)
     }
 
     pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
@@ -343,19 +332,11 @@ where
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, L: LockOps, N: NestingLock> Send
-    for LockedSender<T, CAPACITY, L, N>
-{
-}
+unsafe impl<T: Send, const CAPACITY: usize, L: NestingLock> Send for LockedSender<T, CAPACITY, L> {}
 
-unsafe impl<T: Send, const CAPACITY: usize, L: LockOps, N: NestingLock> Sync
-    for LockedSender<T, CAPACITY, L, N>
-{
-}
+unsafe impl<T: Send, const CAPACITY: usize, L: NestingLock> Sync for LockedSender<T, CAPACITY, L> {}
 
-impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> Clone
-    for LockedSender<T, CAPACITY, L, N>
-{
+impl<T, const CAPACITY: usize, L: NestingLock> Clone for LockedSender<T, CAPACITY, L> {
     fn clone(&self) -> Self {
         LockedSender {
             channel: self.channel,
@@ -363,29 +344,21 @@ impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> Clone
     }
 }
 
-pub struct LockedReceiver<
-    T: 'static,
-    const CAPACITY: usize,
-    L: LockOps + 'static,
-    N: NestingLock + 'static,
-> {
-    channel: &'static LockedChannel<T, CAPACITY, L, N>,
+pub struct LockedReceiver<T: 'static, const CAPACITY: usize, L: NestingLock + 'static> {
+    channel: &'static LockedChannel<T, CAPACITY, L>,
 }
 
-impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> LockedReceiver<T, CAPACITY, L, N>
-where
-    for<'a> L::Guard<'a>: Unlock,
-{
+impl<T, const CAPACITY: usize, L: NestingLock> LockedReceiver<T, CAPACITY, L> {
     pub fn recv(&self) -> T {
         self.channel.recv()
     }
 
-    pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        self.channel.try_recv()
+    pub fn recv_until(&self, deadline: Instant) -> Result<T, TimedOut> {
+        self.channel.recv_until(deadline)
     }
 
-    pub async fn async_recv(&self) -> T {
-        self.channel.async_recv().await
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
+        self.channel.try_recv()
     }
 
     pub const fn capacity(&self) -> usize {
@@ -401,9 +374,7 @@ where
     }
 }
 
-impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> Drop
-    for LockedReceiver<T, CAPACITY, L, N>
-{
+impl<T, const CAPACITY: usize, L: NestingLock> Drop for LockedReceiver<T, CAPACITY, L> {
     fn drop(&mut self) {
         self.channel
             .receiver_acquired
@@ -411,7 +382,7 @@ impl<T, const CAPACITY: usize, L: LockOps, N: NestingLock> Drop
     }
 }
 
-unsafe impl<T: Send, const CAPACITY: usize, L: LockOps, N: NestingLock> Send
-    for LockedReceiver<T, CAPACITY, L, N>
+unsafe impl<T: Send, const CAPACITY: usize, L: NestingLock> Send
+    for LockedReceiver<T, CAPACITY, L>
 {
 }

@@ -72,6 +72,14 @@ name = "nopreempt"
 harness = false
 
 [[test]]
+name = "channel_timeout"
+harness = false
+
+[[test]]
+name = "condvar_timeout"
+harness = false
+
+[[test]]
 name = "notify"
 harness = false
 
