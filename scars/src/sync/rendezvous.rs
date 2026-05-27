@@ -9,9 +9,8 @@
 //! caller side to pick up.
 //!
 //! Use [`make_rendezvous!`] to construct a `(LockedEntry,
-//! LockedAccept)` pair. With a `ceiling` argument the underlying
-//! mutexes use [`CeilingLock`]; without it they use [`InheritanceLock`]
-//! plus [`CorePreemptLock`].
+//! LockedAccept)` pair. With a `ceiling` argument the underlying lock
+//! uses [`CeilingLock`]; without it uses [`CorePreemptLock`].
 //!
 //! ```ignore
 //! use scars::sync::rendezvous::make_rendezvous;
@@ -31,14 +30,9 @@
 use crate::Priority;
 use crate::kernel::hal::CoreId;
 use crate::sync::{
-    CoreCeilingLock, CoreInheritanceLock, CorePreemptLock, LockOps, NestingLock, ScopedLock,
-    Unlock, condvar::LockedCondvar, mutex::Locked,
+    BarrierResult, CoreCeilingLock, CorePreemptLock, NestingLock, Notify, Protected,
 };
 
-/// Allocates a static `Rendezvous` and returns a `(LockedEntry,
-/// LockedAccept)` pair. With a `$prio` argument the rendezvous uses
-/// [`CeilingLock<$prio>`]; without one it uses [`InheritanceLock`]
-/// plus [`CorePreemptLock`].
 #[macro_export]
 macro_rules! make_rendezvous {
     ($prio:expr) => {{
@@ -66,41 +60,46 @@ pub type CeilingRendezvous<
     R,
     const CEILING: Priority,
     const CORE: CoreId = { CoreId::DEFAULT },
-> = LockedRendezvous<A, R, CoreCeilingLock<CEILING, CORE>, CoreCeilingLock<CEILING, CORE>>;
+> = LockedRendezvous<A, R, CoreCeilingLock<CEILING, CORE>>;
 
 pub type Rendezvous<A, R, const CORE: CoreId = { CoreId::DEFAULT }> =
-    LockedRendezvous<A, R, CoreInheritanceLock<CORE>, CorePreemptLock<CORE>>;
+    LockedRendezvous<A, R, CorePreemptLock<CORE>>;
 
-/// Two-thread RPC channel parameterised over its mutex lock type `L`
-/// and the nesting-lock kind `N` used by the internal condvar. Use
-/// the [`Rendezvous`] / [`CeilingRendezvous`] aliases for the
-/// supported configurations.
-pub struct LockedRendezvous<A, R, L: LockOps, N: NestingLock>
-where
-    A: Send + 'static,
-    R: Send + 'static,
-{
-    arg: Locked<Option<A>, L>,
-    result: Locked<Option<R>, L>,
-    waiter: LockedCondvar<N>,
+struct RendezvousInner<A, R> {
+    arg: Option<A>,
+    result: Option<R>,
 }
 
-impl<A, R, L: ScopedLock, N: NestingLock> LockedRendezvous<A, R, L, N>
+/// Two-thread RPC channel parameterised over a single nesting-lock `L`.
+/// Use the [`Rendezvous`] / [`CeilingRendezvous`] aliases for the
+/// supported configurations.
+pub struct LockedRendezvous<A, R, L: NestingLock>
 where
     A: Send + 'static,
     R: Send + 'static,
 {
-    pub const fn new() -> LockedRendezvous<A, R, L, N> {
+    inner: Protected<RendezvousInner<A, R>, L>,
+    notify: Notify<L>,
+}
+
+impl<A, R, L: NestingLock> LockedRendezvous<A, R, L>
+where
+    A: Send + 'static,
+    R: Send + 'static,
+{
+    pub const fn new() -> LockedRendezvous<A, R, L> {
         LockedRendezvous {
-            arg: Locked::new(None),
-            result: Locked::new(None),
-            waiter: LockedCondvar::new(),
+            inner: Protected::new(RendezvousInner {
+                arg: None,
+                result: None,
+            }),
+            notify: Notify::new(),
         }
     }
 
     /// Splits the rendezvous into the caller-side and callee-side
     /// halves.
-    pub const fn split(&'static mut self) -> (LockedEntry<A, R, L, N>, LockedAccept<A, R, L, N>) {
+    pub const fn split(&'static mut self) -> (LockedEntry<A, R, L>, LockedAccept<A, R, L>) {
         (
             LockedEntry { rendezvous: self },
             LockedAccept { rendezvous: self },
@@ -110,45 +109,39 @@ where
 
 /// Caller-side handle of a rendezvous. Hand the argument to
 /// [`entry`](Self::entry) and block until the callee returns a value.
-pub struct LockedEntry<A, R, L: LockOps + 'static, N: NestingLock + 'static>
+pub struct LockedEntry<A, R, L: NestingLock + 'static>
 where
     A: Send + 'static,
     R: Send + 'static,
 {
-    rendezvous: &'static LockedRendezvous<A, R, L, N>,
+    rendezvous: &'static LockedRendezvous<A, R, L>,
 }
 
-impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> LockedEntry<A, R, L, N>
+impl<A, R, L: NestingLock + 'static> LockedEntry<A, R, L>
 where
     A: Send + 'static,
     R: Send + 'static,
-    for<'b> L::Guard<'b>: Unlock,
 {
     /// Hands `arg` to the callee side and blocks until it stores a
     /// result.
     pub fn entry(&self, arg: A) -> R {
-        // Provide argument
-        let mut arg_guard = self.rendezvous.arg.lock();
-        *arg_guard = Some(arg);
-        drop(arg_guard);
+        // Deposit argument and wake the accept side.
+        self.rendezvous.inner.with(|_, r| {
+            r.arg = Some(arg);
+        });
+        self.rendezvous.notify.notify_one();
 
-        // Notify thread waiting for the argument if any
-        self.rendezvous.waiter.notify_one();
-
-        // Wait for the result
-        let result_guard = self.rendezvous.result.lock();
-        let mut result_guard = self
-            .rendezvous
-            .waiter
-            .wait_while(result_guard, |result| result.is_none());
-        let result = result_guard.take().unwrap();
-        drop(result_guard);
-
-        result
+        // Wait for the result.
+        self.rendezvous
+            .inner
+            .with_barrier(|key, r| match r.result.take() {
+                Some(v) => BarrierResult::Done(v),
+                None => BarrierResult::Wait(self.rendezvous.notify.arm(key)),
+            })
     }
 }
 
-unsafe impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> Send for LockedEntry<A, R, L, N>
+unsafe impl<A, R, L: NestingLock + 'static> Send for LockedEntry<A, R, L>
 where
     A: Send + 'static,
     R: Send + 'static,
@@ -158,47 +151,44 @@ where
 /// Callee-side handle of a rendezvous. Wait for an argument with
 /// [`accept`](Self::accept), run a closure on it, and stash the
 /// closure's result for the caller side to retrieve.
-pub struct LockedAccept<A, R, L: LockOps + 'static, N: NestingLock + 'static>
+pub struct LockedAccept<A, R, L: NestingLock + 'static>
 where
     A: Send + 'static,
     R: Send + 'static,
 {
-    rendezvous: &'static LockedRendezvous<A, R, L, N>,
+    rendezvous: &'static LockedRendezvous<A, R, L>,
 }
 
-impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> LockedAccept<A, R, L, N>
+impl<A, R, L: NestingLock + 'static> LockedAccept<A, R, L>
 where
     A: Send + 'static,
     R: Send + 'static,
-    for<'b> L::Guard<'b>: Unlock,
 {
     /// Blocks until the caller side issues an argument, runs `closure`
     /// on it, and stores the closure's return value for the caller's
     /// `entry` call to receive.
     pub fn accept<F: FnMut(A) -> R>(&self, mut closure: F) {
-        // Wait for closure argument
-        let arg_guard = self.rendezvous.arg.lock();
-        let mut arg_guard = self
+        // Wait for the argument.
+        let arg = self
             .rendezvous
-            .waiter
-            .wait_while(arg_guard, |arg| arg.is_none());
-        let arg = arg_guard.take().unwrap();
-        drop(arg_guard);
+            .inner
+            .with_barrier(|key, r| match r.arg.take() {
+                Some(a) => BarrierResult::Done(a),
+                None => BarrierResult::Wait(self.rendezvous.notify.arm(key)),
+            });
 
-        // Compute result
+        // Compute result outside the lock.
         let result = closure(arg);
 
-        // Return result
-        let mut result_guard = self.rendezvous.result.lock();
-        *result_guard = Some(result);
-        drop(result_guard);
-
-        // Notify thread waiting for the result
-        self.rendezvous.waiter.notify_one();
+        // Deposit result and wake the entry side.
+        self.rendezvous.inner.with(|_, r| {
+            r.result = Some(result);
+        });
+        self.rendezvous.notify.notify_one();
     }
 }
 
-unsafe impl<A, R, L: LockOps + 'static, N: NestingLock + 'static> Send for LockedAccept<A, R, L, N>
+unsafe impl<A, R, L: NestingLock + 'static> Send for LockedAccept<A, R, L>
 where
     A: Send + 'static,
     R: Send + 'static,
