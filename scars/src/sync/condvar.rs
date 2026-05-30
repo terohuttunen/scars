@@ -1,10 +1,13 @@
+use crate::interrupt::in_interrupt;
 use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
+use crate::sync::Notify;
 use crate::sync::guarded::guard_raw;
 use crate::sync::{
-    CoreCeilingLock, CoreInterruptLock, CorePreemptLock, LockOps, MutexGuard, NestingLock, Unlock,
+    CoreCeilingLock, CoreInterruptLock, CorePreemptLock, LockOps, MutexGuard, NestingLock,
+    TimedOut, Unlock,
 };
-use crate::{interrupt::in_interrupt, kernel::waiter::WaitQueue};
+use crate::time::Instant;
 
 pub type Condvar<const CORE: CoreId = { CoreId::DEFAULT }> = LockedCondvar<CorePreemptLock<CORE>>;
 pub type CeilingCondvar<const CEILING: Priority, const CORE: CoreId = { CoreId::DEFAULT }> =
@@ -12,22 +15,14 @@ pub type CeilingCondvar<const CEILING: Priority, const CORE: CoreId = { CoreId::
 pub type InterruptCondvar<const CORE: CoreId = { CoreId::DEFAULT }> =
     LockedCondvar<CoreInterruptLock<CORE>>;
 
-pub struct WaitTimeoutResult(bool);
-
-impl WaitTimeoutResult {
-    pub fn timed_out(&self) -> bool {
-        self.0
-    }
-}
-
 pub struct LockedCondvar<L: NestingLock> {
-    waiter_queue: WaitQueue<L>,
+    notifier: Notify<L>,
 }
 
 impl<L: NestingLock> LockedCondvar<L> {
     pub const fn new() -> LockedCondvar<L> {
         LockedCondvar {
-            waiter_queue: WaitQueue::new(),
+            notifier: Notify::new(),
         }
     }
 
@@ -36,12 +31,10 @@ impl<L: NestingLock> LockedCondvar<L> {
     where
         for<'a> G::Guard<'a>: Unlock,
     {
-        unsafe {
-            guard.unlock();
-        }
-
-        self.waiter_queue.wait();
-
+        // Release the mutex only once queued on the notify: `wait_with`
+        // arms first, so a notifier that takes the mutex right after the
+        // unlock cannot lose the wakeup.
+        self.notifier.wait_with(|| unsafe { guard.unlock() });
         guard.relock();
     }
 
@@ -81,6 +74,68 @@ impl<L: NestingLock> LockedCondvar<L> {
         guard
     }
 
+    #[inline(never)]
+    fn wait_lock_until<G: LockOps>(
+        &self,
+        guard: &mut G::Guard<'_>,
+        deadline: Instant,
+    ) -> Result<(), TimedOut>
+    where
+        for<'a> G::Guard<'a>: Unlock,
+    {
+        // Release the mutex only once queued on the notify; see `wait_lock`.
+        let outcome = self
+            .notifier
+            .wait_until_with(deadline, || unsafe { guard.unlock() });
+        guard.relock();
+        outcome
+    }
+
+    /// Wait until notified or until `deadline` elapses, whichever
+    /// comes first. Returns the re-locked guard on success; drops the
+    /// guard (releasing the mutex) and returns `Err(TimedOut)` on
+    /// deadline expiry.
+    #[inline(always)]
+    pub fn wait_until<'a, T, G: LockOps>(
+        &self,
+        mut guard: MutexGuard<'a, T, G>,
+        deadline: Instant,
+    ) -> Result<MutexGuard<'a, T, G>, TimedOut>
+    where
+        for<'b> G::Guard<'b>: Unlock,
+    {
+        if in_interrupt() {
+            crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
+        }
+
+        let raw = guard_raw(&mut guard);
+        self.wait_lock_until::<G>(raw, deadline)?;
+        Ok(guard)
+    }
+
+    /// Repeatedly wait until either `condition` becomes false or
+    /// `deadline` elapses. On timeout, drops the guard (releasing the
+    /// mutex) and returns `Err(TimedOut)`.
+    pub fn wait_while_until<'a, T, G: LockOps, F>(
+        &self,
+        mut guard: MutexGuard<'a, T, G>,
+        mut condition: F,
+        deadline: Instant,
+    ) -> Result<MutexGuard<'a, T, G>, TimedOut>
+    where
+        F: FnMut(&mut T) -> bool,
+        for<'b> G::Guard<'b>: Unlock,
+    {
+        if in_interrupt() {
+            crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
+        }
+
+        while condition(&mut *guard) {
+            guard = self.wait_until(guard, deadline)?;
+        }
+        Ok(guard)
+    }
+
     pub async fn async_wait<'a, T, G: LockOps>(
         &'static self,
         mut guard: MutexGuard<'static, T, G>,
@@ -94,7 +149,7 @@ impl<L: NestingLock> LockedCondvar<L> {
             raw.unlock();
         }
 
-        self.waiter_queue.async_wait().await;
+        self.notifier.async_wait().await;
 
         raw.relock();
 
@@ -117,11 +172,11 @@ impl<L: NestingLock> LockedCondvar<L> {
     }
 
     pub fn notify_one(&self) {
-        self.waiter_queue.notify_one()
+        self.notifier.notify_one()
     }
 
     pub fn notify_all(&self) {
-        self.waiter_queue.notify_all()
+        self.notifier.notify_all()
     }
 }
 
