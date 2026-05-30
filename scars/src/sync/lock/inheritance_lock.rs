@@ -3,9 +3,9 @@ use crate::kernel::hal::{CoreId, CoreToken};
 use crate::kernel::{
     list::{Node, impl_linked},
     scheduler::{ExecutionContext, Scheduler},
-    waiter::WaitQueue,
 };
 use crate::runtime_error;
+use crate::sync::Notify;
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::thread::{InheritanceLockListTag, RawThread};
 use core::pin::Pin;
@@ -18,7 +18,7 @@ pub struct InheritanceLock {
     owner: AtomicOwner,
 
     // Threads waiting for the lock
-    wait_queue: WaitQueue<PreemptLock>,
+    wait_list: Notify<PreemptLock>,
 
     pub core: CoreId,
 
@@ -34,7 +34,7 @@ impl InheritanceLock {
     pub const fn new(core: CoreId) -> Self {
         Self {
             owner: AtomicOwner::new(),
-            wait_queue: WaitQueue::new(),
+            wait_list: Notify::new(),
             core,
             lock_list_node: Node::new(),
         }
@@ -62,7 +62,7 @@ impl InheritanceLock {
                         owner.inherit_priority(pkey, current_priority);
                     });
 
-                    self.wait_queue.wait();
+                    self.wait_list.wait();
                 }
             }
         }
@@ -97,7 +97,7 @@ impl InheritanceLock {
 
         self.owner.release_ownership(current_thread);
 
-        self.wait_queue.notify_one();
+        self.wait_list.notify_one();
     }
 
     pub fn lock(self: Pin<&Self>) -> InheritanceLockGuard<'_> {
