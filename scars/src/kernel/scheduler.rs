@@ -2,7 +2,7 @@ pub mod event_queue;
 pub mod timers;
 mod work_queue;
 use crate::Instant;
-use crate::cell::{LockedCell, LockedPinRefCell, LockedRefCell, PinRefMut, RefMut};
+use crate::cell::{LockedCell, LockedRefCell, RefMut};
 use crate::events::raw::RawEventHandler;
 use crate::interrupt::{
     RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold,
@@ -24,7 +24,7 @@ use crate::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
 use crate::sync::lock::preempt_lock::is_preempt_allowed;
 use crate::sync::lock::{interrupt_lock::CoreInterruptLockKey, preempt_lock::CorePreemptLockKey};
 use crate::sync::{
-    CoreInterruptLock, CorePreemptLock, PreemptLock, PreemptLockKey, RawCeilingLock,
+    CoreInterruptLock, CorePreemptLock, PreemptLock, PreemptLockKey, Protected, RawCeilingLock,
 };
 use crate::thread::{
     IDLE_THREAD_ID, INVALID_THREAD_ID, RawThread, Thread, ThreadExecutionState, ThreadInfo,
@@ -91,6 +91,8 @@ pub struct RawScheduler {
     // Currently running thread on state Running
     current_thread: Pin<&'static RawThread>,
 }
+
+unsafe impl Send for RawScheduler {}
 
 impl RawScheduler {
     pub(crate) fn new(idle_thread: &'static RawThread) -> RawScheduler {
@@ -740,7 +742,7 @@ pub struct Scheduler {
     // Current ceiling priority from all held ceiling locks
     current_ceiling_priority: AtomicPriorityOpt,
 
-    raw: LockedPinRefCell<RawScheduler, PreemptLock>,
+    raw: Protected<RawScheduler, PreemptLock>,
 }
 
 impl Scheduler {
@@ -751,7 +753,7 @@ impl Scheduler {
             pending_events: PendingEventsQueue::new(),
             pending_reschedule_kind: AtomicUsize::new(RESCHEDULE_KIND_NONE),
             current_ceiling_priority: AtomicPriorityOpt::new(PriorityOpt::none()),
-            raw: LockedPinRefCell::new(RawScheduler::new(idle_thread)),
+            raw: Protected::new(RawScheduler::new(idle_thread)),
         }
     }
 
@@ -795,12 +797,9 @@ impl Scheduler {
         unsafe { (&*SCHEDULERS[core.as_usize()].get()).assume_init_ref() }
     }
 
-    fn borrow_mut<'lock, 'a: 'lock>(
-        self: Pin<&'static Self>,
-        pkey: PreemptLockKey<'lock>,
-    ) -> PinRefMut<'lock, RawScheduler> {
-        let raw = unsafe { self.map_unchecked(|s| &s.raw) };
-        raw.borrow_mut(pkey)
+    fn raw_pin(self: Pin<&'static Self>) -> Pin<&'static Protected<RawScheduler, PreemptLock>> {
+        // SAFETY: `raw` is a field of the pinned per-core Scheduler.
+        unsafe { self.map_unchecked(|s| &s.raw) }
     }
 
     pub(crate) fn current_execution_context() -> ExecutionContext {
@@ -844,37 +843,43 @@ impl Scheduler {
         pkey: PreemptLockKey<'key>,
         thread: Pin<&'static RawThread>,
     ) {
-        let mut scheduler = Self::pin_instance().borrow_mut(pkey);
-        let mut pin_scheduler = scheduler.as_mut();
+        Self::pin_instance()
+            .raw_pin()
+            .with_pin_key(pkey, |pkey, mut pin_scheduler| {
+                match thread.state.get(pkey) {
+                    ThreadExecutionState::Ready => {
+                        pin_scheduler.as_mut().reinsert_to_ready_queue(pkey, thread);
 
-        match thread.state.get(pkey) {
-            ThreadExecutionState::Ready => {
-                pin_scheduler.as_mut().reinsert_to_ready_queue(pkey, thread);
+                        if let Some(ready_thread) = pin_scheduler.as_ref().ready_queue().head() {
+                            if pin_scheduler.current_thread.priority(pkey)
+                                < ready_thread.priority(pkey)
+                            {
+                                // Rescheduling will be executed when preemption lock is released
+                                Self::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
+                            }
+                        }
+                    }
+                    ThreadExecutionState::Blocked => {
+                        pin_scheduler.reinsert_to_blocked_queue(pkey, thread);
+                    }
+                    _ => (),
+                }
+            })
+    }
 
-                if let Some(ready_thread) = pin_scheduler.as_ref().ready_queue().head() {
+    pub(crate) fn cond_reschedule<'key>(pkey: PreemptLockKey<'key>) {
+        Self::pin_instance()
+            .raw_pin()
+            .with_pin_key(pkey, |pkey, scheduler| {
+                let pin_scheduler = scheduler.as_ref();
+
+                if let Some(ready_thread) = pin_scheduler.ready_queue().head() {
                     if pin_scheduler.current_thread.priority(pkey) < ready_thread.priority(pkey) {
                         // Rescheduling will be executed when preemption lock is released
                         Self::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
                     }
                 }
-            }
-            ThreadExecutionState::Blocked => {
-                pin_scheduler.reinsert_to_blocked_queue(pkey, thread);
-            }
-            _ => (),
-        }
-    }
-
-    pub(crate) fn cond_reschedule<'key>(pkey: PreemptLockKey<'key>) {
-        let scheduler = Self::pin_instance().borrow_mut(pkey);
-        let pin_scheduler = scheduler.as_ref();
-
-        if let Some(ready_thread) = pin_scheduler.ready_queue().head() {
-            if pin_scheduler.current_thread.priority(pkey) < ready_thread.priority(pkey) {
-                // Rescheduling will be executed when preemption lock is released
-                Self::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
-            }
-        }
+            })
     }
 
     pub(crate) fn set_pending_reschedule(kind: usize) {
@@ -937,6 +942,7 @@ impl Scheduler {
     /// once and reuses it across all three sweeps.
     pub(crate) fn process_pending_work() {
         let scheduler: &'static Scheduler = Scheduler::instance();
+        let raw_pin = Pin::static_ref(scheduler).raw_pin();
 
         // Pending event-handler queue. No preempt lock needed; handlers
         // run in their own event-handler context.
@@ -946,13 +952,9 @@ impl Scheduler {
         // lock; bail when someone else holds it (their release path
         // will pick up the rest).
         while scheduler.deferred_work_queue.work_pending() {
-            if PreemptLock::try_with(|pkey| {
-                let mut raw = Pin::static_ref(scheduler).borrow_mut(pkey);
-                scheduler
-                    .deferred_work_queue
-                    .complete_work(pkey, raw.as_mut());
-            })
-            .is_err()
+            if raw_pin
+                .try_with_pin(|pkey, raw| scheduler.deferred_work_queue.complete_work(pkey, raw))
+                .is_err()
             {
                 break;
             }
@@ -965,13 +967,9 @@ impl Scheduler {
             .pending_reschedule_kind
             .swap(RESCHEDULE_KIND_NONE, Ordering::AcqRel);
         if kind != RESCHEDULE_KIND_NONE {
-            if PreemptLock::try_with(|pkey| {
-                Pin::static_ref(scheduler)
-                    .borrow_mut(pkey)
-                    .as_mut()
-                    .reschedule(pkey, kind);
-            })
-            .is_err()
+            if raw_pin
+                .try_with_pin(|pkey, raw| raw.reschedule(pkey, kind))
+                .is_err()
             {
                 // Re-pend without going through `set_pending_reschedule`,
                 // which would re-resolve the instance.
@@ -996,12 +994,9 @@ impl Scheduler {
             thread.schedule_deferred_op(RawThread::OP_RESUME);
             return;
         }
-        let result = PreemptLock::try_with(|pkey| {
-            Self::pin_instance()
-                .borrow_mut(pkey)
-                .as_mut()
-                .try_resume_thread(pkey, thread)
-        });
+        let result = Self::pin_instance()
+            .raw_pin()
+            .try_with_pin(|pkey, raw| raw.try_resume_thread(pkey, thread));
         match result {
             // Lock acquired and operation completed inline.
             Ok(Ok(())) => (),
@@ -1022,12 +1017,10 @@ impl Scheduler {
     // ISR context
     /// Puts the current thread into scheduler sleep queue to be woken up later at given time.
     pub(crate) fn delay_thread_until(wakeup_time: u64) {
-        match PreemptLock::try_with(|pkey| {
-            Scheduler::pin_instance()
-                .borrow_mut(pkey)
-                .as_mut()
-                .delay_thread_until(pkey, wakeup_time);
-        }) {
+        match Self::pin_instance()
+            .raw_pin()
+            .try_with_pin(|pkey, raw| raw.delay_thread_until(pkey, wakeup_time))
+        {
             Ok(()) => (),
             Err(_) => {
                 // Error: Thread is trying to sleep while it holds the preempt lock.
@@ -1048,12 +1041,10 @@ impl Scheduler {
                 return;
             }
         }
-        match PreemptLock::try_with(|pkey| {
-            Scheduler::pin_instance()
-                .borrow_mut(pkey)
-                .as_mut()
-                .suspend_thread(pkey, maybe_thread);
-        }) {
+        match Self::pin_instance()
+            .raw_pin()
+            .try_with_pin(|pkey, raw| raw.suspend_thread(pkey, maybe_thread))
+        {
             Ok(()) => (),
             Err(_) => match maybe_thread {
                 Some(thread) => {
@@ -1119,12 +1110,10 @@ impl Scheduler {
         wait_events: *mut crate::WaitEvents,
         deadline: Option<u64>,
     ) {
-        match PreemptLock::try_with(|pkey| {
-            Scheduler::pin_instance()
-                .borrow_mut(pkey)
-                .as_mut()
-                .wait_current_thread_event(pkey, wait_events, deadline)
-        }) {
+        match Self::pin_instance()
+            .raw_pin()
+            .try_with_pin(|pkey, raw| raw.wait_current_thread_event(pkey, wait_events, deadline))
+        {
             Ok(()) => (),
             Err(_) => {
                 // Error: Thread is blocking to wait for events while it holds the preempt lock.
@@ -1137,22 +1126,23 @@ impl Scheduler {
 #[allow(dead_code)]
 pub fn print_threads() {
     printkln!("NAME       PRI  STATUS ENTRY");
-    PreemptLock::with(|pkey| {
-        let scheduler = Scheduler::pin_instance().borrow_mut(pkey);
-        let pin_scheduler = scheduler.as_ref();
-        for info in pin_scheduler.thread_info(pkey) {
-            printkln!(
-                "{} {}   {} {:x}",
-                info.name,
-                info.base_priority,
-                match info.state {
-                    ThreadExecutionState::Running => "Exec ",
-                    ThreadExecutionState::Ready => "Ready",
-                    ThreadExecutionState::Blocked => "Block",
-                    _ => "?",
-                },
-                info.entry as usize,
-            );
-        }
-    });
+    Scheduler::pin_instance()
+        .raw_pin()
+        .with_pin(|pkey, scheduler| {
+            let pin_scheduler = scheduler.as_ref();
+            for info in pin_scheduler.thread_info(pkey) {
+                printkln!(
+                    "{} {}   {} {:x}",
+                    info.name,
+                    info.base_priority,
+                    match info.state {
+                        ThreadExecutionState::Running => "Exec ",
+                        ThreadExecutionState::Ready => "Ready",
+                        ThreadExecutionState::Blocked => "Block",
+                        _ => "?",
+                    },
+                    info.entry as usize,
+                );
+            }
+        });
 }

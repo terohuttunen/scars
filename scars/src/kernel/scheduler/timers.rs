@@ -309,11 +309,10 @@ impl EventTimer {
     /// scheduler.
     fn set_pending(self: Pin<&'static Self>, config: Option<EventTimerConfig>) {
         InterruptLock::with(|ikey| self.pending.set(ikey, config));
-        if PreemptLock::try_with(|pkey| {
-            let mut scheduler = Scheduler::pin_instance().borrow_mut(pkey);
-            self.reconfigure(pkey, scheduler.as_mut());
-        })
-        .is_err()
+        if Scheduler::pin_instance()
+            .raw_pin()
+            .try_with_pin(|pkey, raw| self.reconfigure(pkey, raw))
+            .is_err()
         {
             // Required before queueing: a pending_work entry with a null
             // receiver is skipped on dispatch.
