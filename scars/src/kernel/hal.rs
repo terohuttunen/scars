@@ -37,64 +37,8 @@ pub(crate) type StackAlignment = <kernel_hal::HAL as CoreController>::StackAlign
 #[allow(dead_code)]
 pub const NUM_CORES: usize = <kernel_hal::HAL as CoreController>::NUM_CORES;
 
-/// Validated core index. Construction asserts `core < NUM_CORES`,
-/// so any existing `CoreId` value is guaranteed to be in range for
-/// the active khal. Used as the type of the `CORE` const generic
-/// across the kernel (analogous to how `Priority` is used for `PRIO`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, core::marker::ConstParamTy)]
-#[repr(transparent)]
-pub struct CoreId(u8);
-
-impl CoreId {
-    /// The default core for kernel objects that don't pick one
-    /// explicitly. Mirrors `scars_khal::DEFAULT_CORE` (currently 0)
-    /// but wrapped in the validated `CoreId` type.
-    pub const DEFAULT: Self = Self::new(scars_khal::DEFAULT_CORE);
-
-    pub const fn new(core: u8) -> Self {
-        assert!(
-            (core as usize) < NUM_CORES,
-            "CoreId out of range for this target's NUM_CORES",
-        );
-        Self(core)
-    }
-
-    /// Construct a `CoreId` without the range check.
-    ///
-    /// # Safety
-    ///
-    /// Caller must guarantee `core < NUM_CORES`. Used at the HAL
-    /// boundary where the khal contract already establishes the
-    /// invariant; avoids paying the runtime branch on every
-    /// `CoreId::current()` call.
-    #[inline(always)]
-    pub const unsafe fn from_u8_unchecked(core: u8) -> Self {
-        Self(core)
-    }
-
-    #[inline(always)]
-    pub const fn as_u8(self) -> u8 {
-        self.0
-    }
-
-    #[inline(always)]
-    pub const fn as_usize(self) -> usize {
-        // SAFETY: `CoreId` is constructed only via `new(u8)` (which
-        // asserts `< NUM_CORES`) or `from_u8_unchecked` (where the
-        // caller upholds the same invariant). The hint lets LLVM
-        // elide bounds checks on every `arr[core.as_usize()]` where
-        // `arr: [T; NUM_CORES]`.
-        unsafe { core::hint::assert_unchecked((self.0 as usize) < NUM_CORES) };
-        self.0 as usize
-    }
-
-    /// The id of the core executing this call.
-    #[inline(always)]
-    pub fn current() -> Self {
-        // SAFETY: HAL guarantees the returned id is `< NUM_CORES`.
-        unsafe { Self::from_u8_unchecked(<kernel_hal::HAL as CoreController>::current_core_id()) }
-    }
-}
+mod core_id;
+pub use core_id::CoreId;
 
 #[allow(dead_code)]
 #[inline(always)]

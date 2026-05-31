@@ -192,6 +192,8 @@ priority-inheritance = []
 # Opt out to keep only the closure-based primitives (`Channel`, `Semaphore`,
 # `Notify`, `Rendezvous`, `OnceLock`), which use the `NestingLock` API.
 raii-locks = []
+# Multi-core support.
+multi-core = []
 defmt = ["dep:defmt", "scars-fault/defmt"]
 display = ["scars-fault/display"]
 khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "scars-bench/semihosting", "defmt"]
@@ -218,4 +220,4 @@ chip-stm32f103 = ["khal-stm32f1", "scars-khal-stm32f1/stm32f103"]
 chip-stm32f429 = ["khal-stm32f4", "scars-khal-stm32f4/stm32f429"]
 chip-stm32f446 = ["khal-stm32f4", "scars-khal-stm32f4/stm32f446"]
 chip-stm32h753v = ["khal-stm32h7", "scars-khal-stm32h7/stm32h753v"]
-chip-rp2350 = ["khal-rp2350", "scars-khal-rp2350/rp2350"]
+chip-rp2350 = ["khal-rp2350", "scars-khal-rp2350/rp2350", "multi-core"]
