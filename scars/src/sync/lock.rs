@@ -20,12 +20,14 @@
 //! [`LockedRefCell`](crate::cell::LockedRefCell) types.
 
 pub mod ceiling_lock;
+#[cfg(feature = "priority-inheritance")]
 pub mod inheritance_lock;
 pub mod interrupt_lock;
 pub mod no_lock;
 pub mod preempt_lock;
 
 pub use ceiling_lock::{CeilingLock, CoreCeilingLock, RawCeilingLock};
+#[cfg(feature = "priority-inheritance")]
 pub use inheritance_lock::{CoreInheritanceLock, InheritanceLock};
 pub use interrupt_lock::{CoreInterruptLock, InterruptLock, InterruptLockKey};
 pub use no_lock::NoLock;

@@ -58,6 +58,7 @@ pub enum RuntimeError {
     IdleThreadCeilingLock,
 
     /// Inheritance locks may not be acquired while holding any ceiling locks.
+    #[cfg(feature = "priority-inheritance")]
     InheritanceLockNotAllowed,
 
     /// Ceiling locks may not be acquired while holding any inheritance
@@ -66,6 +67,7 @@ pub enum RuntimeError {
     /// lock's ceiling, breaking the immediate-ceiling protocol's
     /// `priority <= ceiling` invariant, so the two protocols may not be
     /// held simultaneously.
+    #[cfg(feature = "priority-inheritance")]
     CeilingLockNotAllowed,
 
     /// Attempt to access a thread or lock from a core other than the one

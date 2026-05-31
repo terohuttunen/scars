@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![cfg(feature = "priority-inheritance")]
 #![feature(type_alias_impl_trait)]
 
 use core::pin::Pin;

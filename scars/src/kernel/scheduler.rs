@@ -176,6 +176,7 @@ impl RawScheduler {
     }
 
     // Reinsert when priority changes
+    #[cfg(feature = "priority-inheritance")]
     fn reinsert_to_ready_queue(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
@@ -234,6 +235,7 @@ impl RawScheduler {
             });
     }
 
+    #[cfg(feature = "priority-inheritance")]
     fn reinsert_to_blocked_queue(
         mut self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
@@ -839,6 +841,7 @@ impl Scheduler {
         crate::interrupt::set_ceiling_threshold(ceiling);
     }
 
+    #[cfg(feature = "priority-inheritance")]
     pub(crate) fn thread_priority_changed<'key>(
         pkey: PreemptLockKey<'key>,
         thread: Pin<&'static RawThread>,

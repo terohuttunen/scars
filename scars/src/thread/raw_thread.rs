@@ -1,4 +1,6 @@
-use super::{INVALID_THREAD_ID, InheritanceLockListTag, LockListTag, ThreadInfo, ThreadRef};
+#[cfg(feature = "priority-inheritance")]
+use super::InheritanceLockListTag;
+use super::{INVALID_THREAD_ID, LockListTag, ThreadInfo, ThreadRef};
 use crate::cell::{LockedCell, LockedPinRefCell};
 use crate::events::{AtomicEvents, Events, WaitEvents, sender::EventReceiver};
 use crate::kernel::waiter::{WaitQueueEntry, WaitQueueEntryHandler};
@@ -15,8 +17,10 @@ use crate::kernel::{
 };
 use crate::local::LocalStorage;
 use crate::priority::PriorityOpt;
+#[cfg(feature = "priority-inheritance")]
+use crate::sync::InheritanceLock;
 use crate::sync::atomic::{AtomicPtr, Ordering};
-use crate::sync::{InheritanceLock, PreemptLock, PreemptLockKey, RawCeilingLock};
+use crate::sync::{PreemptLock, PreemptLockKey, RawCeilingLock};
 use crate::time::Instant;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
@@ -75,6 +79,7 @@ pub(crate) struct RawThread {
     // Nesting ceiling lock priority
     pub nesting_lock_priority: LockedCell<PriorityOpt, PreemptLock>,
 
+    #[cfg(feature = "priority-inheritance")]
     pub inherited_priority: LockedCell<PriorityOpt, PreemptLock>,
 
     // Effective priority of the thread. This is the maximum of the base priority and the
@@ -88,6 +93,7 @@ pub(crate) struct RawThread {
 
     // List of inheritance locks which this thread is the current owner of. Ordered in no particular
     // order.
+    #[cfg(feature = "priority-inheritance")]
     pub inheritance_locks:
         LockedPinRefCell<LinkedList<InheritanceLock, InheritanceLockListTag>, PreemptLock>,
 
@@ -157,11 +163,13 @@ impl RawThread {
             base_priority,
             core,
             nesting_lock_priority: LockedCell::new(PriorityOpt::none()),
+            #[cfg(feature = "priority-inheritance")]
             inherited_priority: LockedCell::new(PriorityOpt::none()),
             priority: LockedCell::new(base_priority),
             main_fn,
             stack: MaybeUninit::uninit(),
             ceiling_locks: LockedPinRefCell::new(LinkedList::new()),
+            #[cfg(feature = "priority-inheritance")]
             inheritance_locks: LockedPinRefCell::new(LinkedList::new()),
             exec_queue_link: Node::new(),
             wait_entry: WaitQueueEntry::new(),
@@ -271,6 +279,7 @@ impl RawThread {
         unsafe { Pin::map_unchecked(self, |s| &s.ceiling_locks) }
     }
 
+    #[cfg(feature = "priority-inheritance")]
     pub(crate) fn inheritance_locks(
         self: Pin<&Self>,
     ) -> Pin<&LockedPinRefCell<LinkedList<InheritanceLock, InheritanceLockListTag>, PreemptLock>>
@@ -318,6 +327,7 @@ impl RawThread {
         self.update_priority(pkey);
     }
 
+    #[cfg(feature = "priority-inheritance")]
     pub(crate) unsafe fn inheritance_lock_acquired<'key>(
         self: Pin<&'static Self>,
         pkey: PreemptLockKey<'key>,
@@ -335,6 +345,7 @@ impl RawThread {
         inheritance_locks.as_mut().insert_after(lock, |_| false);
     }
 
+    #[cfg(feature = "priority-inheritance")]
     pub(crate) unsafe fn inheritance_lock_released<'key>(
         self: Pin<&'static Self>,
         pkey: PreemptLockKey<'key>,
@@ -356,6 +367,7 @@ impl RawThread {
         }
     }
 
+    #[cfg(feature = "priority-inheritance")]
     pub(crate) fn inherit_priority<'key>(
         self: Pin<&'static Self>,
         pkey: PreemptLockKey<'key>,
@@ -402,6 +414,7 @@ impl RawThread {
     /// reject acquiring a ceiling lock while priority inheritance is in
     /// play (the two protocols may not be combined — see
     /// [`RuntimeError::CeilingLockNotAllowed`]).
+    #[cfg(feature = "priority-inheritance")]
     pub(crate) fn holds_inheritance_lock<'key>(
         self: Pin<&Self>,
         pkey: PreemptLockKey<'key>,
@@ -433,12 +446,10 @@ impl RawThread {
             crate::runtime_error!(RuntimeError::WrongCore);
         }
         let lock_priority = self.ceiling_lock_priority(pkey);
-        let inherited_priority = self.inherited_priority.get(pkey);
 
-        let new_priority = self
-            .base_priority
-            .max_valid(lock_priority)
-            .max_valid(inherited_priority);
+        let new_priority = self.base_priority.max_valid(lock_priority);
+        #[cfg(feature = "priority-inheritance")]
+        let new_priority = new_priority.max_valid(self.inherited_priority.get(pkey));
 
         let old_priority = self.priority.replace(pkey, new_priority);
         old_priority != new_priority

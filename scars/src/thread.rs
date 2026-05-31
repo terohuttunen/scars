@@ -38,8 +38,10 @@ pub struct LockListTag {}
 
 impl LinkedListTag for LockListTag {}
 
+#[cfg(feature = "priority-inheritance")]
 pub struct InheritanceLockListTag {}
 
+#[cfg(feature = "priority-inheritance")]
 impl LinkedListTag for InheritanceLockListTag {}
 
 pub struct ThreadInfo {

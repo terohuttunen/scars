@@ -32,7 +32,9 @@ pub mod shared;
 pub use channel::{CeilingChannel, Channel};
 pub use condvar::{CeilingCondvar, Condvar};
 pub use guarded::{Guard, Guarded};
-pub use mutex::{CeilingMutex, Mutex, MutexGuard};
+#[cfg(feature = "priority-inheritance")]
+pub use mutex::Mutex;
+pub use mutex::{CeilingMutex, MutexGuard};
 pub use notify::Notify;
 pub use once::Once;
 pub use once_lock::OnceLock;
@@ -45,7 +47,9 @@ pub use ::portable_atomic as atomic;
 pub use critical_section::{self, CriticalSection};
 
 pub use lock::{
-    CeilingLock, CoreCeilingLock, CoreInheritanceLock, CoreInterruptLock, CorePreemptLock,
-    InheritanceLock, InterruptLock, InterruptLockKey, LockOps, LockResult, NestingLock, NoLock,
-    PreemptLock, PreemptLockKey, RawCeilingLock, ScopedLock, TryLockError, TryLockResult, Unlock,
+    CeilingLock, CoreCeilingLock, CoreInterruptLock, CorePreemptLock, InterruptLock,
+    InterruptLockKey, LockOps, LockResult, NestingLock, NoLock, PreemptLock, PreemptLockKey,
+    RawCeilingLock, ScopedLock, TryLockError, TryLockResult, Unlock,
 };
+#[cfg(feature = "priority-inheritance")]
+pub use lock::{CoreInheritanceLock, InheritanceLock};

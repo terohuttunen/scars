@@ -118,6 +118,7 @@ impl RawCeilingLock {
             // be combined: inheritance could later boost this thread
             // above the ceiling, breaking the `priority <= ceiling`
             // invariant the protocol relies on.
+            #[cfg(feature = "priority-inheritance")]
             if current_thread.holds_inheritance_lock(pkey) {
                 runtime_error!(RuntimeError::CeilingLockNotAllowed);
             }
@@ -300,6 +301,7 @@ impl RawCeilingLock {
                 // later inheritance boost could lift this thread above
                 // the ceiling. Fault directly (not `Err`, which would
                 // surface as a misleading `CeilingPriorityViolation`).
+                #[cfg(feature = "priority-inheritance")]
                 if current_thread.holds_inheritance_lock(pkey) {
                     runtime_error!(RuntimeError::CeilingLockNotAllowed);
                 }

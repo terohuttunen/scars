@@ -172,9 +172,13 @@ semihosting = { version = "0.1.4" }
 
 
 [features]
-default = ["relative-delay"]
+default = ["relative-delay", "priority-inheritance"]
 tracing = []
 relative-delay = []
+# Priority-inheritance mutex protocol (`InheritanceLock` and the default
+# `Mutex` alias). Opt out to drop its code and per-thread state; ceiling
+# and interrupt mutexes are independent and remain available.
+priority-inheritance = []
 defmt = ["dep:defmt", "scars-fault/defmt"]
 display = ["scars-fault/display"]
 khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "scars-bench/semihosting", "defmt"]
