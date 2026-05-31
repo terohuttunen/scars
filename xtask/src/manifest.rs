@@ -19,6 +19,13 @@ pub struct Board {
     /// that have no meaning for example crates.
     #[serde(default)]
     pub kernel_features: Vec<String>,
+    /// When false, cargo is invoked with `--no-default-features`; the
+    /// board must then re-list any scars default it still wants (e.g.
+    /// `relative-delay`) in `features`/`kernel_features`. RAM-constrained
+    /// boards use this to drop opt-out features like `raii-locks` and
+    /// `priority-inheritance`.
+    #[serde(default = "default_true", rename = "default-features")]
+    pub default_features: bool,
     pub test_runner: TestRunner,
     pub examples_dirs: Vec<PathBuf>,
     #[serde(default)]
@@ -27,6 +34,10 @@ pub struct Board {
     pub runner: Option<Runner>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]

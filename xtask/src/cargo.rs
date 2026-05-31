@@ -100,6 +100,9 @@ pub fn run_cargo(
     }
     args.push("--target".into());
     args.push(board.target.clone());
+    if !board.default_features {
+        args.push("--no-default-features".into());
+    }
     args.push("--features".into());
     args.push(features);
     if release {
