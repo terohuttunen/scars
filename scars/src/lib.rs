@@ -51,6 +51,7 @@ pub mod prelude {
     pub use crate::make_channel;
     pub use crate::make_interrupt_handler;
     pub use crate::make_rendezvous;
+    #[cfg(feature = "raii-locks")]
     pub use crate::make_shared;
     pub use crate::make_thread;
     pub use crate::priority::{AnyPriority, Priority};

@@ -2,6 +2,10 @@ name = "stm32f0discovery"
 target = "thumbv6m-none-eabi"
 package = "scars"
 features = ["chip-stm32f051"]
+# RAM-constrained (8 KB): drop the opt-out features. `--no-default-features`
+# also drops `relative-delay`, so re-list it for the kernel build.
+default-features = false
+kernel_features = ["relative-delay"]
 test_runner = "probe-rs"
 examples_dirs = ["examples/stm32f0", "examples/shared"]
 

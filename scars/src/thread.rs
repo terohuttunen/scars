@@ -3,7 +3,9 @@ mod raw_thread;
 mod reference;
 
 use crate::kernel::hal::CoreId;
-use crate::kernel::{Priority, list::LinkedListTag, stack::StackRefMut};
+#[cfg(any(feature = "raii-locks", feature = "priority-inheritance"))]
+use crate::kernel::list::LinkedListTag;
+use crate::kernel::{Priority, stack::StackRefMut};
 pub use builder::*;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -34,8 +36,10 @@ macro_rules! make_thread {
 pub const INVALID_THREAD_ID: u32 = 0;
 pub const IDLE_THREAD_ID: u32 = 1;
 
+#[cfg(feature = "raii-locks")]
 pub struct LockListTag {}
 
+#[cfg(feature = "raii-locks")]
 impl LinkedListTag for LockListTag {}
 
 #[cfg(feature = "priority-inheritance")]

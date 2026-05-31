@@ -7,14 +7,21 @@
 use super::{InterruptNumber, vector::InterruptVector};
 use crate::events::raw::RawEventHandler;
 use crate::kernel::hal::CoreId;
+#[cfg(feature = "raii-locks")]
 use crate::kernel::list::LinkedList;
 use crate::local::LocalStorage;
 use crate::priority::{AtomicPriority, AtomicPriorityOpt, Priority, PriorityOpt};
-use crate::sync::lock::{ceiling_lock::RawCeilingLock, interrupt_lock::CoreInterruptLockKey};
+#[cfg(feature = "raii-locks")]
+use crate::sync::lock::ceiling_lock::RawCeilingLock;
+use crate::sync::lock::interrupt_lock::CoreInterruptLockKey;
+#[cfg(feature = "raii-locks")]
 use crate::thread::LockListTag;
 
 use crate::sync::atomic::Ordering;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::Cell;
+#[cfg(feature = "raii-locks")]
+use core::cell::UnsafeCell;
+#[cfg(feature = "raii-locks")]
 use core::pin::Pin;
 
 /// Core interrupt handler structure
@@ -31,7 +38,8 @@ pub(crate) struct RawInterruptHandler {
     // Nesting ceiling lock priority
     pub(crate) nesting_lock_priority: AtomicPriorityOpt,
 
-    // Guarded ceiling Lock priority
+    // Guarded (scoped) ceiling Lock priority
+    #[cfg(feature = "raii-locks")]
     pub(crate) lock_priority: AtomicPriorityOpt,
 
     // Effective priority of the thread. This is the maximum of the base priority and the
@@ -40,6 +48,7 @@ pub(crate) struct RawInterruptHandler {
 
     // The kernel must keep track of owned ceiling locks also in interrupt handlers,
     // because the locks might be released in any order.
+    #[cfg(feature = "raii-locks")]
     owned_locks: UnsafeCell<LinkedList<RawCeilingLock, LockListTag>>,
 
     closure_ptr: *const (),
@@ -65,8 +74,10 @@ impl RawInterruptHandler {
             core,
             closure_ptr: core::ptr::null(),
             nesting_lock_priority: AtomicPriorityOpt::new(PriorityOpt::none()),
+            #[cfg(feature = "raii-locks")]
             lock_priority: AtomicPriorityOpt::new(PriorityOpt::none()),
             priority: AtomicPriority::new(prio),
+            #[cfg(feature = "raii-locks")]
             owned_locks: UnsafeCell::new(LinkedList::new()),
             local_storage: LocalStorage::new(),
             current_event_handler: Cell::new(core::ptr::null()),
@@ -129,21 +140,25 @@ impl RawInterruptHandler {
         self.nesting_lock_priority.store(prio, Ordering::Release);
     }
 
+    #[cfg(feature = "raii-locks")]
     pub fn lock_priority(&self) -> PriorityOpt {
         self.lock_priority.load(Ordering::Acquire)
     }
 
+    #[cfg(feature = "raii-locks")]
     pub fn set_lock_priority(&self, prio: PriorityOpt) {
         self.lock_priority.store(prio, Ordering::Release);
     }
 
     /// Get owned locks list (unsafe - caller must ensure proper synchronization)
+    #[cfg(feature = "raii-locks")]
     #[allow(dead_code)]
     pub(crate) unsafe fn owned_locks(&self) -> &LinkedList<RawCeilingLock, LockListTag> {
         unsafe { &*self.owned_locks.get() }
     }
 
     /// Get mutable owned locks list (unsafe - caller must ensure proper synchronization)
+    #[cfg(feature = "raii-locks")]
     #[allow(dead_code)]
     pub(crate) unsafe fn owned_locks_mut(&self) -> &mut LinkedList<RawCeilingLock, LockListTag> {
         unsafe { &mut *self.owned_locks.get() }
@@ -174,18 +189,17 @@ impl RawInterruptHandler {
 
     /// Update effective priority based on base, lock, and nesting lock priorities
     fn update_priority(&self) {
-        let lock_priority = self.lock_priority.load(Ordering::SeqCst);
         let nesting_lock_priority = self.nesting_lock_priority.load(Ordering::SeqCst);
 
-        let new_priority = self
-            .base_priority
-            .max_valid(lock_priority)
-            .max_valid(nesting_lock_priority);
+        let new_priority = self.base_priority.max_valid(nesting_lock_priority);
+        #[cfg(feature = "raii-locks")]
+        let new_priority = new_priority.max_valid(self.lock_priority.load(Ordering::SeqCst));
 
         self.priority.store(new_priority, Ordering::SeqCst);
     }
 
     /// Acquire a ceiling lock (unsafe - caller must ensure proper synchronization)
+    #[cfg(feature = "raii-locks")]
     pub unsafe fn ceiling_lock_acquired(self: Pin<&Self>, lock: Pin<&RawCeilingLock>) {
         let mut locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
         locks.as_mut().insert_after(lock, |list_lock| {
@@ -204,6 +218,7 @@ impl RawInterruptHandler {
     }
 
     /// Release a ceiling lock (unsafe - caller must ensure lock was acquired)
+    #[cfg(feature = "raii-locks")]
     pub unsafe fn ceiling_lock_released(&self, lock: Pin<&RawCeilingLock>) {
         let mut locks = unsafe { Pin::new_unchecked(&mut *(self.owned_locks.get())) };
         locks.as_mut().remove(lock);

@@ -1,17 +1,26 @@
-use super::{LockOps, NestingLock, PreemptLock, ScopedLock, TryLockError, TryLockResult, Unlock};
+#[cfg(feature = "raii-locks")]
+use super::{LockOps, ScopedLock, TryLockResult, Unlock};
+use super::{NestingLock, PreemptLock, TryLockError};
+#[cfg(feature = "raii-locks")]
 use crate::interrupt::RawInterruptHandler;
 use crate::kernel::hal::{CoreId, CoreToken};
+#[cfg(feature = "raii-locks")]
+use crate::kernel::list::{Node, impl_linked};
 use crate::kernel::{
     Priority,
-    list::{Node, impl_linked},
     scheduler::{ExecutionContext, Scheduler},
 };
 use crate::priority::PriorityOpt;
 use crate::runtime_error;
+#[cfg(feature = "raii-locks")]
 use crate::sync::atomic::{AtomicPtr, Ordering};
-use crate::thread::{IDLE_THREAD_ID, LockListTag, RawThread};
+use crate::thread::IDLE_THREAD_ID;
+#[cfg(feature = "raii-locks")]
+use crate::thread::{LockListTag, RawThread};
 use core::marker::PhantomData;
+#[cfg(feature = "raii-locks")]
 use core::ops::{Deref, DerefMut};
+#[cfg(feature = "raii-locks")]
 use core::pin::Pin;
 use pin_project::pin_project;
 
@@ -33,20 +42,24 @@ pub struct RawCeilingLock {
     pub core: CoreId,
 
     // The owning thread or interrupt ptr, or null if free
+    #[cfg(feature = "raii-locks")]
     pub(crate) owner: AtomicPtr<()>,
 
     // Node for thread lock list.
     // Only one thread owns the lock at any given time, and
     // the thread maintains a list of locks it holds.
+    #[cfg(feature = "raii-locks")]
     lock_list_node: Node<Self, LockListTag>,
 }
 
+#[cfg(feature = "raii-locks")]
 impl_linked!(lock_list_node, RawCeilingLock, LockListTag);
 
 unsafe impl Send for RawCeilingLock {}
 unsafe impl Sync for RawCeilingLock {}
 
 impl RawCeilingLock {
+    #[cfg(feature = "raii-locks")]
     pub const fn new(ceiling_priority: Priority, core: CoreId) -> RawCeilingLock {
         RawCeilingLock {
             ceiling_priority,
@@ -56,6 +69,7 @@ impl RawCeilingLock {
         }
     }
 
+    #[cfg(feature = "raii-locks")]
     unsafe fn acquire_scoped_lock_in_interrupt(
         self: Pin<&Self>,
         current_interrupt: Pin<&'static RawInterruptHandler>,
@@ -99,6 +113,7 @@ impl RawCeilingLock {
         }
     }
 
+    #[cfg(feature = "raii-locks")]
     unsafe fn acquire_scoped_lock_in_thread(
         self: Pin<&Self>,
         current_thread: Pin<&'static RawThread>,
@@ -157,6 +172,7 @@ impl RawCeilingLock {
         })
     }
 
+    #[cfg(feature = "raii-locks")]
     unsafe fn acquire_scoped_lock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => unsafe {
@@ -168,6 +184,7 @@ impl RawCeilingLock {
         }
     }
 
+    #[cfg(feature = "raii-locks")]
     pub fn lock(self: Pin<&Self>) -> RawCeilingLockGuard<'_> {
         unsafe {
             self.acquire_scoped_lock();
@@ -175,6 +192,7 @@ impl RawCeilingLock {
         RawCeilingLockGuard { lock: self }
     }
 
+    #[cfg(feature = "raii-locks")]
     unsafe fn release_scoped_lock_in_interrupt(
         self: Pin<&Self>,
         current_interrupt: Pin<&'static RawInterruptHandler>,
@@ -215,6 +233,7 @@ impl RawCeilingLock {
         Scheduler::set_ceiling(new_ceiling_priority_opt);
     }
 
+    #[cfg(feature = "raii-locks")]
     unsafe fn release_scoped_lock_in_thread(
         self: Pin<&Self>,
         current_thread: Pin<&'static RawThread>,
@@ -258,6 +277,7 @@ impl RawCeilingLock {
         });
     }
 
+    #[cfg(feature = "raii-locks")]
     unsafe fn release_scoped_lock(self: Pin<&Self>) {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => unsafe {
@@ -339,10 +359,12 @@ impl RawCeilingLock {
     }
 }
 
+#[cfg(feature = "raii-locks")]
 pub struct RawCeilingLockGuard<'lock> {
     lock: Pin<&'lock RawCeilingLock>,
 }
 
+#[cfg(feature = "raii-locks")]
 impl<'lock> Unlock for RawCeilingLockGuard<'lock> {
     unsafe fn unlock(&mut self) {
         unsafe {
@@ -355,6 +377,7 @@ impl<'lock> Unlock for RawCeilingLockGuard<'lock> {
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl<'lock> Deref for RawCeilingLockGuard<'lock> {
     type Target = Pin<&'lock RawCeilingLock>;
 
@@ -363,12 +386,14 @@ impl<'lock> Deref for RawCeilingLockGuard<'lock> {
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl<'lock> DerefMut for RawCeilingLockGuard<'lock> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.lock
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl Drop for RawCeilingLockGuard<'_> {
     fn drop(&mut self) {
         unsafe {
@@ -403,12 +428,14 @@ pub struct CeilingLock<const CEILING: Priority> {
 }
 
 impl<const CEILING: Priority> CeilingLock<CEILING> {
+    #[cfg(feature = "raii-locks")]
     pub const fn new(core: CoreId) -> Self {
         Self {
             raw: RawCeilingLock::new(CEILING, core),
         }
     }
 
+    #[cfg(feature = "raii-locks")]
     pub fn lock(self: Pin<&Self>) -> CeilingLockGuard<'_, CEILING> {
         if CoreId::current() != self.raw.core {
             runtime_error!(RuntimeError::WrongCore);
@@ -423,6 +450,7 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
     /// Caller must ensure `CoreId::current() == self.raw.core`. Use a
     /// CORE-typed wrapper ([`CoreCeilingLock<CEILING, CORE>`]) that
     /// vends a [`CoreToken<CORE>`] for a safe entry point.
+    #[cfg(feature = "raii-locks")]
     #[inline(always)]
     pub unsafe fn lock_unchecked(self: Pin<&Self>) -> CeilingLockGuard<'_, CEILING> {
         let this = self.project_ref();
@@ -430,6 +458,7 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
         CeilingLockGuard { raw: raw_guard }
     }
 
+    #[cfg(feature = "raii-locks")]
     pub unsafe fn unlock(self: Pin<&Self>) {
         let this = self.project_ref();
         unsafe {
@@ -461,10 +490,12 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
     }
 }
 
+#[cfg(feature = "raii-locks")]
 pub struct CeilingLockGuard<'lock, const CEILING: Priority> {
     raw: RawCeilingLockGuard<'lock>,
 }
 
+#[cfg(feature = "raii-locks")]
 impl<'lock, const CEILING: Priority> Unlock for CeilingLockGuard<'lock, CEILING> {
     unsafe fn unlock(&mut self) {
         unsafe {
@@ -477,6 +508,7 @@ impl<'lock, const CEILING: Priority> Unlock for CeilingLockGuard<'lock, CEILING>
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl<const CEILING: Priority> LockOps for CeilingLock<CEILING> {
     type Guard<'guard> = CeilingLockGuard<'guard, CEILING>;
 
@@ -490,6 +522,7 @@ impl<const CEILING: Priority> LockOps for CeilingLock<CEILING> {
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl<const CEILING: Priority> ScopedLock for CeilingLock<CEILING> {
     const DEFAULT: Self = Self::new(CoreId::DEFAULT);
 }
@@ -543,12 +576,14 @@ pub struct CoreCeilingLock<const CEILING: Priority, const CORE: CoreId = { CoreI
 }
 
 impl<const CEILING: Priority, const CORE: CoreId> CoreCeilingLock<CEILING, CORE> {
+    #[cfg(feature = "raii-locks")]
     pub const fn new() -> Self {
         Self {
             inner: CeilingLock::new(CORE),
         }
     }
 
+    #[cfg(feature = "raii-locks")]
     pub fn lock(self: Pin<&Self>) -> CoreCeilingLockGuard<'_, CEILING, CORE> {
         let _core = CoreToken::<CORE>::current();
         // SAFETY: `CoreToken::<CORE>::current()` verified
@@ -559,6 +594,7 @@ impl<const CEILING: Priority, const CORE: CoreId> CoreCeilingLock<CEILING, CORE>
         CoreCeilingLockGuard { inner: inner_guard }
     }
 
+    #[cfg(feature = "raii-locks")]
     pub unsafe fn unlock(self: Pin<&Self>) {
         let inner = unsafe { self.map_unchecked(|s| &s.inner) };
         unsafe {
@@ -611,12 +647,14 @@ impl<const CEILING: Priority, const CORE: CoreId> CoreCeilingLock<CEILING, CORE>
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl<const CEILING: Priority, const CORE: CoreId> Default for CoreCeilingLock<CEILING, CORE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "raii-locks")]
 pub struct CoreCeilingLockGuard<
     'lock,
     const CEILING: Priority,
@@ -628,6 +666,7 @@ pub struct CoreCeilingLockGuard<
     inner: CeilingLockGuard<'lock, CEILING>,
 }
 
+#[cfg(feature = "raii-locks")]
 impl<'lock, const CEILING: Priority, const CORE: CoreId> Unlock
     for CoreCeilingLockGuard<'lock, CEILING, CORE>
 {
@@ -642,6 +681,7 @@ impl<'lock, const CEILING: Priority, const CORE: CoreId> Unlock
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl<const CEILING: Priority, const CORE: CoreId> LockOps for CoreCeilingLock<CEILING, CORE> {
     type Guard<'guard> = CoreCeilingLockGuard<'guard, CEILING, CORE>;
 
@@ -655,6 +695,7 @@ impl<const CEILING: Priority, const CORE: CoreId> LockOps for CoreCeilingLock<CE
     }
 }
 
+#[cfg(feature = "raii-locks")]
 impl<const CEILING: Priority, const CORE: CoreId> ScopedLock for CoreCeilingLock<CEILING, CORE> {
     const DEFAULT: Self = Self::new();
 }
