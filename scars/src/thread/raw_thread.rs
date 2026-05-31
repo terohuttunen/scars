@@ -398,6 +398,24 @@ impl RawThread {
         nesting_lock_priority.max(scoped_lock_priority)
     }
 
+    /// Whether the thread currently owns any inheritance lock. Used to
+    /// reject acquiring a ceiling lock while priority inheritance is in
+    /// play (the two protocols may not be combined — see
+    /// [`RuntimeError::CeilingLockNotAllowed`]).
+    pub(crate) fn holds_inheritance_lock<'key>(
+        self: Pin<&Self>,
+        pkey: PreemptLockKey<'key>,
+    ) -> bool {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        self.inheritance_locks()
+            .borrow(pkey)
+            .as_ref()
+            .head()
+            .is_some()
+    }
+
     /// Thread priority
     ///
     /// A thread can temporary boost its priority by acquiring locks. If a thread

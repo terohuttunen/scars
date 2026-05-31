@@ -114,6 +114,14 @@ impl RawCeilingLock {
                 runtime_error!(RuntimeError::CeilingPriorityViolation);
             }
 
+            // Priority ceiling protocol and priority inheritance may not
+            // be combined: inheritance could later boost this thread
+            // above the ceiling, breaking the `priority <= ceiling`
+            // invariant the protocol relies on.
+            if current_thread.holds_inheritance_lock(pkey) {
+                runtime_error!(RuntimeError::CeilingLockNotAllowed);
+            }
+
             // Raise interrupt threshold to ceiling priority BEFORE ownership acquisition
             // This prevents lower or equal priority interrupts and threads from acquiring the lock
             // before the lock is released.
@@ -287,6 +295,13 @@ impl RawCeilingLock {
                 }
                 if current_thread.priority(pkey) > ceiling {
                     return Err(());
+                }
+                // PCP and priority inheritance may not be combined — a
+                // later inheritance boost could lift this thread above
+                // the ceiling. Fault directly (not `Err`, which would
+                // surface as a misleading `CeilingPriorityViolation`).
+                if current_thread.holds_inheritance_lock(pkey) {
+                    runtime_error!(RuntimeError::CeilingLockNotAllowed);
                 }
                 let ceiling_priority_status = PriorityStatus::from(ceiling);
                 Scheduler::set_ceiling(ceiling_priority_status);

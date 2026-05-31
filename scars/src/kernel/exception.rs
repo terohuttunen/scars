@@ -60,6 +60,14 @@ pub enum RuntimeError {
     /// Inheritance locks may not be acquired while holding any ceiling locks.
     InheritanceLockNotAllowed,
 
+    /// Ceiling locks may not be acquired while holding any inheritance
+    /// locks. Mirror of [`RuntimeError::InheritanceLockNotAllowed`]:
+    /// priority inheritance can boost the holder above the ceiling
+    /// lock's ceiling, breaking the immediate-ceiling protocol's
+    /// `priority <= ceiling` invariant, so the two protocols may not be
+    /// held simultaneously.
+    CeilingLockNotAllowed,
+
     /// Attempt to access a thread or lock from a core other than the one
     /// it was bound to via its `CORE` const-generic parameter.
     WrongCore,
