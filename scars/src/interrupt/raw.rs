@@ -9,7 +9,7 @@ use crate::events::raw::RawEventHandler;
 use crate::kernel::hal::CoreId;
 use crate::kernel::list::LinkedList;
 use crate::local::LocalStorage;
-use crate::priority::{AtomicPriority, AtomicPriorityStatus, Priority, PriorityStatus};
+use crate::priority::{AtomicPriority, AtomicPriorityOpt, Priority, PriorityOpt};
 use crate::sync::lock::{ceiling_lock::RawCeilingLock, interrupt_lock::CoreInterruptLockKey};
 use crate::thread::LockListTag;
 
@@ -29,10 +29,10 @@ pub(crate) struct RawInterruptHandler {
     pub core: CoreId,
 
     // Nesting ceiling lock priority
-    pub(crate) nesting_lock_priority: AtomicPriorityStatus,
+    pub(crate) nesting_lock_priority: AtomicPriorityOpt,
 
     // Guarded ceiling Lock priority
-    pub(crate) lock_priority: AtomicPriorityStatus,
+    pub(crate) lock_priority: AtomicPriorityOpt,
 
     // Effective priority of the thread. This is the maximum of the base priority and the
     // priority of any lock held by the thread.
@@ -64,8 +64,8 @@ impl RawInterruptHandler {
             base_priority: prio,
             core,
             closure_ptr: core::ptr::null(),
-            nesting_lock_priority: AtomicPriorityStatus::new(PriorityStatus::invalid()),
-            lock_priority: AtomicPriorityStatus::new(PriorityStatus::invalid()),
+            nesting_lock_priority: AtomicPriorityOpt::new(PriorityOpt::none()),
+            lock_priority: AtomicPriorityOpt::new(PriorityOpt::none()),
             priority: AtomicPriority::new(prio),
             owned_locks: UnsafeCell::new(LinkedList::new()),
             local_storage: LocalStorage::new(),
@@ -121,19 +121,19 @@ impl RawInterruptHandler {
     }
 
     // Priority and lock management methods
-    pub fn nesting_lock_priority(&self) -> PriorityStatus {
+    pub fn nesting_lock_priority(&self) -> PriorityOpt {
         self.nesting_lock_priority.load(Ordering::Acquire)
     }
 
-    pub fn set_nesting_lock_priority(&self, prio: PriorityStatus) {
+    pub fn set_nesting_lock_priority(&self, prio: PriorityOpt) {
         self.nesting_lock_priority.store(prio, Ordering::Release);
     }
 
-    pub fn lock_priority(&self) -> PriorityStatus {
+    pub fn lock_priority(&self) -> PriorityOpt {
         self.lock_priority.load(Ordering::Acquire)
     }
 
-    pub fn set_lock_priority(&self, prio: PriorityStatus) {
+    pub fn set_lock_priority(&self, prio: PriorityOpt) {
         self.lock_priority.store(prio, Ordering::Release);
     }
 
@@ -195,8 +195,8 @@ impl RawInterruptHandler {
         let lock_priority = locks
             .as_ref()
             .head()
-            .map_or_else(PriorityStatus::invalid, |head| {
-                PriorityStatus::from(head.ceiling_priority)
+            .map_or_else(PriorityOpt::none, |head| {
+                PriorityOpt::from(head.ceiling_priority)
             });
 
         self.lock_priority.store(lock_priority, Ordering::SeqCst);
@@ -211,8 +211,8 @@ impl RawInterruptHandler {
         let lock_priority = locks
             .as_ref()
             .head()
-            .map_or_else(PriorityStatus::invalid, |head| {
-                PriorityStatus::from(head.ceiling_priority)
+            .map_or_else(PriorityOpt::none, |head| {
+                PriorityOpt::from(head.ceiling_priority)
             });
 
         self.lock_priority.store(lock_priority, Ordering::SeqCst);
@@ -220,7 +220,7 @@ impl RawInterruptHandler {
     }
 
     /// Raise nesting lock priority (returns previous priority)
-    pub fn raise_nesting_lock_priority(&self, new_priority: Priority) -> PriorityStatus {
+    pub fn raise_nesting_lock_priority(&self, new_priority: Priority) -> PriorityOpt {
         let old_priority = self
             .nesting_lock_priority
             .swap(new_priority.into(), Ordering::SeqCst);

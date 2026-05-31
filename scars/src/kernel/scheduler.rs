@@ -18,7 +18,7 @@ use crate::kernel::{
     waiter::{WaitQueueEntry, WaitQueueHandle, WaitQueueTag},
 };
 use crate::printkln;
-use crate::priority::{AnyPriority, AtomicPriorityStatus, Priority, PriorityStatus};
+use crate::priority::{AnyPriority, AtomicPriorityOpt, Priority, PriorityOpt};
 use crate::sync::atomic::Ordering;
 use crate::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
 use crate::sync::lock::preempt_lock::is_preempt_allowed;
@@ -160,7 +160,7 @@ impl RawScheduler {
         }
         tracing::thread_ready_begin(thread.as_thread_ref());
         let thread_priority = thread.priority(pkey);
-        if !thread.ceiling_lock_priority(pkey).is_valid() {
+        if thread.ceiling_lock_priority(pkey).is_none() {
             // If thread is not holding any locks, then thread goes to the back of its priority queue
             self.ready_queue_mut().insert_after(thread, |queue_thread| {
                 queue_thread.priority.get(pkey) >= thread_priority
@@ -182,7 +182,7 @@ impl RawScheduler {
         // Reinsert to ready queue
         self.as_mut().ready_queue_mut().remove(thread);
         let thread_priority = thread.priority(pkey);
-        if !thread.ceiling_lock_priority(pkey).is_valid() {
+        if thread.ceiling_lock_priority(pkey).is_none() {
             // If thread is not holding any locks, then thread goes to the back of its priority queue
             self.ready_queue_mut().insert_after(thread, |queue_thread| {
                 queue_thread.priority.get(pkey) >= thread_priority
@@ -198,16 +198,16 @@ impl RawScheduler {
     fn blocked_list_order(
         pkey: PreemptLockKey<'_>,
         thread: &RawThread,
-        thread_priority: PriorityStatus,
+        thread_priority: PriorityOpt,
     ) -> bool {
         let queue_thread_priority =
             unsafe { Pin::new_unchecked(thread).ceiling_lock_priority(pkey) };
 
-        if queue_thread_priority.is_valid() && thread_priority.is_valid() {
+        if queue_thread_priority.is_some() && thread_priority.is_some() {
             queue_thread_priority >= thread_priority
-        } else if queue_thread_priority.is_valid() {
+        } else if queue_thread_priority.is_some() {
             true
-        } else if thread_priority.is_valid() {
+        } else if thread_priority.is_some() {
             false
         } else {
             false
@@ -482,7 +482,7 @@ impl RawScheduler {
         }
     }
 
-    fn locks_priority_ceiling(self: Pin<&Self>, pkey: PreemptLockKey<'_>) -> PriorityStatus {
+    fn locks_priority_ceiling(self: Pin<&Self>, pkey: PreemptLockKey<'_>) -> PriorityOpt {
         if let Some(blocked_thread) = self.blocked_list().head() {
             let blocked_prio = blocked_thread.ceiling_lock_priority(pkey);
             let current_prio = self.current_thread.ceiling_lock_priority(pkey);
@@ -738,7 +738,7 @@ pub struct Scheduler {
     pending_reschedule_kind: AtomicUsize,
 
     // Current ceiling priority from all held ceiling locks
-    current_ceiling_priority: AtomicPriorityStatus,
+    current_ceiling_priority: AtomicPriorityOpt,
 
     raw: LockedPinRefCell<RawScheduler, PreemptLock>,
 }
@@ -750,7 +750,7 @@ impl Scheduler {
             deferred_work_queue: WorkQueue::new(),
             pending_events: PendingEventsQueue::new(),
             pending_reschedule_kind: AtomicUsize::new(RESCHEDULE_KIND_NONE),
-            current_ceiling_priority: AtomicPriorityStatus::new(PriorityStatus::invalid()),
+            current_ceiling_priority: AtomicPriorityOpt::new(PriorityOpt::none()),
             raw: LockedPinRefCell::new(RawScheduler::new(idle_thread)),
         }
     }
@@ -818,21 +818,21 @@ impl Scheduler {
 
     /// Get current ceiling priority from all held ceiling locks
     #[allow(dead_code)]
-    pub(crate) fn current_ceiling_priority() -> PriorityStatus {
+    pub(crate) fn current_ceiling_priority() -> PriorityOpt {
         Scheduler::instance()
             .current_ceiling_priority
             .load(Ordering::Acquire)
     }
 
     /// Update the current ceiling priority atomically
-    pub(crate) fn update_ceiling_priority(new_ceiling: PriorityStatus) {
+    pub(crate) fn update_ceiling_priority(new_ceiling: PriorityOpt) {
         Scheduler::instance()
             .current_ceiling_priority
             .store(new_ceiling, Ordering::Release);
     }
 
     /// Set ceiling priority, updating both global tracking and hardware threshold
-    pub(crate) fn set_ceiling(ceiling: PriorityStatus) {
+    pub(crate) fn set_ceiling(ceiling: PriorityOpt) {
         // Update global ceiling priority tracking
         Self::update_ceiling_priority(ceiling);
 

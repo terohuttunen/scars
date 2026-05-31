@@ -14,7 +14,7 @@ use crate::kernel::{
     waiter::WaitQueueHandle,
 };
 use crate::local::LocalStorage;
-use crate::priority::PriorityStatus;
+use crate::priority::PriorityOpt;
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::sync::{InheritanceLock, PreemptLock, PreemptLockKey, RawCeilingLock};
 use crate::time::Instant;
@@ -73,9 +73,9 @@ pub(crate) struct RawThread {
     pub core: crate::kernel::hal::CoreId,
 
     // Nesting ceiling lock priority
-    pub nesting_lock_priority: LockedCell<PriorityStatus, PreemptLock>,
+    pub nesting_lock_priority: LockedCell<PriorityOpt, PreemptLock>,
 
-    pub inherited_priority: LockedCell<PriorityStatus, PreemptLock>,
+    pub inherited_priority: LockedCell<PriorityOpt, PreemptLock>,
 
     // Effective priority of the thread. This is the maximum of the base priority and the
     // priority of any lock held by the thread.
@@ -156,8 +156,8 @@ impl RawThread {
             name,
             base_priority,
             core,
-            nesting_lock_priority: LockedCell::new(PriorityStatus::invalid()),
-            inherited_priority: LockedCell::new(PriorityStatus::invalid()),
+            nesting_lock_priority: LockedCell::new(PriorityOpt::none()),
+            inherited_priority: LockedCell::new(PriorityOpt::none()),
             priority: LockedCell::new(base_priority),
             main_fn,
             stack: MaybeUninit::uninit(),
@@ -326,7 +326,7 @@ impl RawThread {
         if self.core != pkey.core {
             crate::runtime_error!(RuntimeError::WrongCore);
         }
-        if self.ceiling_lock_priority(pkey).is_valid() {
+        if self.ceiling_lock_priority(pkey).is_some() {
             // Inheritance locks may not be acquired while holding any ceiling locks.
             crate::runtime_error!(RuntimeError::InheritanceLockNotAllowed);
         }
@@ -349,7 +349,7 @@ impl RawThread {
         // When last inheritance lock is released, reset inherited priority
         // and reschedule if necessary.
         if inheritance_locks.as_ref().is_empty() {
-            self.inherited_priority.set(pkey, PriorityStatus::invalid());
+            self.inherited_priority.set(pkey, PriorityOpt::none());
             if self.update_priority(pkey) {
                 Scheduler::thread_priority_changed(pkey, self);
             }
@@ -370,7 +370,7 @@ impl RawThread {
             pkey,
             self.inherited_priority
                 .get(pkey)
-                .max(PriorityStatus::from(priority)),
+                .max(PriorityOpt::from(priority)),
         );
 
         if self.update_priority(pkey) {
@@ -378,11 +378,11 @@ impl RawThread {
         }
     }
 
-    /// Highest lock priority. Returns `PriorityStatus::Invalid if no locks owned by the thread.
+    /// Highest lock priority. Returns `PriorityOpt::None if no locks owned by the thread.
     pub(crate) fn ceiling_lock_priority<'key>(
         self: Pin<&Self>,
         pkey: PreemptLockKey<'key>,
-    ) -> PriorityStatus {
+    ) -> PriorityOpt {
         if self.core != pkey.core {
             crate::runtime_error!(RuntimeError::WrongCore);
         }
@@ -390,9 +390,9 @@ impl RawThread {
 
         let scoped_lock_priority =
             if let Some(head) = self.ceiling_locks().borrow(pkey).as_ref().head() {
-                PriorityStatus::from(head.ceiling_priority)
+                PriorityOpt::from(head.ceiling_priority)
             } else {
-                PriorityStatus::invalid()
+                PriorityOpt::none()
             };
 
         nesting_lock_priority.max(scoped_lock_priority)
@@ -447,7 +447,7 @@ impl RawThread {
     pub(crate) fn raise_nesting_lock_priority(
         self: Pin<&Self>,
         new_priority: Priority,
-    ) -> PriorityStatus {
+    ) -> PriorityOpt {
         PreemptLock::with(|pkey| {
             if self.core != pkey.core {
                 crate::runtime_error!(RuntimeError::WrongCore);
@@ -455,11 +455,11 @@ impl RawThread {
             let old_priority = self.nesting_lock_priority.get(pkey);
 
             // Priorities can only be increased.
-            if old_priority > PriorityStatus::from(new_priority) {
+            if old_priority > PriorityOpt::from(new_priority) {
                 crate::runtime_error!(RuntimeError::CeilingPriorityViolation);
             }
 
-            let raised_priority = PriorityStatus::from(new_priority).max(old_priority);
+            let raised_priority = PriorityOpt::from(new_priority).max(old_priority);
             self.nesting_lock_priority.set(pkey, raised_priority);
 
             self.update_priority(pkey);
@@ -467,7 +467,7 @@ impl RawThread {
         })
     }
 
-    pub(crate) fn set_nesting_lock_priority(self: Pin<&Self>, new_priority: PriorityStatus) {
+    pub(crate) fn set_nesting_lock_priority(self: Pin<&Self>, new_priority: PriorityOpt) {
         PreemptLock::with(|pkey| {
             if self.core != pkey.core {
                 crate::runtime_error!(RuntimeError::WrongCore);

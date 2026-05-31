@@ -82,7 +82,7 @@ impl Priority {
         }
     }
 
-    pub const fn max_valid(self, other: PriorityStatus) -> Priority {
+    pub const fn max_valid(self, other: PriorityOpt) -> Priority {
         let other = match other.priority() {
             Some(prio) => prio,
             None => return self,
@@ -145,170 +145,172 @@ impl core::cmp::Ord for Priority {
     }
 }
 
-/// Like `Priority`, but with an additional `Invalid` variant.
+/// Like `Priority`, but with an additional `None` variant for the absence of a priority.
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
-pub enum PriorityStatus {
-    Invalid,
+pub enum PriorityOpt {
+    None,
     Thread(ThreadPriority),
     Interrupt(InterruptPriority),
 }
 
-impl PriorityStatus {
-    pub const fn invalid() -> PriorityStatus {
-        PriorityStatus::Invalid
+impl PriorityOpt {
+    pub const fn none() -> PriorityOpt {
+        PriorityOpt::None
     }
 
-    pub const fn thread(prio: ThreadPriority) -> PriorityStatus {
-        PriorityStatus::Thread(prio)
+    pub const fn thread(prio: ThreadPriority) -> PriorityOpt {
+        PriorityOpt::Thread(prio)
     }
 
-    pub const fn interrupt(prio: InterruptPriority) -> PriorityStatus {
-        PriorityStatus::Interrupt(prio)
+    pub const fn interrupt(prio: InterruptPriority) -> PriorityOpt {
+        PriorityOpt::Interrupt(prio)
     }
 
-    pub const fn valid(prio: Priority) -> PriorityStatus {
+    pub const fn some(prio: Priority) -> PriorityOpt {
         match prio {
-            Priority::Thread(p) => PriorityStatus::Thread(p),
-            Priority::Interrupt(p) => PriorityStatus::Interrupt(p),
+            Priority::Thread(p) => PriorityOpt::Thread(p),
+            Priority::Interrupt(p) => PriorityOpt::Interrupt(p),
         }
     }
 
     pub const fn is_interrupt(&self) -> bool {
-        matches!(self, PriorityStatus::Interrupt(_))
+        matches!(self, PriorityOpt::Interrupt(_))
     }
 
     pub const fn is_thread(&self) -> bool {
-        matches!(self, PriorityStatus::Thread(_))
+        matches!(self, PriorityOpt::Thread(_))
     }
 
-    pub const fn is_valid(&self) -> bool {
-        !matches!(self, PriorityStatus::Invalid)
+    pub const fn is_some(&self) -> bool {
+        !matches!(self, PriorityOpt::None)
+    }
+
+    pub const fn is_none(&self) -> bool {
+        matches!(self, PriorityOpt::None)
     }
 
     pub const fn priority(&self) -> Option<Priority> {
         match self {
-            PriorityStatus::Thread(prio) => Some(Priority::Thread(*prio)),
-            PriorityStatus::Interrupt(prio) => Some(Priority::Interrupt(*prio)),
-            PriorityStatus::Invalid => None,
+            PriorityOpt::Thread(prio) => Some(Priority::Thread(*prio)),
+            PriorityOpt::Interrupt(prio) => Some(Priority::Interrupt(*prio)),
+            PriorityOpt::None => None,
         }
     }
 
     pub const fn get_value(&self) -> u8 {
         match self {
-            PriorityStatus::Thread(prio) => *prio,
-            PriorityStatus::Interrupt(prio) => *prio,
-            PriorityStatus::Invalid => 0,
+            PriorityOpt::Thread(prio) => *prio,
+            PriorityOpt::Interrupt(prio) => *prio,
+            PriorityOpt::None => 0,
         }
     }
 
-    pub const fn succ(self) -> PriorityStatus {
+    pub const fn succ(self) -> PriorityOpt {
         match self {
-            PriorityStatus::Thread(prio) => {
+            PriorityOpt::Thread(prio) => {
                 if prio < ThreadPriority::MAX {
-                    PriorityStatus::Thread(prio + 1)
+                    PriorityOpt::Thread(prio + 1)
                 } else {
-                    PriorityStatus::valid(Priority::INTERRUPT_MIN)
+                    PriorityOpt::some(Priority::INTERRUPT_MIN)
                 }
             }
-            PriorityStatus::Interrupt(prio) => {
+            PriorityOpt::Interrupt(prio) => {
                 if prio < InterruptPriority::MAX {
-                    PriorityStatus::Interrupt(prio + 1)
+                    PriorityOpt::Interrupt(prio + 1)
                 } else {
-                    PriorityStatus::Interrupt(prio)
+                    PriorityOpt::Interrupt(prio)
                 }
             }
-            PriorityStatus::Invalid => PriorityStatus::Invalid,
+            PriorityOpt::None => PriorityOpt::None,
         }
     }
 
-    pub const fn max(self, other: PriorityStatus) -> PriorityStatus {
+    pub const fn max(self, other: PriorityOpt) -> PriorityOpt {
         match (self, other) {
-            (PriorityStatus::Thread(p1), PriorityStatus::Thread(p2)) => {
-                PriorityStatus::Thread(maxu8(p1, p2))
+            (PriorityOpt::Thread(p1), PriorityOpt::Thread(p2)) => {
+                PriorityOpt::Thread(maxu8(p1, p2))
             }
-            (PriorityStatus::Interrupt(p1), PriorityStatus::Interrupt(p2)) => {
-                PriorityStatus::Interrupt(maxu8(p1, p2))
+            (PriorityOpt::Interrupt(p1), PriorityOpt::Interrupt(p2)) => {
+                PriorityOpt::Interrupt(maxu8(p1, p2))
             }
-            (PriorityStatus::Thread(_), PriorityStatus::Interrupt(_)) => other,
-            (PriorityStatus::Interrupt(_), PriorityStatus::Thread(_)) => self,
-            (PriorityStatus::Invalid, _) => other,
-            (_, PriorityStatus::Invalid) => self,
+            (PriorityOpt::Thread(_), PriorityOpt::Interrupt(_)) => other,
+            (PriorityOpt::Interrupt(_), PriorityOpt::Thread(_)) => self,
+            (PriorityOpt::None, _) => other,
+            (_, PriorityOpt::None) => self,
         }
     }
 
     pub const fn into_any(self) -> AnyPriority {
         match self {
-            PriorityStatus::Thread(prio) => prio as i16,
-            PriorityStatus::Interrupt(prio) => prio as i16 | INTERRUPT_BIT,
-            PriorityStatus::Invalid => INVALID_PRIORITY,
+            PriorityOpt::Thread(prio) => prio as i16,
+            PriorityOpt::Interrupt(prio) => prio as i16 | INTERRUPT_BIT,
+            PriorityOpt::None => INVALID_PRIORITY,
         }
     }
 
-    pub const fn from_any(value: AnyPriority) -> PriorityStatus {
+    pub const fn from_any(value: AnyPriority) -> PriorityOpt {
         if value == INVALID_PRIORITY {
-            PriorityStatus::Invalid
+            PriorityOpt::None
         } else if (value & INTERRUPT_BIT) != 0 {
-            PriorityStatus::Interrupt((value & !INTERRUPT_BIT) as InterruptPriority)
+            PriorityOpt::Interrupt((value & !INTERRUPT_BIT) as InterruptPriority)
         } else {
-            PriorityStatus::Thread(value as ThreadPriority)
+            PriorityOpt::Thread(value as ThreadPriority)
         }
     }
 
     pub fn unwrap_or_default(self, default: Priority) -> Priority {
         match self {
-            PriorityStatus::Invalid => default,
-            PriorityStatus::Thread(p) => Priority::Thread(p),
-            PriorityStatus::Interrupt(p) => Priority::Interrupt(p),
+            PriorityOpt::None => default,
+            PriorityOpt::Thread(p) => Priority::Thread(p),
+            PriorityOpt::Interrupt(p) => Priority::Interrupt(p),
         }
     }
 }
 
-impl core::cmp::PartialEq for PriorityStatus {
+impl core::cmp::PartialEq for PriorityOpt {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (PriorityStatus::Thread(p1), PriorityStatus::Thread(p2)) => p1 == p2,
-            (PriorityStatus::Interrupt(p1), PriorityStatus::Interrupt(p2)) => p1 == p2,
-            (PriorityStatus::Invalid, PriorityStatus::Invalid) => true,
+            (PriorityOpt::Thread(p1), PriorityOpt::Thread(p2)) => p1 == p2,
+            (PriorityOpt::Interrupt(p1), PriorityOpt::Interrupt(p2)) => p1 == p2,
+            (PriorityOpt::None, PriorityOpt::None) => true,
             _ => false,
         }
     }
 }
 
-impl core::cmp::PartialOrd for PriorityStatus {
+impl core::cmp::PartialOrd for PriorityOpt {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         match (self, other) {
-            (PriorityStatus::Thread(p1), PriorityStatus::Thread(p2)) => p1.partial_cmp(p2),
-            (PriorityStatus::Interrupt(p1), PriorityStatus::Interrupt(p2)) => p1.partial_cmp(p2),
-            (PriorityStatus::Thread(_), PriorityStatus::Interrupt(_)) => {
-                Some(core::cmp::Ordering::Less)
-            }
-            (PriorityStatus::Interrupt(_), PriorityStatus::Thread(_)) => {
+            (PriorityOpt::Thread(p1), PriorityOpt::Thread(p2)) => p1.partial_cmp(p2),
+            (PriorityOpt::Interrupt(p1), PriorityOpt::Interrupt(p2)) => p1.partial_cmp(p2),
+            (PriorityOpt::Thread(_), PriorityOpt::Interrupt(_)) => Some(core::cmp::Ordering::Less),
+            (PriorityOpt::Interrupt(_), PriorityOpt::Thread(_)) => {
                 Some(core::cmp::Ordering::Greater)
             }
-            (PriorityStatus::Invalid, _) => None,
-            (_, PriorityStatus::Invalid) => None,
+            (PriorityOpt::None, _) => None,
+            (_, PriorityOpt::None) => None,
         }
     }
 }
 
-impl From<Priority> for PriorityStatus {
-    fn from(prio: Priority) -> PriorityStatus {
+impl From<Priority> for PriorityOpt {
+    fn from(prio: Priority) -> PriorityOpt {
         match prio {
-            Priority::Thread(p) => PriorityStatus::Thread(p),
-            Priority::Interrupt(p) => PriorityStatus::Interrupt(p),
+            Priority::Thread(p) => PriorityOpt::Thread(p),
+            Priority::Interrupt(p) => PriorityOpt::Interrupt(p),
         }
     }
 }
 
-impl TryFrom<PriorityStatus> for Priority {
+impl TryFrom<PriorityOpt> for Priority {
     type Error = ();
 
-    fn try_from(prio: PriorityStatus) -> Result<Priority, ()> {
+    fn try_from(prio: PriorityOpt) -> Result<Priority, ()> {
         match prio {
-            PriorityStatus::Thread(p) => Ok(Priority::Thread(p)),
-            PriorityStatus::Interrupt(p) => Ok(Priority::Interrupt(p)),
-            PriorityStatus::Invalid => Err(()),
+            PriorityOpt::Thread(p) => Ok(Priority::Thread(p)),
+            PriorityOpt::Interrupt(p) => Ok(Priority::Interrupt(p)),
+            PriorityOpt::None => Err(()),
         }
     }
 }
@@ -384,23 +386,23 @@ impl AtomicPriority {
 }
 
 #[repr(transparent)]
-pub struct AtomicPriorityStatus(AtomicI16);
+pub struct AtomicPriorityOpt(AtomicI16);
 
-impl AtomicPriorityStatus {
-    pub const fn new(prio: PriorityStatus) -> AtomicPriorityStatus {
-        AtomicPriorityStatus(AtomicI16::new(prio.into_any()))
+impl AtomicPriorityOpt {
+    pub const fn new(prio: PriorityOpt) -> AtomicPriorityOpt {
+        AtomicPriorityOpt(AtomicI16::new(prio.into_any()))
     }
 
-    pub const fn any(prio: AnyPriority) -> AtomicPriorityStatus {
-        AtomicPriorityStatus(AtomicI16::new(prio))
+    pub const fn any(prio: AnyPriority) -> AtomicPriorityOpt {
+        AtomicPriorityOpt(AtomicI16::new(prio))
     }
 
-    pub const fn thread(prio: ThreadPriority) -> AtomicPriorityStatus {
-        AtomicPriorityStatus(AtomicI16::new(prio as i16))
+    pub const fn thread(prio: ThreadPriority) -> AtomicPriorityOpt {
+        AtomicPriorityOpt(AtomicI16::new(prio as i16))
     }
 
-    pub const fn interrupt(prio: InterruptPriority) -> AtomicPriorityStatus {
-        AtomicPriorityStatus(AtomicI16::new(prio as i16 | INTERRUPT_BIT))
+    pub const fn interrupt(prio: InterruptPriority) -> AtomicPriorityOpt {
+        AtomicPriorityOpt(AtomicI16::new(prio as i16 | INTERRUPT_BIT))
     }
 
     pub fn is_interrupt(&self) -> bool {
@@ -411,29 +413,29 @@ impl AtomicPriorityStatus {
         (self.0.load(Ordering::Relaxed) & INTERRUPT_BIT) == 0
     }
 
-    pub fn load(&self, ordering: Ordering) -> PriorityStatus {
-        PriorityStatus::from_any(self.0.load(ordering))
+    pub fn load(&self, ordering: Ordering) -> PriorityOpt {
+        PriorityOpt::from_any(self.0.load(ordering))
     }
 
-    pub fn store(&self, prio: PriorityStatus, ordering: Ordering) {
+    pub fn store(&self, prio: PriorityOpt, ordering: Ordering) {
         self.0.store(prio.into_any(), ordering)
     }
 
-    pub fn swap(&self, prio: PriorityStatus, ordering: Ordering) -> PriorityStatus {
-        PriorityStatus::from_any(self.0.swap(prio.into_any(), ordering))
+    pub fn swap(&self, prio: PriorityOpt, ordering: Ordering) -> PriorityOpt {
+        PriorityOpt::from_any(self.0.swap(prio.into_any(), ordering))
     }
 
     pub fn compare_exchange(
         &self,
-        current: PriorityStatus,
-        new: PriorityStatus,
+        current: PriorityOpt,
+        new: PriorityOpt,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<PriorityStatus, PriorityStatus> {
+    ) -> Result<PriorityOpt, PriorityOpt> {
         self.0
             .compare_exchange(current.into_any(), new.into_any(), success, failure)
-            .map(|x| PriorityStatus::from_any(x))
-            .map_err(|e| PriorityStatus::from_any(e))
+            .map(|x| PriorityOpt::from_any(x))
+            .map_err(|e| PriorityOpt::from_any(e))
     }
 
     pub fn fetch_update<F>(
@@ -441,15 +443,15 @@ impl AtomicPriorityStatus {
         set_order: Ordering,
         fetch_order: Ordering,
         mut f: F,
-    ) -> Result<PriorityStatus, PriorityStatus>
+    ) -> Result<PriorityOpt, PriorityOpt>
     where
-        F: FnMut(PriorityStatus) -> Option<PriorityStatus>,
+        F: FnMut(PriorityOpt) -> Option<PriorityOpt>,
     {
         self.0
             .fetch_update(set_order, fetch_order, |prio| {
-                f(PriorityStatus::from_any(prio)).map(|x| x.into_any())
+                f(PriorityOpt::from_any(prio)).map(|x| x.into_any())
             })
-            .map(|x| PriorityStatus::from_any(x))
-            .map_err(|e| PriorityStatus::from_any(e))
+            .map(|x| PriorityOpt::from_any(x))
+            .map_err(|e| PriorityOpt::from_any(e))
     }
 }

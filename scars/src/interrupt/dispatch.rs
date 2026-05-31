@@ -4,7 +4,7 @@ use super::{MAX_INTERRUPT_NUMBER, RawInterruptHandler, get_interrupt_vector, int
 use crate::kernel::hal::{
     CoreId, MAX_INTERRUPT_PRIORITY, claim_interrupt, complete_interrupt, set_interrupt_threshold,
 };
-use crate::priority::PriorityStatus;
+use crate::priority::PriorityOpt;
 use scars_khal::GetInterruptNumber;
 
 unsafe extern "C" {
@@ -16,10 +16,10 @@ unsafe extern "C" {
 /// For an interrupt-level ceiling, mask interrupts at that priority and
 /// below. For a thread-level or absent ceiling, leave all interrupt
 /// priorities deliverable.
-pub(crate) fn set_ceiling_threshold(ceiling: PriorityStatus) {
+pub(crate) fn set_ceiling_threshold(ceiling: PriorityOpt) {
     match ceiling {
-        PriorityStatus::Interrupt(prio) => set_interrupt_threshold(prio),
-        PriorityStatus::Thread(_) | PriorityStatus::Invalid => {
+        PriorityOpt::Interrupt(prio) => set_interrupt_threshold(prio),
+        PriorityOpt::Thread(_) | PriorityOpt::None => {
             set_interrupt_threshold(MAX_INTERRUPT_PRIORITY as u8)
         }
     }
