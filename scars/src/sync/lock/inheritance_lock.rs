@@ -91,13 +91,11 @@ impl InheritanceLock {
             crate::runtime_error!(RuntimeError::InterruptHandlerViolation);
         };
 
-        PreemptLock::with(|pkey| unsafe {
-            current_thread.inheritance_lock_released(pkey, self);
+        PreemptLock::with(|pkey| {
+            unsafe { current_thread.inheritance_lock_released(pkey, self) };
+            self.owner.release_ownership(current_thread);
+            self.wait_list.notify_one();
         });
-
-        self.owner.release_ownership(current_thread);
-
-        self.wait_list.notify_one();
     }
 
     pub fn lock(self: Pin<&Self>) -> InheritanceLockGuard<'_> {
