@@ -58,7 +58,6 @@ pub(crate) fn thread_wait_event_until(wait_events: *mut crate::WaitEvents, deadl
     );
 }
 
-#[cfg(any(feature = "relative-delay", test))]
 pub fn delay(duration: Duration) {
     delay_until(Instant::now() + duration)
 }

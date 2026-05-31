@@ -179,9 +179,8 @@ semihosting = { version = "0.1.4" }
 
 
 [features]
-default = ["relative-delay", "priority-inheritance", "raii-locks"]
+default = ["priority-inheritance", "raii-locks"]
 tracing = []
-relative-delay = []
 # Priority-inheritance mutex protocol (`InheritanceLock` and the default
 # `Mutex` alias). Opt out to drop its code and per-thread state; ceiling
 # and interrupt mutexes are independent and remain available.

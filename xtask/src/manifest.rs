@@ -20,10 +20,10 @@ pub struct Board {
     #[serde(default)]
     pub kernel_features: Vec<String>,
     /// When false, cargo is invoked with `--no-default-features`; the
-    /// board must then re-list any scars default it still wants (e.g.
-    /// `relative-delay`) in `features`/`kernel_features`. RAM-constrained
-    /// boards use this to drop opt-out features like `raii-locks` and
-    /// `priority-inheritance`.
+    /// board must then re-list any scars default it still wants in
+    /// `features`/`kernel_features`. RAM-constrained boards use this to
+    /// drop opt-out features like `raii-locks`, `priority-inheritance`,
+    /// and `multi-core`.
     #[serde(default = "default_true", rename = "default-features")]
     pub default_features: bool,
     pub test_runner: TestRunner,

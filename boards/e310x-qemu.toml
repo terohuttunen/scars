@@ -2,10 +2,10 @@ name = "e310x-qemu"
 target = "riscv32imac-unknown-none-elf"
 package = "scars"
 features = ["khal-e310x"]
-# RAM-constrained: drop the opt-out features. `--no-default-features`
-# also drops `relative-delay`, so re-list it for the kernel build.
+# RAM-constrained: drop the opt-out features (priority-inheritance,
+# raii-locks, multi-core) via `--no-default-features`.
 default-features = false
-kernel_features = ["bench-large", "relative-delay"]
+kernel_features = ["bench-large"]
 test_runner = "qemu"
 examples_dirs = ["examples/e310x"]
 
