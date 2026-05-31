@@ -94,5 +94,12 @@ pub fn acquire_critical_section() -> bool {
 pub fn restore_critical_section(restore_state: bool) {
     if restore_state {
         unsafe { cortex_m::interrupt::enable() }
+        // The preempt-lock release path pends PendSV *inside* this masked
+        // region, so the context switch can only happen at this unmask.
+        // `dsb` ensures the (device-memory) ICSR pending-bit store has
+        // completed; `isb` then flushes the pipeline so the now-pending
+        // PendSV is taken before any following instruction.
+        cortex_m::asm::dsb();
+        cortex_m::asm::isb();
     }
 }
