@@ -14,6 +14,11 @@ triple, scars features, linker script, env, and runner. `xtask` projects
 those into per-invocation cargo environment variables, so a single triple
 can host multiple boards.
 
+The 'cargo xtask' 'test', 'run', and 'flash' commands may control USB devices (debug
+probes, serial ports) and may flash hardware. They are not thread-safe, and
+should not be run in parallel. Only commands using the 'sim' board can be run
+in parallel with other commands.
+
 ```bash
 # List configured boards
 cargo xtask boards
