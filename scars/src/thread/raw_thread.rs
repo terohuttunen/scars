@@ -4,8 +4,6 @@ use super::InheritanceLockListTag;
 use super::LockListTag;
 use super::{INVALID_THREAD_ID, ThreadInfo, ThreadRef};
 use crate::cell::LockedCell;
-#[cfg(any(feature = "raii-locks", feature = "priority-inheritance"))]
-use crate::cell::LockedPinRefCell;
 use crate::events::{AtomicEvents, Events, WaitEvents, sender::EventReceiver};
 #[cfg(any(feature = "raii-locks", feature = "priority-inheritance"))]
 use crate::kernel::list::LinkedList;
@@ -25,6 +23,8 @@ use crate::local::LocalStorage;
 use crate::priority::PriorityOpt;
 #[cfg(feature = "priority-inheritance")]
 use crate::sync::InheritanceLock;
+#[cfg(any(feature = "raii-locks", feature = "priority-inheritance"))]
+use crate::sync::Protected;
 #[cfg(feature = "raii-locks")]
 use crate::sync::RawCeilingLock;
 use crate::sync::atomic::{AtomicPtr, Ordering};
@@ -98,13 +98,13 @@ pub(crate) struct RawThread {
     // ceiling priority order so that list head is always one of the highest priority
     // locks.
     #[cfg(feature = "raii-locks")]
-    pub ceiling_locks: LockedPinRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
+    pub ceiling_locks: Protected<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>,
 
     // List of inheritance locks which this thread is the current owner of. Ordered in no particular
     // order.
     #[cfg(feature = "priority-inheritance")]
     pub inheritance_locks:
-        LockedPinRefCell<LinkedList<InheritanceLock, InheritanceLockListTag>, PreemptLock>,
+        Protected<LinkedList<InheritanceLock, InheritanceLockListTag>, PreemptLock>,
 
     // Thread state that tells in which queue the thread currently is
     //  Stopped: Not in any queue
@@ -178,9 +178,9 @@ impl RawThread {
             main_fn,
             stack: MaybeUninit::uninit(),
             #[cfg(feature = "raii-locks")]
-            ceiling_locks: LockedPinRefCell::new(LinkedList::new()),
+            ceiling_locks: Protected::new(LinkedList::new()),
             #[cfg(feature = "priority-inheritance")]
-            inheritance_locks: LockedPinRefCell::new(LinkedList::new()),
+            inheritance_locks: Protected::new(LinkedList::new()),
             exec_queue_link: Node::new(),
             wait_entry: WaitQueueEntry::new(),
             timer: Timer::new(),
@@ -282,19 +282,19 @@ impl RawThread {
         ThreadRef::new(self.get_ref())
     }
 
-    // Pin projection of scoped_locks list
+    // Pin projection of the owned ceiling-locks list.
     #[cfg(feature = "raii-locks")]
-    pub(crate) fn ceiling_locks(
+    fn ceiling_locks(
         self: Pin<&Self>,
-    ) -> Pin<&LockedPinRefCell<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>> {
+    ) -> Pin<&Protected<LinkedList<RawCeilingLock, LockListTag>, PreemptLock>> {
         unsafe { Pin::map_unchecked(self, |s| &s.ceiling_locks) }
     }
 
+    // Pin projection of the owned inheritance-locks list.
     #[cfg(feature = "priority-inheritance")]
-    pub(crate) fn inheritance_locks(
+    fn inheritance_locks(
         self: Pin<&Self>,
-    ) -> Pin<&LockedPinRefCell<LinkedList<InheritanceLock, InheritanceLockListTag>, PreemptLock>>
-    {
+    ) -> Pin<&Protected<LinkedList<InheritanceLock, InheritanceLockListTag>, PreemptLock>> {
         unsafe { Pin::map_unchecked(self, |s| &s.inheritance_locks) }
     }
 
@@ -313,10 +313,9 @@ impl RawThread {
         );
         // Add lock to thread's owned ceiling locks list (ordered by priority)
         let ceiling_priority = lock.ceiling_priority;
-        self.ceiling_locks()
-            .borrow_mut(pkey)
-            .as_mut()
-            .insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
+        self.ceiling_locks().with_pin_key(pkey, |_, list| {
+            list.insert_after(lock, |a| a.ceiling_priority > ceiling_priority);
+        });
 
         self.update_priority(pkey);
     }
@@ -335,7 +334,8 @@ impl RawThread {
             "ceiling lock and thread on different cores"
         );
         // Remove lock from thread's owned ceiling locks list
-        self.ceiling_locks().borrow_mut(pkey).as_mut().remove(lock);
+        self.ceiling_locks()
+            .with_pin_key(pkey, |_, list| list.remove(lock));
 
         self.update_priority(pkey);
     }
@@ -354,8 +354,9 @@ impl RawThread {
             crate::runtime_error!(RuntimeError::InheritanceLockNotAllowed);
         }
 
-        let mut inheritance_locks = self.inheritance_locks().borrow_mut(pkey);
-        inheritance_locks.as_mut().insert_after(lock, |_| false);
+        self.inheritance_locks().with_pin_key(pkey, |_, list| {
+            list.insert_after(lock, |_| false);
+        });
     }
 
     #[cfg(feature = "priority-inheritance")]
@@ -367,12 +368,16 @@ impl RawThread {
         if self.core != pkey.core {
             crate::runtime_error!(RuntimeError::WrongCore);
         }
-        let mut inheritance_locks = self.inheritance_locks().borrow_mut(pkey);
-        inheritance_locks.as_mut().remove(lock);
+        let became_empty = self.inheritance_locks().with_pin_key(pkey, |_, mut list| {
+            list.as_mut().remove(lock);
+            list.as_ref().is_empty()
+        });
 
         // When last inheritance lock is released, reset inherited priority
-        // and reschedule if necessary.
-        if inheritance_locks.as_ref().is_empty() {
+        // and reschedule if necessary. The priority recompute touches the
+        // ceiling list and scalar fields, not the inheritance list, so it
+        // must run after the `with_pin_key` closure has released it.
+        if became_empty {
             self.inherited_priority.set(pkey, PriorityOpt::none());
             if self.update_priority(pkey) {
                 Scheduler::thread_priority_changed(pkey, self);
@@ -416,11 +421,11 @@ impl RawThread {
         #[cfg(feature = "raii-locks")]
         let nesting_lock_priority = {
             let scoped_lock_priority =
-                if let Some(head) = self.ceiling_locks().borrow(pkey).as_ref().head() {
-                    PriorityOpt::from(head.ceiling_priority)
-                } else {
-                    PriorityOpt::none()
-                };
+                self.ceiling_locks()
+                    .with_pin_key(pkey, |_, list| match list.as_ref().head() {
+                        Some(head) => PriorityOpt::from(head.ceiling_priority),
+                        None => PriorityOpt::none(),
+                    });
             nesting_lock_priority.max(scoped_lock_priority)
         };
 
@@ -440,10 +445,7 @@ impl RawThread {
             crate::runtime_error!(RuntimeError::WrongCore);
         }
         self.inheritance_locks()
-            .borrow(pkey)
-            .as_ref()
-            .head()
-            .is_some()
+            .with_pin_key(pkey, |_, list| list.as_ref().head().is_some())
     }
 
     /// Thread priority
