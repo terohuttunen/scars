@@ -25,6 +25,7 @@ pub mod inheritance_lock;
 pub mod interrupt_lock;
 pub mod no_lock;
 pub mod preempt_lock;
+pub mod spinlock;
 
 pub use ceiling_lock::{CeilingLock, CoreCeilingLock, RawCeilingLock};
 #[cfg(feature = "priority-inheritance")]
@@ -32,6 +33,7 @@ pub use inheritance_lock::{CoreInheritanceLock, InheritanceLock};
 pub use interrupt_lock::{CoreInterruptLock, InterruptLock, InterruptLockKey};
 pub use no_lock::NoLock;
 pub use preempt_lock::{CorePreemptLock, PreemptLock, PreemptLockKey};
+pub use spinlock::SpinLock;
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 pub type TryLockResult<Guard> = Result<Guard, TryLockError>;

@@ -57,7 +57,7 @@ pub use critical_section::{self, CriticalSection};
 pub use lock::{
     CeilingLock, CoreCeilingLock, CoreInterruptLock, CorePreemptLock, InterruptLock,
     InterruptLockKey, LockOps, LockResult, NestingLock, NoLock, PreemptLock, PreemptLockKey,
-    RawCeilingLock, ScopedLock, TryLockError, TryLockResult, Unlock,
+    RawCeilingLock, ScopedLock, SpinLock, TryLockError, TryLockResult, Unlock,
 };
 #[cfg(feature = "priority-inheritance")]
 pub use lock::{CoreInheritanceLock, InheritanceLock};
