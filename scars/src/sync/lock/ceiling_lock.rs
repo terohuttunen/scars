@@ -189,7 +189,10 @@ impl RawCeilingLock {
         unsafe {
             self.acquire_scoped_lock();
         }
-        RawCeilingLockGuard { lock: self }
+        RawCeilingLockGuard {
+            lock: self,
+            _phantom: PhantomData,
+        }
     }
 
     #[cfg(feature = "raii-locks")]
@@ -362,6 +365,9 @@ impl RawCeilingLock {
 #[cfg(feature = "raii-locks")]
 pub struct RawCeilingLockGuard<'lock> {
     lock: Pin<&'lock RawCeilingLock>,
+    // Core-affine: `Drop` releases on the current core, so the guard must be
+    // released on the core that acquired it. `!Send` (+ `!Sync`).
+    _phantom: PhantomData<*const ()>,
 }
 
 #[cfg(feature = "raii-locks")]

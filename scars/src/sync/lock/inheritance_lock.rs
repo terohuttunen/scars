@@ -8,6 +8,7 @@ use crate::runtime_error;
 use crate::sync::Notify;
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use crate::thread::{InheritanceLockListTag, RawThread};
+use core::marker::PhantomData;
 use core::pin::Pin;
 
 /// CORE-erased inheritance lock primitive. Mirrors
@@ -122,7 +123,10 @@ impl InheritanceLock {
     #[inline(always)]
     pub unsafe fn lock_unchecked(self: Pin<&Self>) -> InheritanceLockGuard<'_> {
         unsafe { self.acquire_lock_unchecked() };
-        InheritanceLockGuard { lock: self }
+        InheritanceLockGuard {
+            lock: self,
+            _phantom: PhantomData,
+        }
     }
 
     /// Try-acquire without the wrong-core check.
@@ -133,7 +137,10 @@ impl InheritanceLock {
     #[inline(always)]
     pub unsafe fn try_lock_unchecked(self: Pin<&Self>) -> TryLockResult<InheritanceLockGuard<'_>> {
         unsafe { self.try_acquire_lock_unchecked() }?;
-        Ok(InheritanceLockGuard { lock: self })
+        Ok(InheritanceLockGuard {
+            lock: self,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -160,6 +167,7 @@ impl ScopedLock for InheritanceLock {
 
 pub struct InheritanceLockGuard<'lock> {
     lock: Pin<&'lock InheritanceLock>,
+    _phantom: PhantomData<*const ()>,
 }
 
 impl<'lock> Drop for InheritanceLockGuard<'lock> {
@@ -216,7 +224,10 @@ impl<const CORE: CoreId> CoreInheritanceLock<CORE> {
         // CORE into the inner).
         let inner = unsafe { self.map_unchecked(|s| &s.inner) };
         unsafe { inner.acquire_lock_unchecked() };
-        CoreInheritanceLockGuard { lock: inner }
+        CoreInheritanceLockGuard {
+            lock: inner,
+            _phantom: PhantomData,
+        }
     }
 
     /// Like [`try_lock`](Self::try_lock) but the caller passes in a
@@ -227,7 +238,10 @@ impl<const CORE: CoreId> CoreInheritanceLock<CORE> {
     ) -> TryLockResult<CoreInheritanceLockGuard<'_, CORE>> {
         let inner = unsafe { self.map_unchecked(|s| &s.inner) };
         unsafe { inner.try_acquire_lock_unchecked() }?;
-        Ok(CoreInheritanceLockGuard { lock: inner })
+        Ok(CoreInheritanceLockGuard {
+            lock: inner,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -257,6 +271,7 @@ pub struct CoreInheritanceLockGuard<'lock, const CORE: CoreId = { CoreId::DEFAUL
     // its `release_lock`; the const `CORE` parameter is a type-level
     // witness that the guard came from a CORE-typed entry point.
     lock: Pin<&'lock InheritanceLock>,
+    _phantom: PhantomData<*const ()>,
 }
 
 impl<'lock, const CORE: CoreId> Drop for CoreInheritanceLockGuard<'lock, CORE> {

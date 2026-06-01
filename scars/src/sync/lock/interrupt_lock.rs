@@ -62,7 +62,10 @@ impl InterruptLock {
         }
         let this = unsafe { Pin::new_unchecked(self) };
         unsafe { this.acquire_scoped_lock() };
-        InterruptLockGuard { lock: this }
+        InterruptLockGuard {
+            lock: this,
+            _phantom: PhantomData,
+        }
     }
 
     pub fn try_lock(&self) -> Result<InterruptLockGuard<'_>, TryLockError> {
@@ -139,6 +142,7 @@ impl NestingLock for InterruptLock {
 
 pub struct InterruptLockGuard<'lock> {
     lock: Pin<&'lock InterruptLock>,
+    _phantom: PhantomData<*const ()>,
 }
 
 impl<'lock> Drop for InterruptLockGuard<'lock> {
@@ -229,7 +233,10 @@ impl<const CORE: CoreId> CoreInterruptLock<CORE> {
     fn lock_internal(&self) -> CoreInterruptLockGuard<'_, CORE> {
         let inner = unsafe { Pin::new_unchecked(&self.inner) };
         unsafe { inner.acquire_scoped_lock() };
-        CoreInterruptLockGuard { lock: inner }
+        CoreInterruptLockGuard {
+            lock: inner,
+            _phantom: PhantomData,
+        }
     }
 
     pub fn with<R>(f: impl FnOnce(CoreInterruptLockKey<'_, CORE>) -> R) -> R {
@@ -320,6 +327,7 @@ pub struct CoreInterruptLockGuard<'lock, const CORE: CoreId = { CoreId::DEFAULT 
     // as a type-level witness that the guard came from a CORE-typed
     // entry point.
     lock: Pin<&'lock InterruptLock>,
+    _phantom: PhantomData<*const ()>,
 }
 
 impl<'lock, const CORE: CoreId> Drop for CoreInterruptLockGuard<'lock, CORE> {
