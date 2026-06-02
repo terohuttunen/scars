@@ -131,6 +131,11 @@ harness = false
 required-features = ["multithreading"]
 
 [[test]]
+name = "rendezvous"
+harness = false
+required-features = ["multithreading"]
+
+[[test]]
 name = "sim_interrupt01"
 harness = false
 required-features = ["khal-sim", "multithreading"]
