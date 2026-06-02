@@ -3,11 +3,12 @@ use crate::Stack;
 use crate::kernel::hal::CoreId;
 use crate::priority::Priority;
 use crate::sync::PreemptLock;
+#[cfg(all(test, feature = "multithreading"))]
 use crate::task::ThreadExecutor;
+use crate::thread;
 use crate::thread::{
     RawThread, Thread, ThreadBuilder, ThreadExecutionState, ThreadFn, ThreadHandle, ThreadRef,
 };
-use crate::{make_thread, thread};
 use static_cell::StaticCell;
 
 const IDLE_THREAD_NAME: &'static str = "[idle]";
@@ -82,7 +83,10 @@ fn idle() -> ! {
             _scars_app_init();
         }
 
-        #[cfg(test)]
+        // With multithreading the test body runs in its own thread (so it
+        // can exercise blocking APIs); otherwise it runs directly in idle
+        // context.
+        #[cfg(all(test, feature = "multithreading"))]
         {
             static THREAD_EXECUTOR: StaticCell<ThreadExecutor> = StaticCell::new();
             static THREAD_STACK: crate::Stack<IDLE_THREAD_STACK_SIZE> = Stack::new();
@@ -96,6 +100,12 @@ fn idle() -> ! {
             raw_thread.local_storage().head().publish(executor);
             test_thread.start();
         }
+
+        #[cfg(all(test, not(feature = "multithreading")))]
+        {
+            crate::test_main();
+            scars_test::test_succeed();
+        }
     }
 
     loop {
@@ -103,7 +113,7 @@ fn idle() -> ! {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "multithreading"))]
 fn test() -> ! {
     crate::test_main();
     scars_test::test_succeed();

@@ -78,6 +78,7 @@ pub(crate) fn thread_ready_end(thread: ThreadRef) {
     }
 }
 
+#[cfg(feature = "multithreading")]
 #[inline(always)]
 pub(crate) fn system_idle() {
     #[cfg(feature = "tracing")]

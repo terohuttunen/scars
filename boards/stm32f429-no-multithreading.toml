@@ -1,0 +1,14 @@
+# Threads-off variant of stm32f429i-disco, used only to measure the
+# flash-size difference of the multi-threading machinery (same chip and
+# linker script as stm32f429i-disco, but `--no-default-features`).
+name = "stm32f429-no-multithreading"
+target = "thumbv7em-none-eabihf"
+package = "scars"
+features = ["chip-stm32f429"]
+default-features = false
+test_runner = "probe-rs"
+examples_dirs = ["examples/stm32f4"]
+
+[linker]
+script = "khal/scars-khal-stm32f4/default.lds"
+rustflags = ["-Ctarget-cpu=cortex-m4", "-Ctarget-feature=+vfp4"]

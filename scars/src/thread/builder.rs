@@ -139,6 +139,7 @@ impl ThreadHandle {
         unsafe { self.thread.as_mut() }
     }
 
+    #[cfg(feature = "multithreading")]
     pub fn start(mut self) -> ThreadRef {
         let thread = self.raw_mut();
         let thread_ref = unsafe { ThreadRef::from_ptr(thread as *const _) };

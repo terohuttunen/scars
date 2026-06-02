@@ -3,9 +3,11 @@ pub mod executor;
 pub mod raw_task;
 pub mod sleep;
 pub mod task_pool;
+#[cfg(feature = "multithreading")]
 pub mod thread_executor;
 pub mod wait_for_events;
 
+#[cfg(feature = "multithreading")]
 use crate::local::LocalStorage;
 use core::future::Future;
 use core::pin::Pin;
@@ -19,6 +21,7 @@ pub use executor::ExecutorHandle;
 pub use raw_task::{RawTask, Task, TaskHandle, TaskReadyListTag};
 pub use sleep::Sleep;
 pub use task_pool::TaskPool;
+#[cfg(feature = "multithreading")]
 pub use thread_executor::ThreadExecutor;
 pub use wait_for_events::WaitForEvents;
 
@@ -33,6 +36,7 @@ impl<T> JoinHandle<T> {
         }
     }
 
+    #[cfg(feature = "multithreading")]
     pub fn join(self) -> T {
         let task_handle = self
             .task_handle

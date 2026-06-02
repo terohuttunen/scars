@@ -17,24 +17,33 @@ harness = false
 required-features = ["raii-locks"]
 
 [[test]]
+name = "event_executor_no_threads"
+harness = false
+
+[[test]]
 name = "event_handler01"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "event_handler02"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "events01"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "events02"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "events03"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "inheritance01"
@@ -44,6 +53,7 @@ required-features = ["priority-inheritance"]
 [[test]]
 name = "locking01"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "locking02"
@@ -53,6 +63,7 @@ required-features = ["raii-locks"]
 [[test]]
 name = "locking03"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "locking04"
@@ -62,6 +73,7 @@ required-features = ["raii-locks"]
 [[test]]
 name = "locking05"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "locking06"
@@ -71,14 +83,17 @@ required-features = ["raii-locks"]
 [[test]]
 name = "make_task"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "nopreempt"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "channel_timeout"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "condvar_timeout"
@@ -88,35 +103,42 @@ required-features = ["raii-locks"]
 [[test]]
 name = "notify"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "notify_until"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "semaphore_timeout"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "preempt"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "protected"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "semaphore"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "sim_interrupt01"
 harness = false
-required-features = ["khal-sim"]
+required-features = ["khal-sim", "multithreading"]
 
 [[test]]
 name = "yield"
 harness = false
+required-features = ["multithreading"]
 
 [[test]]
 name = "yield_under_ceiling"
@@ -153,7 +175,9 @@ defmt = { version = "1.0.1", optional = true }
 static_cell = "2.1.0"
 scars-khal = { version = "0.1.0", path = "../scars-khal" }
 scars-macros = { version = "0.1.0", path = "../scars-macros" }
-scars-khal-e310x = { version = "0.1.0", path = "../khal/scars-khal-e310x", features = ["semihosting"], optional = true }
+scars-khal-e310x = { version = "0.1.0", path = "../khal/scars-khal-e310x", features = [
+    "semihosting",
+], optional = true }
 scars-khal-stm32f0 = { version = "0.1.0", path = "../khal/scars-khal-stm32f0", optional = true }
 scars-khal-stm32f1 = { version = "0.1.0", path = "../khal/scars-khal-stm32f1", optional = true }
 scars-khal-stm32f4 = { version = "0.1.0", path = "../khal/scars-khal-stm32f4", optional = true }
@@ -163,7 +187,7 @@ scars-khal-sim = { version = "0.1.0", path = "../khal/scars-khal-sim", optional 
 scars-test = { version = "0.1.0", path = "../scars-test" }
 aligned = "0.4.2"
 pin-project = "1.1.7"
-scars-fault = { version = "0.1.0", path="../scars-fault" }
+scars-fault = { version = "0.1.0", path = "../scars-fault" }
 
 
 [dev-dependencies]
@@ -179,32 +203,68 @@ semihosting = { version = "0.1.4" }
 
 
 [features]
-default = ["priority-inheritance", "raii-locks"]
+default = ["multithreading", "priority-inheritance", "raii-locks"]
 tracing = []
+# Multi-threading: allow creation of threads. Without multithreading
+# only idle thread, interrupts and event handlers are available.
+multithreading = []
 # Priority-inheritance mutex protocol (`InheritanceLock` and the default
 # `Mutex` alias). Opt out to drop its code and per-thread state; ceiling
-# and interrupt mutexes are independent and remain available.
-priority-inheritance = []
+# and interrupt mutexes are independent and remain available. Requires
+# `multithreading` (a thread inherits priority from a blocked waiter).
+priority-inheritance = ["multithreading"]
 # RAII guard-style locking: `Guarded`/`Guard`, the `Mutex`/`CeilingMutex`/
 # `InterruptMutex` aliases, `Condvar`, `Shared`, and the scoped ceiling-lock
 # objects (`CeilingLock` + the per-thread/per-interrupt owned-lock lists).
 # Opt out to keep only the closure-based primitives (`Channel`, `Semaphore`,
 # `Notify`, `Rendezvous`, `OnceLock`), which use the `NestingLock` API.
-raii-locks = []
-# Multi-core support.
+raii-locks = ["multithreading"]
+# Multi-core support. Orthogonal to `multithreading`: each core runs its
+# own idle thread, interrupts, and event handlers with no cross-core
+# context switching, so it applies with or without `multithreading`.
 multi-core = []
 defmt = ["dep:defmt", "scars-fault/defmt"]
 display = ["scars-fault/display"]
-khal-e310x = ["dep:scars-khal-e310x", "scars-test/semihosting", "scars-bench/semihosting", "defmt"]
+khal-e310x = [
+    "dep:scars-khal-e310x",
+    "scars-test/semihosting",
+    "scars-bench/semihosting",
+    "defmt",
+]
 khal-sim = ["dep:scars-khal-sim", "scars-test/std", "scars-bench/std", "defmt"]
 # KHAL-family features pull in the optional dep + test/log backend.
 # Internal building blocks — board manifests should pick a chip
 # feature (below) rather than enabling these directly.
-khal-stm32f0 = ["dep:scars-khal-stm32f0", "scars-test/rtt", "scars-bench/rtt", "defmt"]
-khal-stm32f1 = ["dep:scars-khal-stm32f1", "scars-test/rtt", "scars-bench/rtt", "defmt"]
-khal-stm32f4 = ["dep:scars-khal-stm32f4", "scars-test/rtt", "scars-bench/rtt", "defmt"]
-khal-stm32h7 = ["dep:scars-khal-stm32h7", "scars-test/rtt", "scars-bench/rtt", "defmt"]
-khal-rp2350 = ["dep:scars-khal-rp2350", "scars-test/rtt", "scars-bench/rtt", "defmt"]
+khal-stm32f0 = [
+    "dep:scars-khal-stm32f0",
+    "scars-test/rtt",
+    "scars-bench/rtt",
+    "defmt",
+]
+khal-stm32f1 = [
+    "dep:scars-khal-stm32f1",
+    "scars-test/rtt",
+    "scars-bench/rtt",
+    "defmt",
+]
+khal-stm32f4 = [
+    "dep:scars-khal-stm32f4",
+    "scars-test/rtt",
+    "scars-bench/rtt",
+    "defmt",
+]
+khal-stm32h7 = [
+    "dep:scars-khal-stm32h7",
+    "scars-test/rtt",
+    "scars-bench/rtt",
+    "defmt",
+]
+khal-rp2350 = [
+    "dep:scars-khal-rp2350",
+    "scars-test/rtt",
+    "scars-bench/rtt",
+    "defmt",
+]
 # Capability marker enabled by board manifests with enough RAM for
 # the multi-thread benches (currently `sched`, which needs ~9KB .bss).
 # Declared on the board (not transitively via chip-*) so xtask's

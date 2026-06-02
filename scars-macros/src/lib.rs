@@ -131,7 +131,7 @@ pub fn init(args: TokenStream, item: TokenStream) -> TokenStream {
             syn::Type::Never(_) => {
                 return syn::Error::new(
                     ty.span(),
-                    "#[scars::init] function must return so the idle thread can enter its loop; spawn a thread for application logic",
+                    "#[scars::init] function must return so the idle thread can enter its loop; run application logic from an event handler, the idle hook, or (with the `threads` feature) a thread",
                 )
                 .to_compile_error()
                 .into();

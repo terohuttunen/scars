@@ -10,12 +10,17 @@ pub mod sender;
 pub use options::EventOptions;
 pub use sender::EventSender;
 
-use crate::kernel::scheduler::{ExecutionContext, Scheduler};
-use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use crate::syscall;
-use crate::thread::RawThread;
-use crate::time::Instant;
-use core::pin::Pin;
+use crate::sync::atomic::AtomicU32;
+// Imports used only by the thread-wait path (`WaitEvents`).
+#[cfg(feature = "multithreading")]
+use {
+    crate::kernel::scheduler::{ExecutionContext, Scheduler},
+    crate::sync::atomic::{AtomicBool, Ordering},
+    crate::syscall,
+    crate::thread::RawThread,
+    crate::time::Instant,
+    core::pin::Pin,
+};
 
 /// Type alias for event mask values, making it easy to change the underlying type
 pub type Events = u32;
@@ -30,6 +35,7 @@ pub const EXECUTOR_WAKEUP_EVENT: Events = 1u32 << 28;
 pub const DEFAULT_INTERRUPT_EVENT_BIT: u8 = 29;
 
 /// Error returned by try_wait when events are not immediately available
+#[cfg(feature = "multithreading")]
 #[derive(Copy, Clone, Debug)]
 pub enum TryWaitError {
     /// Would block waiting for events. Contains the events that are currently pending.
@@ -37,6 +43,7 @@ pub enum TryWaitError {
 }
 
 /// Error returned by wait_until when timeout is reached
+#[cfg(feature = "multithreading")]
 #[derive(Copy, Clone, Debug)]
 pub enum WaitTimeoutError {
     /// Timeout occurred. Contains the events that were received before timeout.
@@ -102,6 +109,7 @@ pub enum WaitTimeoutError {
 ///     }
 /// }
 /// ```
+#[cfg(feature = "multithreading")]
 #[derive(Debug)]
 pub struct WaitEvents {
     // Configuration (set by user)
@@ -113,6 +121,7 @@ pub struct WaitEvents {
     timed_out: AtomicBool,
 }
 
+#[cfg(feature = "multithreading")]
 impl WaitEvents {
     pub const fn new() -> Self {
         Self {
@@ -595,10 +604,13 @@ impl WaitEvents {
     }
 }
 
+#[cfg(feature = "multithreading")]
 unsafe impl Sync for WaitEvents {}
+#[cfg(feature = "multithreading")]
 unsafe impl Send for WaitEvents {}
 
 // Typestate markers for builder
+#[cfg(feature = "multithreading")]
 mod wait_events_state {
     pub struct CanKeepUnwanted;
     pub struct CannotKeepUnwanted;
@@ -633,6 +645,7 @@ mod wait_events_state {
 /// //     .return_all()  // Error! Cannot use both
 /// //     .build();
 /// ```
+#[cfg(feature = "multithreading")]
 pub struct WaitEventsBuilder<
     KeepState = wait_events_state::CanKeepUnwanted,
     ReturnState = wait_events_state::CanReturnAll,
@@ -643,6 +656,7 @@ pub struct WaitEventsBuilder<
     _return_state: core::marker::PhantomData<ReturnState>,
 }
 
+#[cfg(feature = "multithreading")]
 impl WaitEventsBuilder<wait_events_state::CanKeepUnwanted, wait_events_state::CanReturnAll> {
     const fn new() -> Self {
         Self {
@@ -654,6 +668,7 @@ impl WaitEventsBuilder<wait_events_state::CanKeepUnwanted, wait_events_state::Ca
     }
 }
 
+#[cfg(feature = "multithreading")]
 impl<K, R> WaitEventsBuilder<K, R> {
     /// Set the events to wait for
     pub const fn events(mut self, events: Events) -> Self {
@@ -696,6 +711,7 @@ impl<K, R> WaitEventsBuilder<K, R> {
 }
 
 // Methods that transition typestates
+#[cfg(feature = "multithreading")]
 impl<R> WaitEventsBuilder<wait_events_state::CanKeepUnwanted, R> {
     /// Keep unwanted events pending instead of clearing them
     /// This prevents using return_all() afterwards
@@ -712,6 +728,7 @@ impl<R> WaitEventsBuilder<wait_events_state::CanKeepUnwanted, R> {
     }
 }
 
+#[cfg(feature = "multithreading")]
 impl<K> WaitEventsBuilder<K, wait_events_state::CanReturnAll> {
     /// Return and clear all pending events
     /// This prevents using keep_unwanted() afterwards
@@ -731,7 +748,8 @@ impl<K> WaitEventsBuilder<K, wait_events_state::CanReturnAll> {
     }
 }
 
-#[cfg(test)]
+// These tests construct `WaitEvents`, which only exists with `multithreading`.
+#[cfg(all(test, feature = "multithreading"))]
 mod tests {
     use super::*;
 

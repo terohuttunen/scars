@@ -1,0 +1,18 @@
+[package]
+name = "minimal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# default-features = false so the board can pick whether `scars`'s `threads`
+# (and raii/inheritance) machinery is linked — this example is the
+# flash-size measurement vehicle for the `threads` feature.
+scars = { path = "../../../scars", default-features = false }
+defmt = "1.0.1"
+
+[features]
+default = []
+chip-stm32f429 = ["scars/chip-stm32f429"]
+chip-stm32f446 = ["scars/chip-stm32f446"]
+# Mirrors scars's default feature set (the multithreading baseline).
+multithreading = ["scars/multithreading", "scars/raii-locks", "scars/priority-inheritance"]

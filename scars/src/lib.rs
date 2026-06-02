@@ -22,6 +22,10 @@ pub mod task;
 pub mod thread;
 pub mod time;
 
+// `raii-locks` and `priority-inheritance` each enable `multithreading`
+// via a Cargo dependency edge (see `Cargo.toml`), so they can never be
+// active without it. `multi-core` is independent (per-core idle threads
+// do not context-switch), so it does not imply `multithreading`.
 extern crate self as scars;
 
 pub use scars_fault::{
@@ -29,10 +33,9 @@ pub use scars_fault::{
 };
 pub use scars_macros::*;
 
-pub use events::{
-    AtomicEvents, EXECUTOR_WAKEUP_EVENT, EventOptions, Events, TryWaitError, WaitEvents,
-    WaitTimeoutError,
-};
+pub use events::{AtomicEvents, EXECUTOR_WAKEUP_EVENT, EventOptions, Events};
+#[cfg(feature = "multithreading")]
+pub use events::{TryWaitError, WaitEvents, WaitTimeoutError};
 pub use kernel::abort::abort;
 pub use kernel::hal::kernel_hal as khal;
 pub use kernel::hal::kernel_hal::{printk, printkln};
@@ -42,18 +45,17 @@ pub use kernel::scheduler::{EventTimer, Scheduler};
 pub use kernel::stack::Stack;
 pub use priority::{AnyPriority, Priority};
 pub use static_cell;
-pub use thread::{Thread, ThreadRef};
+#[cfg(feature = "multithreading")]
+pub use thread::Thread;
+pub use thread::ThreadRef;
 
 pub use api::*;
 
 pub mod prelude {
-    pub use crate::delay_until;
-    pub use crate::make_channel;
     pub use crate::make_interrupt_handler;
-    pub use crate::make_rendezvous;
     #[cfg(feature = "raii-locks")]
     pub use crate::make_shared;
-    pub use crate::make_thread;
     pub use crate::priority::{AnyPriority, Priority};
-    pub use crate::thread::Thread;
+    #[cfg(feature = "multithreading")]
+    pub use crate::{delay_until, make_channel, make_rendezvous, make_thread, thread::Thread};
 }

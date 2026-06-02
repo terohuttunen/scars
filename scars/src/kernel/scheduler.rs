@@ -59,12 +59,15 @@ pub(crate) enum ExecutionContext {
 
 /// Returned in the `Err` arm of `Result<_, TimedOut>` when a
 /// deadlined wait expired before completing.
+#[cfg(feature = "multithreading")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimedOut;
 
 const RESCHEDULE_KIND_NONE: usize = 0;
 const RESCHEDULE_KIND_YIELD_TO_HIGHER: usize = 1;
+#[cfg(feature = "multithreading")]
 const RESCHEDULE_KIND_YIELD_TO_EQUAL: usize = 2;
+#[cfg(feature = "multithreading")]
 pub(crate) const RESCHEDULE_KIND_BLOCK_CURRENT: usize = 4;
 
 pub struct RawScheduler {
@@ -74,13 +77,16 @@ pub struct RawScheduler {
 
     // Threads that are ready to run are in the ready_queue sorted in descending
     // priority order.
+    #[cfg(feature = "multithreading")]
     ready_queue: LinkedList<RawThread, ExecStateTag>,
 
     // Threads that are blocked in wait list, or waiting for timed wakeup, are in blocked
     // list sorted in descending lock priority order.
+    #[cfg(feature = "multithreading")]
     blocked_list: LinkedList<RawThread, ExecStateTag>,
 
     // Threads that are suspended do not participate in thread scheduling.
+    #[cfg(feature = "multithreading")]
     suspended_list: LinkedList<RawThread, ExecStateTag>,
 
     // A wakeup-time sorted queue of timers that are waiting to be woken up at a specific time.
@@ -88,7 +94,9 @@ pub struct RawScheduler {
 
     idle_thread: Pin<&'static RawThread>,
 
-    // Currently running thread on state Running
+    // Currently running thread on state Running. Without multithreading the idle
+    // thread is the only context, so `current_thread()` returns it instead.
+    #[cfg(feature = "multithreading")]
     current_thread: Pin<&'static RawThread>,
 }
 
@@ -97,17 +105,56 @@ unsafe impl Send for RawScheduler {}
 impl RawScheduler {
     pub(crate) fn new(idle_thread: &'static RawThread) -> RawScheduler {
         RawScheduler {
+            #[cfg(feature = "multithreading")]
             ready_queue: LinkedList::new(),
             timer_queue: LinkedList::new(),
+            #[cfg(feature = "multithreading")]
             suspended_list: LinkedList::new(),
+            #[cfg(feature = "multithreading")]
             blocked_list: LinkedList::new(),
             idle_thread: Pin::static_ref(idle_thread),
+            #[cfg(feature = "multithreading")]
             current_thread: Pin::static_ref(idle_thread),
+        }
+    }
+
+    /// The currently running thread. Without multithreading this is always the
+    /// idle thread (the sole execution context).
+    #[cfg(feature = "multithreading")]
+    fn current_thread(self: Pin<&Self>) -> Pin<&'static RawThread> {
+        self.current_thread
+    }
+
+    #[cfg(not(feature = "multithreading"))]
+    fn current_thread(self: Pin<&Self>) -> Pin<&'static RawThread> {
+        self.idle_thread
+    }
+
+    fn timer_queue(self: Pin<&Self>) -> Pin<&LinkedList<RawTimer, TimerQueueTag>> {
+        unsafe { self.map_unchecked(|s| &s.timer_queue) }
+    }
+
+    pub(crate) fn timer_queue_mut(
+        self: Pin<&mut Self>,
+    ) -> Pin<&mut LinkedList<RawTimer, TimerQueueTag>> {
+        unsafe { self.map_unchecked_mut(|s| &mut s.timer_queue) }
+    }
+
+    pub(crate) fn reprogram_alarm(self: Pin<&Self>, pkey: PreemptLockKey<'_>) {
+        match self.timer_queue().head() {
+            Some(sleeping_thread) => {
+                set_alarm(sleeping_thread.get_deadline(pkey).map(|d| d.tick));
+            }
+            None => {
+                // Disable wakeup
+                set_alarm(None);
+            }
         }
     }
 }
 
-// Pin projections from Pin<&RawScheduler> to pinned fields
+// Field projections and queue operations.
+#[cfg(feature = "multithreading")]
 impl RawScheduler {
     fn ready_queue(self: Pin<&Self>) -> Pin<&LinkedList<RawThread, ExecStateTag>> {
         unsafe { self.map_unchecked(|s| &s.ready_queue) }
@@ -133,23 +180,11 @@ impl RawScheduler {
         unsafe { self.map_unchecked_mut(|s| &mut s.suspended_list) }
     }
 
-    fn timer_queue(self: Pin<&Self>) -> Pin<&LinkedList<RawTimer, TimerQueueTag>> {
-        unsafe { self.map_unchecked(|s| &s.timer_queue) }
-    }
-
-    pub(crate) fn timer_queue_mut(
-        self: Pin<&mut Self>,
-    ) -> Pin<&mut LinkedList<RawTimer, TimerQueueTag>> {
-        unsafe { self.map_unchecked_mut(|s| &mut s.timer_queue) }
-    }
-
     fn current_thread_mut(self: Pin<&mut Self>) -> &mut Pin<&'static RawThread> {
         unsafe { &mut self.get_unchecked_mut().current_thread }
     }
-}
 
-// Queue operations
-impl RawScheduler {
+    // Queue operations.
     fn insert_to_ready_queue(
         self: Pin<&mut Self>,
         pkey: PreemptLockKey<'_>,
@@ -276,7 +311,8 @@ impl RawScheduler {
     }
 }
 
-// Thread scheduling
+// Thread scheduling.
+#[cfg(feature = "multithreading")]
 impl RawScheduler {
     /// Try to wakeup a thread. If removing the thread
     /// from the wait queue is not safe right now, returns Err(()).
@@ -474,18 +510,6 @@ impl RawScheduler {
         old
     }
 
-    pub(crate) fn reprogram_alarm(self: Pin<&Self>, pkey: PreemptLockKey<'_>) {
-        match self.timer_queue().head() {
-            Some(sleeping_thread) => {
-                set_alarm(sleeping_thread.get_deadline(pkey).map(|d| d.tick));
-            }
-            None => {
-                // Disable wakeup
-                set_alarm(None);
-            }
-        }
-    }
-
     fn locks_priority_ceiling(self: Pin<&Self>, pkey: PreemptLockKey<'_>) -> PriorityOpt {
         if let Some(blocked_thread) = self.blocked_list().head() {
             let blocked_prio = blocked_thread.ceiling_lock_priority(pkey);
@@ -496,29 +520,10 @@ impl RawScheduler {
         }
     }
 
-    fn reschedule<'key>(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'key>, kind: usize) {
-        // Wakeup sleeping threads that should have been woken up
-        let now = Instant::now();
-        loop {
-            if let Some(sleeping_thread) = self.as_ref().timer_queue().head() {
-                if let Some(wakeup_time) = sleeping_thread.get_deadline(pkey) {
-                    if wakeup_time > now {
-                        // No more threads to wake up
-                        set_alarm(Some(wakeup_time.tick));
-                        break;
-                    }
-                }
-            } else {
-                // Wakeup queue is empty, disable wakeup
-                set_alarm(None);
-                break;
-            }
-
-            if let Some(suspended) = self.as_mut().timer_queue_mut().pop_front() {
-                self.as_mut().wakeup_timer(pkey, suspended)
-            }
-        }
-
+    /// Applies the thread-scheduling outcome of a reschedule once the
+    /// timer queue has been drained: blocks the current thread, or
+    /// switches to the highest-priority eligible ready thread, per `kind`.
+    fn reschedule_threads<'key>(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'key>, kind: usize) {
         // Drain-driven block: the commit site has armed the wait and
         // written `pending_block_deadline`. Any yield bits ORed in
         // are moot once we switch away from current.
@@ -695,7 +700,46 @@ impl RawScheduler {
                 .block_thread(pkey, blocked_thread, deadline.map(|tick| Instant { tick }));
         }
     }
+}
 
+impl RawScheduler {
+    /// Drains the timer queue, firing every expired timer (which delivers
+    /// its events to the registered handler). With `multithreading`, then
+    /// runs `reschedule_threads` to apply any thread block, yield, or
+    /// context switch indicated by `kind`.
+    fn reschedule<'key>(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'key>, kind: usize) {
+        // Wakeup sleeping threads that should have been woken up
+        let now = Instant::now();
+        loop {
+            if let Some(sleeping_thread) = self.as_ref().timer_queue().head() {
+                if let Some(wakeup_time) = sleeping_thread.get_deadline(pkey) {
+                    if wakeup_time > now {
+                        // No more threads to wake up
+                        set_alarm(Some(wakeup_time.tick));
+                        break;
+                    }
+                }
+            } else {
+                // Wakeup queue is empty, disable wakeup
+                set_alarm(None);
+                break;
+            }
+
+            if let Some(suspended) = self.as_mut().timer_queue_mut().pop_front() {
+                self.as_mut().wakeup_timer(pkey, suspended)
+            }
+        }
+
+        // Without multithreading there is no thread to block, yield, or
+        // switch, so `kind` is unused.
+        #[cfg(not(feature = "multithreading"))]
+        let _ = kind;
+
+        #[cfg(feature = "multithreading")]
+        self.reschedule_threads(pkey, kind);
+    }
+
+    #[cfg(feature = "multithreading")]
     pub(crate) fn threads(self: Pin<&Self>) -> impl Iterator<Item = Pin<&RawThread>> {
         Some(self.idle_thread)
             .into_iter()
@@ -703,6 +747,12 @@ impl RawScheduler {
             .chain(self.ready_queue().cursor_front())
             .chain(self.blocked_list().cursor_front())
             .chain(self.suspended_list().cursor_front())
+    }
+
+    // Without multithreading the idle thread is the only context.
+    #[cfg(not(feature = "multithreading"))]
+    pub(crate) fn threads(self: Pin<&Self>) -> impl Iterator<Item = Pin<&RawThread>> {
+        Some(self.idle_thread).into_iter()
     }
 
     pub fn thread_info<'a, 'key: 'a>(
@@ -810,9 +860,8 @@ impl Scheduler {
                 Pin::new_unchecked(interrupt_context.as_ref())
             }),
             None => ExecutionContext::Thread(
-                unsafe { &*Scheduler::instance().raw.as_ptr() }
-                    .current_thread
-                    .as_ref(),
+                unsafe { Pin::new_unchecked(&*Scheduler::instance().raw.as_ptr()) }
+                    .current_thread(),
             ),
         }
     }
@@ -870,6 +919,7 @@ impl Scheduler {
             })
     }
 
+    #[cfg(feature = "multithreading")]
     pub(crate) fn cond_reschedule<'key>(pkey: PreemptLockKey<'key>) {
         Self::pin_instance()
             .raw_pin()
@@ -884,6 +934,11 @@ impl Scheduler {
                 }
             })
     }
+
+    // Without multithreading there is no ready queue to yield to; a ceiling-lock
+    // release can never make a higher-priority thread runnable.
+    #[cfg(not(feature = "multithreading"))]
+    pub(crate) fn cond_reschedule(_pkey: PreemptLockKey<'_>) {}
 
     pub(crate) fn set_pending_reschedule(kind: usize) {
         let scheduler = Scheduler::instance();
@@ -918,6 +973,7 @@ impl Scheduler {
     /// `target`'s preempt lock and owns any ceiling-based re-deferral,
     /// which it expresses by calling this function again from inside
     /// the dispatch.
+    #[cfg(feature = "multithreading")]
     pub(crate) fn schedule_deferred_operation_on(
         target: CoreId,
         pending_work: Pin<&RawPendingWorkEntry>,
@@ -985,7 +1041,10 @@ impl Scheduler {
             }
         }
     }
+}
 
+#[cfg(feature = "multithreading")]
+impl Scheduler {
     // Thread or ISR context
     pub(crate) fn resume_thread(thread: Pin<&'static RawThread>) {
         if thread.core != CoreId::current() {
@@ -1068,13 +1127,18 @@ impl Scheduler {
         tracing::thread_new(thread.as_thread_ref());
         Scheduler::resume_thread(thread);
     }
+}
 
+impl Scheduler {
     // Pre-emption
     // ISR context
     pub(crate) fn wakeup_scheduler_isr() {
         Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
     }
+}
 
+#[cfg(feature = "multithreading")]
+impl Scheduler {
     // Yield current thread
     // ISR context
     pub(crate) fn yield_current_thread_isr() {

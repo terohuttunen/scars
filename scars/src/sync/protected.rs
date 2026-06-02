@@ -19,6 +19,7 @@
 //! ```
 
 use crate::cell::LockedCell;
+#[cfg(feature = "multithreading")]
 use crate::kernel::scheduler::{RESCHEDULE_KIND_BLOCK_CURRENT, Scheduler};
 use crate::runtime_error;
 use crate::sync::{NestingLock, TryLockError};
@@ -129,7 +130,11 @@ impl<T, L: NestingLock> Protected<T, L> {
             }
         })?
     }
+}
 
+// Block-and-retry barrier helpers.
+#[cfg(feature = "multithreading")]
+impl<T, L: NestingLock> Protected<T, L> {
     /// Run `f` repeatedly under `with` until it returns
     /// [`BarrierResult::Done`]. On [`BarrierResult::Wait`] the calling
     /// thread suspends until notified, then the loop retries.
@@ -183,10 +188,12 @@ impl<T, L: NestingLock> Protected<T, L> {
 /// [`BarrierResult::Wait`] without going through a primitive like
 /// [`Notify::wait`](crate::sync::Notify::wait) that pairs construction
 /// with enqueueing the thread.
+#[cfg(feature = "multithreading")]
 pub struct WaitMarker {
     _seal: (),
 }
 
+#[cfg(feature = "multithreading")]
 impl WaitMarker {
     #[inline]
     pub(crate) fn new() -> Self {
@@ -195,6 +202,7 @@ impl WaitMarker {
 }
 
 /// Outcome of a [`Protected::with_barrier`] closure iteration.
+#[cfg(feature = "multithreading")]
 pub enum BarrierResult<R> {
     /// Return this value from `with_barrier`.
     Done(R),
@@ -202,6 +210,7 @@ pub enum BarrierResult<R> {
     Wait(WaitMarker),
 }
 
+#[cfg(feature = "multithreading")]
 pub use crate::kernel::scheduler::TimedOut;
 
 unsafe impl<T: Send, L: NestingLock> Send for Protected<T, L> {}

@@ -1,0 +1,15 @@
+# Multithreading-ON counterpart of stm32f429-no-multithreading, used only to measure
+# the flash-size difference of the multithreading machinery. Enables the
+# `minimal` example's `multithreading` feature (which turns on scars's default
+# multithreading/raii/inheritance set).
+name = "stm32f429-multithreading"
+target = "thumbv7em-none-eabihf"
+package = "scars"
+features = ["chip-stm32f429", "multithreading"]
+default-features = false
+test_runner = "probe-rs"
+examples_dirs = ["examples/stm32f4"]
+
+[linker]
+script = "khal/scars-khal-stm32f4/default.lds"
+rustflags = ["-Ctarget-cpu=cortex-m4", "-Ctarget-feature=+vfp4"]

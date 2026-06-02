@@ -14,6 +14,7 @@ pub use raw_thread::*;
 pub use reference::*;
 use static_cell::ConstStaticCell;
 
+#[cfg(feature = "multithreading")]
 #[macro_export]
 macro_rules! make_thread {
     ($name: expr, $prio : expr, $stack_size : expr, executor = true $(, core = $core:expr)?) => {{

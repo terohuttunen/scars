@@ -1,0 +1,21 @@
+name = "sim-no-multithreading"
+target = "x86_64-unknown-linux-gnu"
+package = "scars"
+# Minimal event-handler-only kernel: drop the default `multithreading` feature
+# (and `raii-locks` / `priority-inheritance`, which require it) via
+# --no-default-features. Only interrupts, one idle thread, event handlers,
+# and the timer queue remain.
+features = ["khal-sim"]
+default-features = false
+test_runner = "native"
+examples_dirs = ["examples/sim"]
+
+[linker]
+# Non-PIE so defmt's `&SYMBOL as u16` truncation lands on the link-time symbol
+# address (host PIE with ASLR otherwise mixes random bits into the lower 16
+# of every static address, breaking defmt-decoder's tag lookup).
+rustflags = [
+    "-Clink-arg=-Tkhal/scars-khal-sim/sim-defmt.lds",
+    "-Crelocation-model=static",
+    "-Clink-arg=-no-pie",
+]

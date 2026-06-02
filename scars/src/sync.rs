@@ -12,6 +12,7 @@
 //pub mod async_condvar;
 //pub mod async_lock;
 //pub mod async_mutex;
+#[cfg(feature = "multithreading")]
 pub mod channel;
 #[cfg(feature = "raii-locks")]
 pub mod condvar;
@@ -20,11 +21,14 @@ pub mod guarded;
 pub mod lock;
 #[cfg(feature = "raii-locks")]
 pub mod mutex;
+#[cfg(feature = "multithreading")]
 pub mod notify;
 pub mod once;
 pub mod once_lock;
 pub mod protected;
+#[cfg(feature = "multithreading")]
 pub mod rendezvous;
+#[cfg(feature = "multithreading")]
 pub mod semaphore;
 #[cfg(feature = "raii-locks")]
 pub mod shared;
@@ -33,7 +37,6 @@ pub mod shared;
 //pub use async_condvar::AsyncCondvar;
 //pub use async_lock::AsyncLock;
 //pub use async_mutex::{AsyncMutex, AsyncMutexGuard};
-pub use channel::{CeilingChannel, Channel};
 #[cfg(feature = "raii-locks")]
 pub use condvar::{CeilingCondvar, Condvar};
 #[cfg(feature = "raii-locks")]
@@ -42,13 +45,18 @@ pub use guarded::{Guard, Guarded};
 pub use mutex::Mutex;
 #[cfg(feature = "raii-locks")]
 pub use mutex::{CeilingMutex, MutexGuard};
-pub use notify::Notify;
 pub use once::Once;
 pub use once_lock::OnceLock;
-pub use protected::{BarrierResult, Protected, TimedOut, WaitMarker};
-pub use semaphore::Semaphore;
+pub use protected::Protected;
 #[cfg(feature = "raii-locks")]
 pub use shared::Shared;
+#[cfg(feature = "multithreading")]
+pub use {
+    channel::{CeilingChannel, Channel},
+    notify::Notify,
+    protected::{BarrierResult, TimedOut, WaitMarker},
+    semaphore::Semaphore,
+};
 
 pub use ::portable_atomic as atomic;
 

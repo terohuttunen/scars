@@ -24,18 +24,26 @@ use core::pin::Pin;
 use core::ptr::NonNull;
 use scars_khal::{CoreController, Fault};
 
+#[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_YIELD: usize = 1;
+#[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_WAIT_EVENT: usize = 3;
+#[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_WAIT_EVENT_UNTIL: usize = 4;
+#[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_DELAY_UNTIL: usize = 5;
 pub const SYSCALL_ID_RUNTIME_ERROR: usize = 6;
+#[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_START_THREAD: usize = 7;
+#[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_SUSPEND: usize = 8;
 
+#[cfg(feature = "multithreading")]
 pub fn thread_yield() {
     let _ = syscall(SYSCALL_ID_YIELD, 0, 0, 0);
 }
 
+#[cfg(feature = "multithreading")]
 pub(crate) fn thread_wait_event(wait_events: *mut crate::WaitEvents) {
     if in_interrupt() {
         // Error: cannot wait in an interrupt handler
@@ -45,6 +53,7 @@ pub(crate) fn thread_wait_event(wait_events: *mut crate::WaitEvents) {
     syscall(SYSCALL_ID_WAIT_EVENT as usize, wait_events as usize, 0, 0);
 }
 
+#[cfg(feature = "multithreading")]
 pub(crate) fn thread_wait_event_until(wait_events: *mut crate::WaitEvents, deadline: Instant) {
     if in_interrupt() {
         // Error: cannot wait in an interrupt handler
@@ -58,10 +67,12 @@ pub(crate) fn thread_wait_event_until(wait_events: *mut crate::WaitEvents, deadl
     );
 }
 
+#[cfg(feature = "multithreading")]
 pub fn delay(duration: Duration) {
     delay_until(Instant::now() + duration)
 }
 
+#[cfg(feature = "multithreading")]
 pub fn delay_until(time: Instant) {
     let _ = syscall(
         SYSCALL_ID_DELAY_UNTIL,
@@ -71,6 +82,7 @@ pub fn delay_until(time: Instant) {
     );
 }
 
+#[cfg(feature = "multithreading")]
 pub(crate) fn thread_suspend(thread: Option<&RawThread>) {
     let thread_ptr = thread.map(|t| t as *const _ as usize).unwrap_or(0);
     let _ = syscall(SYSCALL_ID_SUSPEND, thread_ptr, 0, 0);
@@ -91,6 +103,7 @@ pub fn runtime_error(error: &dyn Fault) -> ! {
     unreachable!();
 }
 
+#[cfg(feature = "multithreading")]
 pub(crate) fn start_thread(thread: &mut RawThread) {
     let _ = syscall(SYSCALL_ID_START_THREAD, thread as *mut _ as usize, 0, 0);
 }
@@ -131,21 +144,28 @@ fn local_syscall_handler() -> *mut RawInterruptHandler {
 #[unsafe(no_mangle)]
 unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
     let rval = 0;
+    // `arg1`/`arg2` are only read by the thread-only syscall arms.
+    #[cfg(not(feature = "multithreading"))]
+    let _ = (arg1, arg2);
     unsafe {
-        interrupt_context(local_syscall_handler(), || {
+        interrupt_context(local_syscall_handler(), || -> () {
             match id {
+                #[cfg(feature = "multithreading")]
                 SYSCALL_ID_YIELD => {
                     Scheduler::yield_current_thread_isr();
                 }
+                #[cfg(feature = "multithreading")]
                 SYSCALL_ID_WAIT_EVENT => {
                     let wait_events = arg0 as *mut crate::WaitEvents;
                     Scheduler::wait_current_thread_event_isr(wait_events, None);
                 }
+                #[cfg(feature = "multithreading")]
                 SYSCALL_ID_WAIT_EVENT_UNTIL => {
                     let wait_events = arg0 as *mut crate::WaitEvents;
                     let time = (u64::from(arg1 as u32) << 32) + u64::from(arg2 as u32);
                     Scheduler::wait_current_thread_event_isr(wait_events, Some(time));
                 }
+                #[cfg(feature = "multithreading")]
                 SYSCALL_ID_DELAY_UNTIL => {
                     let time = (u64::from(arg0 as u32) << 32) + u64::from(arg1 as u32);
                     Scheduler::delay_thread_until(time);
@@ -154,17 +174,19 @@ unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usi
                     let wrapper = &*(arg0 as *const FaultWrapper);
                     crate::kernel::exception::handle_runtime_error(wrapper.error);
                 }
+                #[cfg(feature = "multithreading")]
                 SYSCALL_ID_START_THREAD => {
                     let thread: &'static mut RawThread = &mut *(arg0 as *mut RawThread);
                     Scheduler::start_thread(Pin::static_mut(thread));
                 }
+                #[cfg(feature = "multithreading")]
                 SYSCALL_ID_SUSPEND => {
                     let maybe_thread = NonNull::new(arg0 as *mut RawThread)
                         .map(|p| Pin::new_unchecked(p.as_ref()));
                     Scheduler::suspend_thread(maybe_thread);
                 }
                 _ => panic!("Invalid syscall {:?}", id),
-            }
+            };
             // No tail-drain here: producers either pended PendSV
             // directly (preempt allowed) or the preempt-lock release
             // inside the syscall body did. The service call handler

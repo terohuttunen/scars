@@ -4,20 +4,14 @@ use super::InheritanceLockListTag;
 use super::LockListTag;
 use super::{INVALID_THREAD_ID, ThreadInfo, ThreadRef};
 use crate::cell::LockedCell;
-use crate::events::{AtomicEvents, Events, WaitEvents, sender::EventReceiver};
+use crate::events::{AtomicEvents, Events, sender::EventReceiver};
 #[cfg(any(feature = "raii-locks", feature = "priority-inheritance"))]
 use crate::kernel::list::LinkedList;
-use crate::kernel::waiter::{WaitQueueEntry, WaitQueueEntryHandler};
 use crate::kernel::{
-    Priority,
-    hal::{self, CoreId},
-    list::{Node, impl_linked},
-    scheduler::ExecStateTag,
+    Priority, hal,
     scheduler::RawScheduler,
-    scheduler::Scheduler,
-    scheduler::{PendingWorkEntry, PendingWorkHandler, RawPendingWorkEntry, Timer, TimerHandler},
+    scheduler::{PendingWorkEntry, PendingWorkHandler},
     stack::StackRefMut,
-    waiter::WaitQueueHandle,
 };
 use crate::local::LocalStorage;
 use crate::priority::PriorityOpt;
@@ -27,12 +21,23 @@ use crate::sync::InheritanceLock;
 use crate::sync::Protected;
 #[cfg(feature = "raii-locks")]
 use crate::sync::RawCeilingLock;
-use crate::sync::atomic::{AtomicPtr, Ordering};
+use crate::sync::atomic::Ordering;
 use crate::sync::{PreemptLock, PreemptLockKey};
-use crate::time::Instant;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
-use core::ptr;
+#[cfg(feature = "multithreading")]
+use {
+    crate::events::WaitEvents,
+    crate::kernel::waiter::{WaitQueueEntry, WaitQueueEntryHandler, WaitQueueHandle},
+    crate::kernel::{
+        hal::CoreId,
+        list::{Node, impl_linked},
+        scheduler::{ExecStateTag, RawPendingWorkEntry, Scheduler, Timer, TimerHandler},
+    },
+    crate::sync::atomic::AtomicPtr,
+    crate::time::Instant,
+    core::ptr,
+};
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -114,29 +119,36 @@ pub(crate) struct RawThread {
     pub state: LockedCell<ThreadExecutionState, PreemptLock>,
 
     // Intrusive linked list entry for inserting the thread into ready, suspended, or blocked queue
+    #[cfg(feature = "multithreading")]
     pub exec_queue_link: Node<Self, ExecStateTag>,
 
+    #[cfg(feature = "multithreading")]
     pub wait_entry: WaitQueueEntry,
+    #[cfg(feature = "multithreading")]
     pub timer: Timer<Self>,
 
     pub pending_work: PendingWorkEntry<Self>,
 
     // Holds reference to the wait queue that the thread is waiting on, if any.
+    #[cfg(feature = "multithreading")]
     pub wait_queue: LockedCell<Option<WaitQueueHandle>, PreemptLock>,
 
     // Set by the timer-fire wake path when a deadlined wait expired
     // without a notifier reaching it. Read and cleared by
     // `Scheduler::take_last_wait_timed_out` after the syscall returns.
+    #[cfg(feature = "multithreading")]
     pub wait_timed_out: LockedCell<bool, PreemptLock>,
 
     // Deadline the next drain-driven block will arm. Written by the
     // commit site inside `Protected::with_barrier_until` and consumed
     // (reset to `None`) by `Scheduler::block_current`. `None` means
     // "block without a timer."
+    #[cfg(feature = "multithreading")]
     pub pending_block_deadline: LockedCell<Option<Instant>, PreemptLock>,
 
     // Event system fields
     pub pending_events: AtomicEvents,
+    #[cfg(feature = "multithreading")]
     pub current_wait_events: AtomicPtr<WaitEvents>,
 
     pub local_storage: LocalStorage,
@@ -181,14 +193,21 @@ impl RawThread {
             ceiling_locks: Protected::new(LinkedList::new()),
             #[cfg(feature = "priority-inheritance")]
             inheritance_locks: Protected::new(LinkedList::new()),
+            #[cfg(feature = "multithreading")]
             exec_queue_link: Node::new(),
+            #[cfg(feature = "multithreading")]
             wait_entry: WaitQueueEntry::new(),
+            #[cfg(feature = "multithreading")]
             timer: Timer::new(),
             pending_work: PendingWorkEntry::new(),
+            #[cfg(feature = "multithreading")]
             wait_queue: LockedCell::new(None),
+            #[cfg(feature = "multithreading")]
             wait_timed_out: LockedCell::new(false),
+            #[cfg(feature = "multithreading")]
             pending_block_deadline: LockedCell::new(None),
             pending_events: AtomicEvents::new(0),
+            #[cfg(feature = "multithreading")]
             current_wait_events: AtomicPtr::new(ptr::null_mut()),
             local_storage: LocalStorage::new(),
             context: MaybeUninit::uninit(),
@@ -197,6 +216,7 @@ impl RawThread {
 
     pub unsafe fn init_at(this: *mut Self) {
         unsafe {
+            #[cfg(feature = "multithreading")]
             (*this).wait_entry.init_for::<Self>(&*this);
             // Bind the pending-work entry's receiver. The scheduler may
             // dispatch via this entry from any core (cross-core start
@@ -208,7 +228,11 @@ impl RawThread {
                 .set_receiver(core::pin::Pin::new_unchecked(&*this));
         }
     }
+}
 
+// Thread lifecycle, wait-queue, and wakeup-timer methods.
+#[cfg(feature = "multithreading")]
+impl RawThread {
     /// Set the wakeup deadline for this thread's timer. Pass `None` to
     /// disable. The expiration handler is the [`TimerHandler`] impl below.
     pub(crate) fn set_wakeup_deadline(
@@ -259,7 +283,9 @@ impl RawThread {
             Pin::static_ref(&*self).schedule_deferred_op(Self::OP_START);
         }
     }
+}
 
+impl RawThread {
     #[allow(dead_code)]
     pub fn get_info(&self, pkey: PreemptLockKey<'_>) -> ThreadInfo {
         if self.core != pkey.core {
@@ -506,7 +532,10 @@ impl RawThread {
             self.update_priority(pkey);
         });
     }
+}
 
+#[cfg(feature = "multithreading")]
+impl RawThread {
     pub fn resume(&'static self) {
         Scheduler::resume_thread(Pin::static_ref(self));
     }
@@ -571,30 +600,39 @@ impl RawThread {
         }
         self.pending_block_deadline.replace(pkey, None)
     }
+}
 
+impl RawThread {
     pub fn send_events(&'static self, events: Events) {
         // Update pending events mask. The atomic OR is cross-core safe;
         // the target reads it under its own preempt lock during dispatch.
         let all_pending = self.pending_events.fetch_or(events, Ordering::SeqCst) | events;
 
-        if self.core != CoreId::current() {
-            // Foreign-core target: hand the resume decision to the
-            // owning core. The handler will re-read `pending_events`
-            // and `current_wait_events`, which may have changed since
-            // this post, so we don't act on the snapshot we just took.
-            Pin::static_ref(self).schedule_deferred_op(Self::OP_CHECK_EVENTS);
-            return;
-        }
+        // Without multithreading no thread ever blocks on its own events (event
+        // handlers are the delivery target), so there is nothing to wake.
+        #[cfg(feature = "multithreading")]
+        {
+            if self.core != CoreId::current() {
+                // Foreign-core target: hand the resume decision to the
+                // owning core. The handler will re-read `pending_events`
+                // and `current_wait_events`, which may have changed since
+                // this post, so we don't act on the snapshot we just took.
+                Pin::static_ref(self).schedule_deferred_op(Self::OP_CHECK_EVENTS);
+                return;
+            }
 
-        // Same-core fast path: check if thread is waiting and should be woken.
-        let wait_events_ptr = self.current_wait_events.load(Ordering::SeqCst);
-        if !wait_events_ptr.is_null() {
-            let wait_events = unsafe { &*wait_events_ptr };
+            // Same-core fast path: check if thread is waiting and should be woken.
+            let wait_events_ptr = self.current_wait_events.load(Ordering::SeqCst);
+            if !wait_events_ptr.is_null() {
+                let wait_events = unsafe { &*wait_events_ptr };
 
-            if wait_events.should_resume(all_pending) {
-                self.resume();
+                if wait_events.should_resume(all_pending) {
+                    self.resume();
+                }
             }
         }
+        #[cfg(not(feature = "multithreading"))]
+        let _ = all_pending;
     }
 
     pub fn peek_pending_events(&self) -> Events {
@@ -607,12 +645,14 @@ impl RawThread {
     }
 }
 
+#[cfg(feature = "multithreading")]
 impl WaitQueueEntryHandler for RawThread {
     fn on_resume(this: &'static Self) {
         this.resume();
     }
 }
 
+#[cfg(feature = "multithreading")]
 impl TimerHandler for RawThread {
     fn on_expire(
         this: Pin<&'static Self>,
@@ -628,68 +668,79 @@ impl TimerHandler for RawThread {
 }
 
 impl PendingWorkHandler for RawThread {
+    #[cfg_attr(not(feature = "multithreading"), allow(unused_mut, unused_variables))]
     fn complete(
         this: Pin<&'static Self>,
         pkey: PreemptLockKey<'_>,
         mut sched: Pin<&mut RawScheduler>,
         ops: u32,
     ) -> bool {
+        // Without multithreading there are no thread ops to dispatch (the idle
+        // thread is never started, woken, suspended, or wait-queued).
+        #[cfg(not(feature = "multithreading"))]
+        {
+            let _ = (this, pkey, sched, ops);
+            true
+        }
         // The work-queue drain already holds this core's preempt lock,
         // so we drive the internal `RawScheduler` methods directly.
         // Each `try_*` call reports back if the ceiling blocked the
         // op; we collect those bits and tell the drain to re-queue.
-        let mut retry: u32 = 0;
+        #[cfg(feature = "multithreading")]
+        {
+            let mut retry: u32 = 0;
 
-        if ops & Self::OP_START != 0 {
-            crate::kernel::tracing::thread_new(this.as_thread_ref());
-            if sched.as_mut().try_resume_thread(pkey, this).is_err() {
-                retry |= Self::OP_START;
+            if ops & Self::OP_START != 0 {
+                crate::kernel::tracing::thread_new(this.as_thread_ref());
+                if sched.as_mut().try_resume_thread(pkey, this).is_err() {
+                    retry |= Self::OP_START;
+                }
             }
-        }
-        if ops & Self::OP_RESUME != 0 {
-            if sched.as_mut().try_resume_thread(pkey, this).is_err() {
-                retry |= Self::OP_RESUME;
+            if ops & Self::OP_RESUME != 0 {
+                if sched.as_mut().try_resume_thread(pkey, this).is_err() {
+                    retry |= Self::OP_RESUME;
+                }
             }
-        }
-        if ops & Self::OP_WAKEUP != 0 {
-            if sched.as_mut().try_wakeup_thread(pkey, this).is_err() {
-                retry |= Self::OP_WAKEUP;
+            if ops & Self::OP_WAKEUP != 0 {
+                if sched.as_mut().try_wakeup_thread(pkey, this).is_err() {
+                    retry |= Self::OP_WAKEUP;
+                }
             }
-        }
-        if ops & Self::OP_SUSPEND != 0 {
-            // `suspend_thread` has no ceiling gating; it always
-            // completes.
-            sched.as_mut().suspend_thread(pkey, Some(this));
-        }
-        if ops & Self::OP_CHECK_EVENTS != 0 {
-            // Re-read state under the preempt lock so the resume
-            // decision sees the same `pending_events` /
-            // `current_wait_events` the waiter would observe.
-            let pending = this.pending_events.load(Ordering::SeqCst);
-            let wait_events_ptr = this.current_wait_events.load(Ordering::SeqCst);
-            if !wait_events_ptr.is_null() {
-                let wait_events = unsafe { &*wait_events_ptr };
-                if wait_events.should_resume(pending) {
-                    if sched.as_mut().try_resume_thread(pkey, this).is_err() {
-                        retry |= Self::OP_CHECK_EVENTS;
+            if ops & Self::OP_SUSPEND != 0 {
+                // `suspend_thread` has no ceiling gating; it always
+                // completes.
+                sched.as_mut().suspend_thread(pkey, Some(this));
+            }
+            if ops & Self::OP_CHECK_EVENTS != 0 {
+                // Re-read state under the preempt lock so the resume
+                // decision sees the same `pending_events` /
+                // `current_wait_events` the waiter would observe.
+                let pending = this.pending_events.load(Ordering::SeqCst);
+                let wait_events_ptr = this.current_wait_events.load(Ordering::SeqCst);
+                if !wait_events_ptr.is_null() {
+                    let wait_events = unsafe { &*wait_events_ptr };
+                    if wait_events.should_resume(pending) {
+                        if sched.as_mut().try_resume_thread(pkey, this).is_err() {
+                            retry |= Self::OP_CHECK_EVENTS;
+                        }
                     }
                 }
             }
-        }
-        if ops & Self::OP_REINSERT_WAIT_QUEUE != 0 {
-            if let Some(handle) = this.wait_queue.get(pkey) {
-                let entry = this.get_wait_entry();
-                if unsafe { handle.try_reinsert(pkey, entry) }.is_err() {
-                    retry |= Self::OP_REINSERT_WAIT_QUEUE;
+            if ops & Self::OP_REINSERT_WAIT_QUEUE != 0 {
+                if let Some(handle) = this.wait_queue.get(pkey) {
+                    let entry = this.get_wait_entry();
+                    if unsafe { handle.try_reinsert(pkey, entry) }.is_err() {
+                        retry |= Self::OP_REINSERT_WAIT_QUEUE;
+                    }
                 }
             }
-        }
 
-        if retry != 0 {
-            this.get_pending_work().set_pending(retry);
-            false
-        } else {
-            true
+            if retry != 0 {
+                this.get_pending_work().set_pending(retry);
+                false
+            } else {
+                true
+            }
         }
     }
 }
@@ -706,4 +757,5 @@ impl EventReceiver for RawThread {
     }
 }
 
+#[cfg(feature = "multithreading")]
 impl_linked!(exec_queue_link, RawThread, ExecStateTag);
