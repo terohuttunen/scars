@@ -1,0 +1,10 @@
+name = "test"
+target = "x86_64-unknown-linux-gnu"
+package = "scars"
+features = ["khal-test"]
+# Synchronous mock backend: records context switches instead of executing
+# them, so it runs only the crate's lib unit tests, not the thread-driven
+# integration tests. No defmt, so no linker script (unlike sim).
+lib_only = true
+test_runner = "native"
+examples_dirs = []

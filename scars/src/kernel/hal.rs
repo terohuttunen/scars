@@ -17,6 +17,8 @@ pub use scars_khal_stm32f1 as kernel_hal;
 pub use scars_khal_stm32f4 as kernel_hal;
 #[cfg(feature = "khal-stm32h7")]
 pub use scars_khal_stm32h7 as kernel_hal;
+#[cfg(feature = "khal-test")]
+pub use scars_khal_test as kernel_hal;
 
 pub use kernel_hal::pac;
 
@@ -39,6 +41,9 @@ pub const NUM_CORES: usize = <kernel_hal::HAL as CoreController>::NUM_CORES;
 
 mod core_id;
 pub use core_id::CoreId;
+
+#[cfg(all(test, feature = "khal-test"))]
+mod harness_tests;
 
 #[allow(dead_code)]
 #[inline(always)]

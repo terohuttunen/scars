@@ -170,7 +170,7 @@ fn handle_fault(info: &FaultInfo) -> ! {
     dispatch_fault(info)
 }
 
-#[cfg(not(feature = "khal-sim"))]
+#[cfg(not(any(feature = "khal-sim", feature = "khal-test")))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     if let Some(location) = info.location() {

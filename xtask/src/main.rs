@@ -233,19 +233,27 @@ fn cmd_test(
     if matches!(sel, BoardSel::All) && !include_hw {
         boards.retain(|b| b.test_runner != TestRunner::ProbeRs);
     }
-    // When a filter is given, select the target via `--test NAME`
-    // rather than passing it as a positional. Positional filters are
-    // forwarded to the libtest harness on the runner's argv, and
-    // probe-rs (test_runner = ProbeRs) rejects unknown args on
-    // harness=false binaries.
-    let extra: Vec<String> = match filter {
-        Some(name) => vec!["--test".into(), name],
-        None => Vec::new(),
-    };
     for b in boards {
         eprintln!("==> test {}", b.name);
         let pkg = b.package.clone();
         let features = kernel_feature_union(&b);
+        let mut extra: Vec<String> = Vec::new();
+        // `lib_only` boards run just the crate's unit tests, whose custom
+        // runner takes no filter, so a filter is dropped for them.
+        if b.lib_only {
+            extra.push("--lib".into());
+        }
+        // When a filter is given, select the target via `--test NAME`
+        // rather than passing it as a positional. Positional filters are
+        // forwarded to the libtest harness on the runner's argv, and
+        // probe-rs (test_runner = ProbeRs) rejects unknown args on
+        // harness=false binaries.
+        if let Some(name) = &filter {
+            if !b.lib_only {
+                extra.push("--test".into());
+                extra.push(name.clone());
+            }
+        }
         cargo::run_cargo(
             sh,
             root,

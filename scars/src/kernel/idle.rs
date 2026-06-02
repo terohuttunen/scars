@@ -17,10 +17,10 @@ const IDLE_THREAD_PRIO: Priority = Priority::Thread(0);
 #[cfg(test)]
 const TEST_THREAD_PRIO: Priority = Priority::Thread(1);
 
-#[cfg(not(feature = "khal-sim"))]
+#[cfg(not(any(feature = "khal-sim", feature = "khal-test")))]
 const IDLE_THREAD_STACK_SIZE: usize = 1024;
 
-#[cfg(feature = "khal-sim")]
+#[cfg(any(feature = "khal-sim", feature = "khal-test"))]
 const IDLE_THREAD_STACK_SIZE: usize = 1024 * 16;
 
 mod internal {
@@ -85,8 +85,10 @@ fn idle() -> ! {
 
         // With multithreading the test body runs in its own thread (so it
         // can exercise blocking APIs); otherwise it runs directly in idle
-        // context.
-        #[cfg(all(test, feature = "multithreading"))]
+        // context. The synchronous test harness cannot run a spawned
+        // thread's body, so it always runs the test body in idle context
+        // and drives the kernel through its entry points instead.
+        #[cfg(all(test, feature = "multithreading", not(feature = "khal-test")))]
         {
             static THREAD_EXECUTOR: StaticCell<ThreadExecutor> = StaticCell::new();
             static THREAD_STACK: crate::Stack<IDLE_THREAD_STACK_SIZE> = Stack::new();
@@ -101,7 +103,7 @@ fn idle() -> ! {
             test_thread.start();
         }
 
-        #[cfg(all(test, not(feature = "multithreading")))]
+        #[cfg(all(test, any(not(feature = "multithreading"), feature = "khal-test")))]
         {
             crate::test_main();
             scars_test::test_succeed();

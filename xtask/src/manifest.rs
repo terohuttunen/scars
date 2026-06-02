@@ -26,6 +26,13 @@ pub struct Board {
     /// and `multi-core`.
     #[serde(default = "default_true", rename = "default-features")]
     pub default_features: bool,
+    /// When true, `xtask test` runs only the crate's lib unit tests
+    /// (`cargo test --lib`), skipping the integration `[[test]]` targets.
+    /// The synchronous test-harness board sets this: its backend records
+    /// rather than executes context switches, so it cannot run the
+    /// thread-driven integration tests.
+    #[serde(default)]
+    pub lib_only: bool,
     pub test_runner: TestRunner,
     pub examples_dirs: Vec<PathBuf>,
     #[serde(default)]
