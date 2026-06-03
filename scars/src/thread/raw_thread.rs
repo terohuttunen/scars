@@ -275,8 +275,12 @@ impl RawThread {
         *self.state.get_mut() = ThreadExecutionState::Started;
 
         if self.core == CoreId::current() {
-            // Same-core path: trap into the local kernel via syscall.
-            crate::thread_start(self);
+            // Same-core path: announce the thread and make it runnable
+            // through this core's scheduler.
+            let thread = Pin::static_ref(&*self);
+            crate::printkln!("Starting thread {}", thread.name);
+            crate::kernel::tracing::thread_new(thread.as_thread_ref());
+            Scheduler::resume_thread(thread);
         } else {
             // Cross-core path: post a START op onto the target core's
             // deferred-work queue and ping its service call. The

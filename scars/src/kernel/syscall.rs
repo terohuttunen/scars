@@ -3,7 +3,6 @@ use crate::priority::{AnyPriority, Priority};
 use crate::sync::CoreInterruptLock;
 use crate::sync::atomic::Ordering;
 use crate::sync::lock::interrupt_lock::CoreInterruptLockKey;
-use crate::thread::RawThread;
 use crate::time::{Duration, Instant};
 use crate::{
     interrupt::{
@@ -20,7 +19,6 @@ use crate::{
 };
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
-use core::pin::Pin;
 use scars_khal::{CoreController, Fault};
 
 #[cfg(feature = "multithreading")]
@@ -32,8 +30,6 @@ pub const SYSCALL_ID_WAIT_EVENT_UNTIL: usize = 4;
 #[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_DELAY_UNTIL: usize = 5;
 pub const SYSCALL_ID_RUNTIME_ERROR: usize = 6;
-#[cfg(feature = "multithreading")]
-pub const SYSCALL_ID_START_THREAD: usize = 7;
 #[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_SUSPEND: usize = 8;
 
@@ -101,11 +97,6 @@ pub fn runtime_error(error: &dyn Fault) -> ! {
     unreachable!();
 }
 
-#[cfg(feature = "multithreading")]
-pub(crate) fn start_thread(thread: &mut RawThread) {
-    let _ = syscall(SYSCALL_ID_START_THREAD, thread as *mut _ as usize, 0, 0);
-}
-
 /// Per-core syscall/service-call interrupt context. Each core runs
 /// its own syscall handler under its own preempt and ceiling state,
 /// so the `RawInterruptHandler`'s non-`Sync` interior cells
@@ -171,11 +162,6 @@ unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usi
                 SYSCALL_ID_RUNTIME_ERROR => {
                     let wrapper = &*(arg0 as *const FaultWrapper);
                     crate::kernel::exception::handle_runtime_error(wrapper.error);
-                }
-                #[cfg(feature = "multithreading")]
-                SYSCALL_ID_START_THREAD => {
-                    let thread: &'static mut RawThread = &mut *(arg0 as *mut RawThread);
-                    Scheduler::start_thread(Pin::static_mut(thread));
                 }
                 #[cfg(feature = "multithreading")]
                 SYSCALL_ID_SUSPEND => {

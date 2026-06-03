@@ -2,15 +2,7 @@
 pub use crate::interrupt::in_interrupt;
 pub use crate::kernel::hal::{breakpoint, idle};
 pub use crate::kernel::syscall;
-#[cfg(feature = "multithreading")]
-use crate::thread::RawThread;
 pub use crate::time::{Duration, Instant};
-
-#[cfg(feature = "multithreading")]
-#[allow(dead_code)]
-pub(crate) fn thread_start(thread: &mut RawThread) {
-    syscall::start_thread(thread)
-}
 
 #[cfg(feature = "multithreading")]
 #[allow(dead_code)]

@@ -10,7 +10,6 @@ use crate::interrupt::{
     RawInterruptHandler, current_interrupt, in_interrupt, set_ceiling_threshold,
 };
 use crate::kernel::list::{LinkedList, LinkedListNode, LinkedListTag, impl_linked};
-use crate::kernel::tracing;
 use crate::kernel::{
     RuntimeError, Stack, ThreadPriority,
     atomic_queue::{AtomicNode, AtomicQueue},
@@ -569,15 +568,6 @@ impl Scheduler {
                 }
             },
         }
-    }
-
-    pub(crate) fn start_thread(thread: Pin<&'static mut RawThread>) {
-        crate::printkln!("Starting thread {}", thread.name);
-
-        // Thread mutability ends
-        let thread = thread.into_ref();
-        tracing::thread_new(thread.as_thread_ref());
-        Scheduler::resume_thread(thread);
     }
 }
 
