@@ -32,7 +32,9 @@ use {
     crate::kernel::{
         hal::CoreId,
         list::{Node, impl_linked},
-        scheduler::{ExecStateTag, RawPendingWorkEntry, Scheduler, Timer, TimerHandler},
+        scheduler::{
+            ExecStateTag, ExecutionContext, RawPendingWorkEntry, Scheduler, Timer, TimerHandler,
+        },
     },
     crate::sync::atomic::AtomicPtr,
     crate::time::Instant,
@@ -538,6 +540,25 @@ impl RawThread {
 impl RawThread {
     pub fn resume(&'static self) {
         Scheduler::resume_thread(Pin::static_ref(self));
+    }
+
+    /// Suspend the referenced thread (`self`), removing it from scheduling
+    /// until resumed.
+    ///
+    /// Suspending the current thread must switch off its own stack, which
+    /// happens on the suspend syscall's service-call return; suspending any
+    /// other thread is applied directly through the scheduler, dispatching to
+    /// the thread's owning core if it differs.
+    pub fn suspend(&'static self) {
+        let is_current = matches!(
+            Scheduler::current_execution_context(),
+            ExecutionContext::Thread(ctx) if ptr::eq(ctx.get_ref(), self)
+        );
+        if is_current {
+            crate::kernel::syscall::thread_suspend();
+        } else {
+            Scheduler::suspend_thread(Some(Pin::static_ref(self)));
+        }
     }
 
     /// Set `wait_queue` to `handle`. The caller must have already

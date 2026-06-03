@@ -21,7 +21,6 @@ use crate::{
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 use core::pin::Pin;
-use core::ptr::NonNull;
 use scars_khal::{CoreController, Fault};
 
 #[cfg(feature = "multithreading")]
@@ -83,9 +82,8 @@ pub fn delay_until(time: Instant) {
 }
 
 #[cfg(feature = "multithreading")]
-pub(crate) fn thread_suspend(thread: Option<&RawThread>) {
-    let thread_ptr = thread.map(|t| t as *const _ as usize).unwrap_or(0);
-    let _ = syscall(SYSCALL_ID_SUSPEND, thread_ptr, 0, 0);
+pub(crate) fn thread_suspend() {
+    let _ = syscall(SYSCALL_ID_SUSPEND, 0, 0, 0);
 }
 
 struct FaultWrapper<'a> {
@@ -181,9 +179,9 @@ unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usi
                 }
                 #[cfg(feature = "multithreading")]
                 SYSCALL_ID_SUSPEND => {
-                    let maybe_thread = NonNull::new(arg0 as *mut RawThread)
-                        .map(|p| Pin::new_unchecked(p.as_ref()));
-                    Scheduler::suspend_thread(maybe_thread);
+                    // Always targets the current thread; other threads are
+                    // suspended directly via `RawThread::suspend`.
+                    Scheduler::suspend_thread(None);
                 }
                 _ => panic!("Invalid syscall {:?}", id),
             };

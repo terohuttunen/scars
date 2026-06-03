@@ -33,5 +33,5 @@ pub fn delay_until(time: Instant) {
 #[cfg(feature = "multithreading")]
 #[allow(dead_code)]
 pub fn thread_suspend() {
-    syscall::thread_suspend(None)
+    syscall::thread_suspend()
 }
