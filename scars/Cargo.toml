@@ -141,6 +141,11 @@ harness = false
 required-features = ["multithreading"]
 
 [[test]]
+name = "lock_holder_order"
+harness = false
+required-features = ["multithreading"]
+
+[[test]]
 name = "suspend_resume"
 harness = false
 required-features = ["multithreading"]
