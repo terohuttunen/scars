@@ -53,8 +53,6 @@ pub use api::*;
 
 pub mod prelude {
     pub use crate::make_interrupt_handler;
-    #[cfg(feature = "raii-locks")]
-    pub use crate::make_shared;
     pub use crate::priority::{AnyPriority, Priority};
     #[cfg(feature = "multithreading")]
     pub use crate::{delay_until, make_channel, make_rendezvous, make_thread, thread::Thread};

@@ -2,7 +2,7 @@
 //!
 //! Low-level per-core lock primitives live in [`lock`] and are re-exported
 //! here for convenience. Higher-level primitives — [`Mutex`], [`Channel`],
-//! [`Condvar`], [`Once`], [`OnceLock`], [`Shared`] — are built on top of
+//! [`Condvar`], [`Once`], [`OnceLock`] — are built on top of
 //! those locks.
 //!
 //! See [`lock`] for the distinction between nesting and scoped locks and
@@ -30,8 +30,6 @@ pub mod protected;
 pub mod rendezvous;
 #[cfg(feature = "multithreading")]
 pub mod semaphore;
-#[cfg(feature = "raii-locks")]
-pub mod shared;
 
 //pub use async_channel::AsyncChannel;
 //pub use async_condvar::AsyncCondvar;
@@ -48,8 +46,6 @@ pub use mutex::{CeilingMutex, MutexGuard};
 pub use once::Once;
 pub use once_lock::OnceLock;
 pub use protected::Protected;
-#[cfg(feature = "raii-locks")]
-pub use shared::Shared;
 #[cfg(feature = "multithreading")]
 pub use {
     channel::{CeilingChannel, Channel},
