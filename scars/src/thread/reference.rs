@@ -40,6 +40,24 @@ impl ThreadRef {
         unsafe { self.0.as_ref().base_priority }
     }
 
+    /// Suspend the referenced thread; it is removed from scheduling until
+    /// resumed.
+    #[cfg(feature = "multithreading")]
+    pub fn suspend(&self) {
+        unsafe { self.as_ref() }.suspend();
+    }
+
+    /// Resume the referenced thread, returning it to the ready state.
+    ///
+    /// Routed through `RawThread::resume` / `Scheduler::resume_thread`, which is
+    /// safe from thread or interrupt context — it defers the resulting
+    /// reschedule — and dispatches to the thread's owning core if it differs
+    /// from the caller's.
+    #[cfg(feature = "multithreading")]
+    pub fn resume(&self) {
+        unsafe { self.as_ref() }.resume();
+    }
+
     pub(crate) unsafe fn as_ref(&self) -> &'static RawThread {
         unsafe { self.0.as_ref() }
     }
