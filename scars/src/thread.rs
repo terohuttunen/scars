@@ -14,26 +14,6 @@ pub use raw_thread::*;
 pub use reference::*;
 use static_cell::ConstStaticCell;
 
-#[cfg(feature = "multithreading")]
-#[macro_export]
-macro_rules! make_thread {
-    ($name: expr, $prio : expr, $stack_size : expr, executor = true $(, core = $core:expr)?) => {{
-        let mut thread = $crate::make_thread!($name, $prio, $stack_size $(, core = $core)?);
-        let executor = $crate::make_thread_executor!();
-        thread.start_executor(executor);
-        thread
-    }};
-    ($name: expr, $prio : expr, $stack_size: expr $(, core = $core:expr)?) => {{
-        static STACK: $crate::Stack<{ $stack_size }> = $crate::Stack::new();
-        type T = impl ::core::marker::Sized + ::core::marker::Send + FnMut();
-        static THREAD: $crate::Thread<{ $prio }, T, { $crate::make_thread!(@core $($core)?) }> =
-            $crate::Thread::new($name);
-        THREAD.init(STACK.init())
-    }};
-    (@core) => {$crate::CoreId::DEFAULT};
-    (@core $core:expr) => { $core };
-}
-
 pub const INVALID_THREAD_ID: u32 = 0;
 pub const IDLE_THREAD_ID: u32 = 1;
 

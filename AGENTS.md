@@ -104,21 +104,41 @@ Platform implementations:
 - `khal/scars-khal-stm32f4/`: STM32F4
 - `khal/scars-khal-sim/`: Pthreads-based simulator
 
-### Macros and Attributes
+### Threads and Interrupt Handlers
 
-**Thread Definition**:
+**Thread Definition** (builder pattern):
 ```rust
-#[scars_macros::thread(name = "MyThread", stack_size = 1024, priority = 5)]
-fn my_thread() {
-    // Thread code
+type MyThreadF = impl ThreadFn;
+
+#[scars::init]
+#[define_opaque(MyThreadF)]
+fn init() {
+    static STACK: Stack<1024> = Stack::new();
+    static MY_THREAD: Thread<{ Priority::thread(5) }, MyThreadF> = Thread::new("MyThread");
+    let _ = MY_THREAD
+        .init(STACK.init())
+        .attach(|| loop {
+            // Thread code
+        })
+        .start();
 }
 ```
 
-**Interrupt Handler**:
+**Interrupt Handler** (builder pattern):
 ```rust
-#[scars_macros::interrupt(PendSV, priority = 1)]
-fn pendsv_handler() {
-    // Handler code
+type MyHandlerF = impl InterruptHandlerFn;
+
+#[scars::init]
+#[define_opaque(MyHandlerF)]
+fn init() {
+    static HANDLER: InterruptHandler<{ Priority::interrupt(1) }, MyHandlerF> =
+        InterruptHandler::new();
+    let handler = HANDLER
+        .init(Interrupt::EXTI0 as u16) // board-specific IRQ number
+        .attach(|| {
+            // Handler code
+        });
+    handler.enable();
 }
 ```
 

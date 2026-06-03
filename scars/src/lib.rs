@@ -52,8 +52,7 @@ pub use thread::ThreadRef;
 pub use api::*;
 
 pub mod prelude {
-    pub use crate::make_interrupt_handler;
     pub use crate::priority::{AnyPriority, Priority};
     #[cfg(feature = "multithreading")]
-    pub use crate::{delay_until, make_channel, make_rendezvous, make_thread, thread::Thread};
+    pub use crate::{delay_until, make_channel, make_rendezvous, thread::Thread};
 }
