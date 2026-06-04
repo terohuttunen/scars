@@ -293,7 +293,7 @@ impl RawScheduler {
         match thread.state.get(pkey) {
             ThreadExecutionState::Ready => {
                 self.as_mut().ready_queue_mut().remove(thread);
-                self.insert_to_suspended_list(pkey, thread);
+                self.as_mut().insert_to_suspended_list(pkey, thread);
             }
             ThreadExecutionState::Running => {
                 // Highest priority of any locks held by the current or blocked threads.
@@ -314,12 +314,12 @@ impl RawScheduler {
                     .unwrap_or(self.as_ref().idle_thread);
 
                 let previous = self.as_mut().switch_thread(pkey, next);
-                self.insert_to_suspended_list(pkey, previous);
+                self.as_mut().insert_to_suspended_list(pkey, previous);
             }
             ThreadExecutionState::Blocked => {
                 // A blocked thread holds its locks and prevents tasks below its priority
                 // from running until it releases the locks, even when suspended.
-                self.insert_to_suspended_list(pkey, thread);
+                self.as_mut().insert_to_suspended_list(pkey, thread);
             }
             ThreadExecutionState::Suspended => {
                 // Thread is already suspended
@@ -330,9 +330,15 @@ impl RawScheduler {
                 panic!("Cannot suspend a thread that has not been started");
             }
             ThreadExecutionState::Started => {
-                self.insert_to_suspended_list(pkey, thread);
+                self.as_mut().insert_to_suspended_list(pkey, thread);
             }
         }
+
+        // Re-merge the alarm with the current thread's monitor budget: the
+        // `Running` arm switches to a new current thread without otherwise
+        // reprogramming it.
+        #[cfg(feature = "execution-time-monitor")]
+        self.as_ref().reprogram_alarm(pkey);
     }
 
     fn check_stack_overflow(&self) {

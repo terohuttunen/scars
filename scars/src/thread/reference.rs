@@ -40,6 +40,58 @@ impl ThreadRef {
         unsafe { self.0.as_ref().base_priority }
     }
 
+    /// Accumulated CPU time consumed by this thread, excluding time spent
+    /// in interrupt handlers that preempted it.
+    ///
+    /// For the thread currently running on the calling core the in-progress
+    /// run-slice is included; for any other thread the value is current as
+    /// of the last time it stopped running.
+    #[cfg(feature = "execution-time")]
+    pub fn execution_time(&self) -> crate::time::Duration {
+        unsafe { self.as_ref() }.effective_execution_time()
+    }
+
+    /// Begin a new measurement window for this thread's execution-time monitor
+    /// (configured at the builder with
+    /// [`ThreadBuilder::monitor`](crate::thread::ThreadBuilder::monitor)). The
+    /// previous window is closed into the observed worst-case execution time
+    /// (see [`wcet`](Self::wcet)), so calling this once per cycle measures
+    /// per-window CPU. The budget event is delivered at most once per window.
+    ///
+    /// Must be called from the thread's own core.
+    #[cfg(feature = "execution-time-monitor")]
+    pub fn restart_execution_time_monitor(&self) {
+        let thread = unsafe { Pin::new_unchecked(self.as_ref()) };
+        thread.restart_monitor();
+    }
+
+    /// Disarm this thread's execution-time monitor, closing the open window
+    /// into the observed worst-case execution time. The WCET is retained. Must
+    /// be called from the thread's own core.
+    #[cfg(feature = "execution-time-monitor")]
+    pub fn cancel_execution_time_monitor(&self) {
+        let thread = unsafe { Pin::new_unchecked(self.as_ref()) };
+        thread.cancel_monitor();
+    }
+
+    /// Observed worst-case execution time: the largest CPU this thread
+    /// consumed in any completed monitoring window (the interval between two
+    /// successive restarts). Zero if no window has completed. Must be read from
+    /// the thread's own core.
+    #[cfg(feature = "execution-time-monitor")]
+    pub fn wcet(&self) -> crate::time::Duration {
+        let raw = unsafe { self.as_ref() };
+        crate::sync::PreemptLock::with(|pkey| raw.monitor_wcet(pkey))
+    }
+
+    /// Clear this thread's observed worst-case execution time. Must be called
+    /// from the thread's own core.
+    #[cfg(feature = "execution-time-monitor")]
+    pub fn reset_wcet(&self) {
+        let thread = unsafe { Pin::new_unchecked(self.as_ref()) };
+        thread.reset_monitor_wcet();
+    }
+
     /// Suspend the referenced thread; it is removed from scheduling until
     /// resumed.
     #[cfg(feature = "multithreading")]

@@ -3,7 +3,6 @@ pub mod event_queue;
 mod threads;
 pub mod timers;
 mod work_queue;
-use crate::Instant;
 use crate::cell::{LockedCell, LockedRefCell, RefMut};
 use crate::events::raw::RawEventHandler;
 use crate::interrupt::{
@@ -29,6 +28,7 @@ use crate::sync::{
 use crate::thread::{
     IDLE_THREAD_ID, INVALID_THREAD_ID, RawThread, Thread, ThreadExecutionState, ThreadInfo,
 };
+use crate::{Duration, Instant};
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -69,6 +69,25 @@ const RESCHEDULE_KIND_YIELD_TO_HIGHER: usize = 1;
 const RESCHEDULE_KIND_YIELD_TO_EQUAL: usize = 2;
 #[cfg(feature = "multithreading")]
 pub(crate) const RESCHEDULE_KIND_BLOCK_CURRENT: usize = 4;
+
+/// Minimum slack when re-arming a monitor budget alarm: a predicted deadline
+/// that has already passed is moved this far ahead so it cannot retrigger
+/// immediately. About 10 µs at any tick frequency.
+#[cfg(feature = "execution-time-monitor")]
+const MONITOR_MIN_SLACK: Duration = Duration::from_ticks({
+    let s = hal::TICK_FREQ_HZ / 100_000;
+    if s == 0 { 1 } else { s }
+});
+
+/// The earlier of two optional alarm deadlines.
+#[cfg(feature = "execution-time-monitor")]
+fn min_option(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (Some(x), None) => Some(x),
+        (None, b) => b,
+    }
+}
 
 pub struct RawScheduler {
     // When thread execution state is one of Ready, Blocked, or Suspended, it is in
@@ -141,14 +160,66 @@ impl RawScheduler {
     }
 
     pub(crate) fn reprogram_alarm(self: Pin<&Self>, pkey: PreemptLockKey<'_>) {
-        match self.timer_queue().head() {
-            Some(sleeping_thread) => {
-                set_alarm(sleeping_thread.get_deadline(pkey).map(|d| d.tick));
-            }
-            None => {
-                // Disable wakeup
-                set_alarm(None);
-            }
+        let wall = self
+            .timer_queue()
+            .head()
+            .and_then(|t| t.get_deadline(pkey))
+            .map(|d| d.tick);
+        // Merge the running thread's CPU-budget deadline (if any) so the
+        // single hardware alarm fires for whichever comes first.
+        #[cfg(feature = "execution-time-monitor")]
+        let deadline = min_option(wall, self.current_monitor_deadline(pkey));
+        #[cfg(not(feature = "execution-time-monitor"))]
+        let deadline = wall;
+        set_alarm(deadline);
+    }
+
+    /// Predicted wall tick at which the currently-running thread's open monitor
+    /// window will reach its budget, or `None` if there is no monitor, no open
+    /// window, or it has already fired this window. Only the running thread is
+    /// tracked; after a context switch this reflects the new current thread.
+    #[cfg(feature = "execution-time-monitor")]
+    fn current_monitor_deadline(self: Pin<&Self>, pkey: PreemptLockKey<'_>) -> Option<u64> {
+        let config = self.current_thread.monitor?;
+        let window = self.current_thread.monitor_state.get(pkey).window?;
+        if window.fired {
+            return None;
+        }
+        let target = window.start.saturating_add(config.budget);
+        let consumed =
+            Duration::from_ticks(self.current_thread.execution_time.load(Ordering::Relaxed));
+        let remaining = target.saturating_sub(consumed);
+        // While `current` runs, its CPU clock advances from `account_start`
+        // at wall rate and reaches `target` at `account_start + remaining`.
+        // Interrupts push the true crossing later, so an early alarm is
+        // corrected by re-arming. Clamp into the future to bound the re-arm
+        // rate.
+        let deadline = crate::kernel::execution_time::local_account_start() + remaining;
+        let floor = Instant::now() + MONITOR_MIN_SLACK;
+        Some(deadline.max(floor).tick)
+    }
+
+    /// Deliver the running thread's monitor event if its CPU consumption in the
+    /// open window has reached the budget, then mark the window fired so it
+    /// fires only once per window. Level-triggered on `execution_time >=
+    /// start + budget`, so it is correct whether the alarm fired for this
+    /// budget or for an unrelated wall-clock timer.
+    #[cfg(feature = "execution-time-monitor")]
+    fn check_monitor(self: Pin<&Self>, pkey: PreemptLockKey<'_>) {
+        let current = self.current_thread;
+        let Some(config) = current.monitor else {
+            return;
+        };
+        let mut state = current.monitor_state.get(pkey);
+        let Some(mut window) = state.window else {
+            return;
+        };
+        let consumed = Duration::from_ticks(current.execution_time.load(Ordering::Relaxed));
+        if !window.fired && consumed >= window.start.saturating_add(config.budget) {
+            config.sender.send_events(config.events);
+            window.fired = true;
+            state.window = Some(window);
+            current.monitor_state.set(pkey, state);
         }
     }
 }
@@ -159,6 +230,13 @@ impl RawScheduler {
     /// runs `reschedule_threads` to apply any thread block, yield, or
     /// context switch indicated by `kind`.
     fn reschedule<'key>(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'key>, kind: usize) {
+        // Fire the running thread's monitor budget if it has been reached,
+        // before the wakeup drain or `reschedule_threads` can change
+        // `current_thread`. Its CPU clock was refreshed at this interrupt's
+        // entry boundary.
+        #[cfg(feature = "execution-time-monitor")]
+        self.as_ref().check_monitor(pkey);
+
         // Wakeup sleeping threads that should have been woken up
         let now = Instant::now();
         loop {
@@ -187,7 +265,12 @@ impl RawScheduler {
         let _ = kind;
 
         #[cfg(feature = "multithreading")]
-        self.reschedule_threads(pkey, kind);
+        self.as_mut().reschedule_threads(pkey, kind);
+
+        // Re-merge the alarm with the current thread's CPU budget and the next
+        // wall-clock wakeup, reflecting any context switch just made.
+        #[cfg(feature = "execution-time-monitor")]
+        self.as_ref().reprogram_alarm(pkey);
     }
 
     #[cfg(feature = "multithreading")]
@@ -267,6 +350,11 @@ impl Scheduler {
                 (&mut *SCHEDULERS[core.as_usize()].get()).write(Scheduler::new(core, idle_thread));
         }
         SCHEDULER_INITIALIZED[core.as_usize()].store(true, Ordering::Release);
+        // Seed the execution-time charging origin before the first thread
+        // runs, so the first interrupt charges the idle thread only the
+        // time it actually ran, not the entire since-boot tick count.
+        #[cfg(feature = "execution-time")]
+        crate::kernel::execution_time::init_account_start();
         let idle_context = idle_thread.context.as_ptr() as *mut _;
         start_first_thread(idle_context)
     }
@@ -303,6 +391,29 @@ impl Scheduler {
     fn raw_pin(self: Pin<&'static Self>) -> Pin<&'static Protected<RawScheduler, PreemptLock>> {
         // SAFETY: `raw` is a field of the pinned per-core Scheduler.
         unsafe { self.map_unchecked(|s| &s.raw) }
+    }
+
+    /// The calling core's currently-running thread, as a raw static
+    /// reference. Used by execution-time accounting at interrupt boundaries,
+    /// where the preempt lock is not held. The read is sound on the local core
+    /// only: a context switch always runs from inside an interrupt context, so
+    /// none is in flight at an outermost boundary.
+    #[cfg(feature = "execution-time")]
+    pub(crate) fn current_thread_raw() -> &'static RawThread {
+        unsafe { Pin::new_unchecked(&*Scheduler::instance().raw.as_ptr()) }
+            .current_thread()
+            .get_ref()
+    }
+
+    /// Reprogram the local-core alarm given the preempt lock, from outside a
+    /// scheduler borrow. Used by the execution-time monitor controls, which run
+    /// synchronously in thread context under [`PreemptLock`]. The shared read of
+    /// the scheduler is sound on the local core: `timer_queue` is mutated only
+    /// under the preempt lock (held here), and no `&mut RawScheduler` is live in
+    /// thread context.
+    #[cfg(feature = "execution-time-monitor")]
+    pub(crate) fn reprogram_alarm_local(pkey: PreemptLockKey<'_>) {
+        unsafe { Pin::new_unchecked(&*Scheduler::instance().raw.as_ptr()) }.reprogram_alarm(pkey);
     }
 
     pub(crate) fn current_execution_context() -> ExecutionContext {

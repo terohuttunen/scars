@@ -4,6 +4,8 @@ use super::InheritanceLockListTag;
 use super::LockListTag;
 use super::{INVALID_THREAD_ID, ThreadInfo, ThreadRef};
 use crate::cell::LockedCell;
+#[cfg(feature = "execution-time-monitor")]
+use crate::events::sender::EventSender;
 use crate::events::{AtomicEvents, Events, sender::EventReceiver};
 #[cfg(any(feature = "raii-locks", feature = "priority-inheritance"))]
 use crate::kernel::list::LinkedList;
@@ -21,8 +23,12 @@ use crate::sync::InheritanceLock;
 use crate::sync::Protected;
 #[cfg(feature = "raii-locks")]
 use crate::sync::RawCeilingLock;
+#[cfg(feature = "execution-time")]
+use crate::sync::atomic::AtomicU64;
 use crate::sync::atomic::Ordering;
 use crate::sync::{PreemptLock, PreemptLockKey};
+#[cfg(feature = "execution-time")]
+use crate::time::Duration;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 #[cfg(feature = "multithreading")]
@@ -64,6 +70,71 @@ pub enum ThreadExecutionState {
 
     /// Thread is suspended
     Suspended,
+}
+
+/// A configured execution-time monitor, set at the thread builder and
+/// immutable thereafter. When the thread consumes `budget` clock ticks of CPU
+/// within a measurement window, `events` are delivered to `sender`.
+#[cfg(feature = "execution-time-monitor")]
+#[derive(Copy, Clone)]
+pub(crate) struct ExecutionTimeMonitor {
+    /// CPU time that triggers `events` within a window.
+    pub(crate) budget: Duration,
+    pub(crate) sender: EventSender,
+    pub(crate) events: Events,
+}
+
+// Set once at the builder and only read afterwards. `EventSender` carries a
+// `*const ()` to a `'static` receiver, so it is sound to share immutably.
+#[cfg(feature = "execution-time-monitor")]
+unsafe impl Sync for ExecutionTimeMonitor {}
+#[cfg(feature = "execution-time-monitor")]
+unsafe impl Send for ExecutionTimeMonitor {}
+
+/// Runtime measurement state for a monitored thread: the worst CPU consumed in
+/// any completed window plus the open window.
+#[cfg(feature = "execution-time-monitor")]
+#[derive(Copy, Clone)]
+pub(crate) struct MonitorState {
+    /// Observed worst-case execution time: the largest CPU consumed in any
+    /// completed window. Updated when a window closes; cleared only by an
+    /// explicit reset.
+    pub(crate) wcet: Duration,
+    /// The open measurement window, or `None` before the first restart and
+    /// after a cancel.
+    pub(crate) window: Option<MonitorWindow>,
+}
+
+#[cfg(feature = "execution-time-monitor")]
+impl MonitorState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            wcet: Duration::ZERO,
+            window: None,
+        }
+    }
+}
+
+/// One open measurement window.
+#[cfg(feature = "execution-time-monitor")]
+#[derive(Copy, Clone)]
+pub(crate) struct MonitorWindow {
+    /// The thread's CPU clock when this window began.
+    pub(crate) start: Duration,
+    /// Whether the budget event has already fired in this window.
+    pub(crate) fired: bool,
+}
+
+/// A monitor operation, applied to [`MonitorState`] under the preempt lock.
+#[cfg(feature = "execution-time-monitor")]
+#[derive(Copy, Clone)]
+pub(crate) enum MonitorOp {
+    /// Close the open window into `wcet`, then open a new one.
+    Restart,
+    /// Close the open window into `wcet` and stop measuring.
+    Cancel,
+    /// Clear the observed-WCET high-water mark.
+    ResetWcet,
 }
 
 /// Per-thread kernel data. CORE-erased: stored in the per-core
@@ -153,6 +224,23 @@ pub(crate) struct RawThread {
     #[cfg(feature = "multithreading")]
     pub current_wait_events: AtomicPtr<WaitEvents>,
 
+    // Accumulated CPU time in clock ticks, excluding time spent in
+    // interrupt handlers that preempted this thread. Charged at the
+    // outermost interrupt boundary (see `kernel::execution_time`), where
+    // the preempt lock is not held, hence a plain atomic rather than a
+    // `LockedCell`.
+    #[cfg(feature = "execution-time")]
+    pub execution_time: AtomicU64,
+
+    // Fixed monitor configuration, set at the builder and immutable after.
+    // `None` if the thread was not built with a monitor.
+    #[cfg(feature = "execution-time-monitor")]
+    pub monitor: Option<ExecutionTimeMonitor>,
+    // Runtime measurement state, read and written by the scheduler on the
+    // owning core under the preempt lock.
+    #[cfg(feature = "execution-time-monitor")]
+    pub monitor_state: LockedCell<MonitorState, PreemptLock>,
+
     pub local_storage: LocalStorage,
 
     /// Thread context holds the KHAL defined thread information such as
@@ -211,6 +299,12 @@ impl RawThread {
             pending_events: AtomicEvents::new(0),
             #[cfg(feature = "multithreading")]
             current_wait_events: AtomicPtr::new(ptr::null_mut()),
+            #[cfg(feature = "execution-time")]
+            execution_time: AtomicU64::new(0),
+            #[cfg(feature = "execution-time-monitor")]
+            monitor: None,
+            #[cfg(feature = "execution-time-monitor")]
+            monitor_state: LockedCell::new(MonitorState::new()),
             local_storage: LocalStorage::new(),
             context: MaybeUninit::uninit(),
         }
@@ -229,6 +323,97 @@ impl RawThread {
                 .pending_work
                 .set_receiver(core::pin::Pin::new_unchecked(&*this));
         }
+    }
+}
+
+// Effective per-thread CPU clock.
+#[cfg(feature = "execution-time")]
+impl RawThread {
+    /// This thread's consumed CPU time including the in-progress run-slice when
+    /// it is the thread currently running on this core (the accumulator is
+    /// folded in only at the next interrupt boundary).
+    pub(crate) fn effective_execution_time(&self) -> Duration {
+        let acc = Duration::from_ticks(self.execution_time.load(Ordering::Relaxed));
+        if !crate::interrupt::in_interrupt() && core::ptr::eq(self, Scheduler::current_thread_raw())
+        {
+            acc.saturating_add(crate::kernel::execution_time::local_account_start().elapsed())
+        } else {
+            acc
+        }
+    }
+}
+
+// Execution-time monitor restart/cancel/reset.
+#[cfg(feature = "execution-time-monitor")]
+impl RawThread {
+    /// Begin a new measurement window, closing the previous one into the
+    /// observed worst-case execution time. The budget configured at the builder
+    /// applies to the new window. The first call starts measuring; later calls
+    /// bound each window to the interval between successive restarts.
+    pub(crate) fn restart_monitor(self: Pin<&'static Self>) {
+        self.run_monitor_op(MonitorOp::Restart);
+    }
+
+    /// Stop measuring, closing the open window into the observed worst-case
+    /// execution time.
+    pub(crate) fn cancel_monitor(self: Pin<&'static Self>) {
+        self.run_monitor_op(MonitorOp::Cancel);
+    }
+
+    /// Clear the observed worst-case execution time.
+    pub(crate) fn reset_monitor_wcet(self: Pin<&'static Self>) {
+        self.run_monitor_op(MonitorOp::ResetWcet);
+    }
+
+    /// Observed worst-case execution time across completed windows.
+    pub(crate) fn monitor_wcet(&self, pkey: PreemptLockKey<'_>) -> Duration {
+        self.monitor_state.get(pkey).wcet
+    }
+
+    /// Apply `op` to the monitor state and reprogram the alarm, synchronously
+    /// under the preempt lock.
+    ///
+    /// Restricted to thread context on the owning core. `PreemptLock::with` is
+    /// always acquirable in thread context and masks preemption, so the update
+    /// cannot race the scheduler's `check_monitor`, and no `&mut RawScheduler`
+    /// is live when `Scheduler::reprogram_alarm_local` borrows it shared.
+    ///
+    /// Not inlined: this body is shared by the three control entry points.
+    /// Inlining would constant-fold `op` and emit three specialized copies of
+    /// the lock, state access, and alarm reprogram; a single out-of-line body
+    /// is smaller, and the control path is not time-critical.
+    #[inline(never)]
+    fn run_monitor_op(self: Pin<&'static Self>, op: MonitorOp) {
+        debug_assert!(!crate::interrupt::in_interrupt());
+        if self.core != hal::CoreId::current() {
+            panic!("execution-time monitor must be controlled from the thread's own core");
+        }
+        PreemptLock::with(|pkey| {
+            let now = self.effective_execution_time();
+            let mut state = self.monitor_state.get(pkey);
+            match op {
+                MonitorOp::Restart => {
+                    if let Some(window) = state.window {
+                        state.wcet = state.wcet.max(now.saturating_sub(window.start));
+                    }
+                    state.window = Some(MonitorWindow {
+                        start: now,
+                        fired: false,
+                    });
+                }
+                MonitorOp::Cancel => {
+                    if let Some(window) = state.window {
+                        state.wcet = state.wcet.max(now.saturating_sub(window.start));
+                    }
+                    state.window = None;
+                }
+                MonitorOp::ResetWcet => {
+                    state.wcet = Duration::ZERO;
+                }
+            }
+            self.monitor_state.set(pkey, state);
+            Scheduler::reprogram_alarm_local(pkey);
+        });
     }
 }
 

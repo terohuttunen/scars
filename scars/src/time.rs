@@ -1,6 +1,9 @@
 use crate::kernel::hal::{TICK_FREQ_HZ, clock_ticks};
 use core::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
+#[cfg(feature = "execution-time")]
+pub mod execution_time;
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub struct Duration {
     ticks: u64,

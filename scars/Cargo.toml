@@ -46,6 +46,21 @@ harness = false
 required-features = ["multithreading"]
 
 [[test]]
+name = "execution_time01"
+harness = false
+required-features = ["execution-time"]
+
+[[test]]
+name = "execution_time_monitor01"
+harness = false
+required-features = ["execution-time-monitor"]
+
+[[test]]
+name = "execution_time_monitor02"
+harness = false
+required-features = ["execution-time-monitor"]
+
+[[test]]
 name = "inheritance01"
 harness = false
 required-features = ["priority-inheritance"]
@@ -244,6 +259,16 @@ raii-locks = ["multithreading"]
 # own idle thread, interrupts, and event handlers with no cross-core
 # context switching, so it applies with or without `multithreading`.
 multi-core = []
+# Per-thread execution-time accounting: a CPU clock per thread plus a separate
+# aggregate interrupt clock. Requires `multithreading` (only meaningful when
+# threads can be switched). Reuses the monotonic `clock_ticks()` source; no new
+# HAL surface.
+execution-time = ["multithreading"]
+# Execution-time budget timers: arm a per-thread CPU-time budget that delivers
+# Events when the thread's consumed CPU time crosses a threshold. Builds on
+# `execution-time`; adds the per-thread budget state and the CPU-budget alarm
+# merging in the scheduler.
+execution-time-monitor = ["execution-time"]
 defmt = ["dep:defmt", "scars-fault/defmt"]
 display = ["scars-fault/display"]
 khal-e310x = [

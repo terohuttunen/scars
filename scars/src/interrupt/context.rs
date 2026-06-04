@@ -48,8 +48,24 @@ pub(crate) unsafe fn interrupt_context<R>(
 ) -> R {
     let prev_context = switch_current_interrupt(context_ptr);
 
+    // Outermost thread -> interrupt transition: charge the preempted
+    // thread the time it ran before this handler executes. Nested
+    // interrupts (prev non-null) leave thread accounting untouched.
+    #[cfg(feature = "execution-time")]
+    if prev_context.is_null() {
+        crate::kernel::execution_time::charge_thread_boundary();
+    }
+
     // Run the handler first
     let rval = f();
+
+    // Outermost interrupt -> thread transition: charge the interrupt
+    // clock before restoring the slot to thread level, so a nested
+    // interrupt cannot race the accounting origin.
+    #[cfg(feature = "execution-time")]
+    if prev_context.is_null() {
+        crate::kernel::execution_time::charge_interrupt_boundary();
+    }
 
     // Restore the previous interrupt context
     restore_current_interrupt(prev_context);

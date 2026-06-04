@@ -96,6 +96,42 @@ impl<const PRIO: Priority, F: ThreadFn> ThreadBuilder<PRIO, F> {
         }
     }
 
+    /// Configure an execution-time monitor: once the thread consumes `budget`
+    /// CPU time within a measurement window, `events` are delivered to
+    /// `sender`. Window boundaries are marked at runtime with
+    /// [`ThreadRef::restart_execution_time_monitor`]. The budget is fixed here
+    /// and does not change afterwards.
+    ///
+    /// Without the `execution-time-monitor` feature this is a no-op that
+    /// returns the builder unchanged, so the call can remain in place
+    /// regardless of whether the monitor is compiled in.
+    #[cfg(feature = "execution-time-monitor")]
+    pub fn monitor(
+        self,
+        budget: crate::time::Duration,
+        sender: crate::events::sender::EventSender,
+        events: crate::events::Events,
+    ) -> Self {
+        self.thread.monitor = Some(super::ExecutionTimeMonitor {
+            budget,
+            sender,
+            events,
+        });
+        self
+    }
+
+    /// No-op form compiled when the `execution-time-monitor` feature is
+    /// disabled. See the enabled form for the documented behavior.
+    #[cfg(not(feature = "execution-time-monitor"))]
+    pub fn monitor(
+        self,
+        _budget: crate::time::Duration,
+        _sender: crate::events::sender::EventSender,
+        _events: crate::events::Events,
+    ) -> Self {
+        self
+    }
+
     pub fn name(&self) -> &'static str {
         self.thread.name
     }

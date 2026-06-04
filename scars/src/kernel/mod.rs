@@ -1,6 +1,8 @@
 #![allow(unused_imports)]
 pub(crate) mod clock;
 pub mod exception;
+#[cfg(feature = "execution-time")]
+pub(crate) mod execution_time;
 pub mod fault_context;
 pub(crate) mod idle;
 pub(crate) mod scheduler;
