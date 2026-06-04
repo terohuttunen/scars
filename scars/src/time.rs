@@ -1,8 +1,7 @@
 use crate::kernel::hal::{TICK_FREQ_HZ, clock_ticks};
-use core::cmp::Ordering;
-use core::ops::{Add, Mul, Sub};
+use core::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub struct Duration {
     ticks: u64,
 }
@@ -49,6 +48,10 @@ impl Duration {
         Duration { ticks }
     }
 
+    pub const fn as_ticks(&self) -> u64 {
+        self.ticks
+    }
+
     pub const fn is_zero(&self) -> bool {
         self.ticks == Duration::ZERO.ticks
     }
@@ -69,9 +72,36 @@ impl Duration {
         (self.ticks as u128 * 1_000_000_000 / TICK_FREQ_HZ as u128) as u64
     }
 
-    // checked_add, saturating_add, checked_sub, saturating_sub, checked_mul, saturating_mul, checked_div
-    // as_secs_f64, as_secs_f32, from_secs_f64, from_secs_f32, mul_f64, mul_f32, div_f64, div_f32
-    // div_duration_f64, div_duration_f32
+    pub const fn saturating_add(self, rhs: Duration) -> Duration {
+        Duration {
+            ticks: self.ticks.saturating_add(rhs.ticks),
+        }
+    }
+
+    pub const fn saturating_sub(self, rhs: Duration) -> Duration {
+        Duration {
+            ticks: self.ticks.saturating_sub(rhs.ticks),
+        }
+    }
+
+    pub const fn checked_add(self, rhs: Duration) -> Option<Duration> {
+        match self.ticks.checked_add(rhs.ticks) {
+            Some(ticks) => Some(Duration { ticks }),
+            None => None,
+        }
+    }
+
+    pub const fn checked_sub(self, rhs: Duration) -> Option<Duration> {
+        match self.ticks.checked_sub(rhs.ticks) {
+            Some(ticks) => Some(Duration { ticks }),
+            None => None,
+        }
+    }
+
+    /// Whole number of times `rhs` fits in `self`.
+    pub const fn div_duration(self, rhs: Duration) -> u64 {
+        self.ticks / rhs.ticks
+    }
 }
 
 impl Mul<u32> for Duration {
@@ -79,6 +109,33 @@ impl Mul<u32> for Duration {
     fn mul(self, rhs: u32) -> Duration {
         Duration {
             ticks: self.ticks * rhs as u64,
+        }
+    }
+}
+
+impl Mul<u64> for Duration {
+    type Output = Duration;
+    fn mul(self, rhs: u64) -> Duration {
+        Duration {
+            ticks: self.ticks * rhs,
+        }
+    }
+}
+
+impl Div<u32> for Duration {
+    type Output = Duration;
+    fn div(self, rhs: u32) -> Duration {
+        Duration {
+            ticks: self.ticks / rhs as u64,
+        }
+    }
+}
+
+impl Div<u64> for Duration {
+    type Output = Duration;
+    fn div(self, rhs: u64) -> Duration {
+        Duration {
+            ticks: self.ticks / rhs,
         }
     }
 }
@@ -101,14 +158,19 @@ impl Sub<Duration> for Duration {
     }
 }
 
-impl PartialOrd<Self> for Duration {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.ticks.partial_cmp(&other.ticks)
+impl AddAssign<Duration> for Duration {
+    fn add_assign(&mut self, rhs: Duration) {
+        self.ticks += rhs.ticks;
     }
 }
 
-// AddAssign, Div, DivAssign, SubAssign, Sum
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+impl SubAssign<Duration> for Duration {
+    fn sub_assign(&mut self, rhs: Duration) {
+        self.ticks -= rhs.ticks;
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub struct Instant {
     pub(crate) tick: u64,
 }
@@ -121,17 +183,39 @@ impl Instant {
         }
     }
 
+    pub const fn from_ticks(tick: u64) -> Instant {
+        Instant { tick }
+    }
+
+    pub const fn as_ticks(&self) -> u64 {
+        self.tick
+    }
+
     /// Returns the amount of time elapsed since this instant
     ///
     /// Returns a Duration of zero if current time is earlier than self.
     pub fn elapsed(&self) -> Duration {
-        let now_tick = clock_ticks();
-        if self.tick < now_tick {
-            Duration {
-                ticks: now_tick - self.tick,
-            }
-        } else {
-            Duration { ticks: 0 }
+        self.now_duration_since()
+    }
+
+    fn now_duration_since(&self) -> Duration {
+        Duration {
+            ticks: clock_ticks().saturating_sub(self.tick),
+        }
+    }
+
+    /// Time elapsed from `earlier` to `self`, saturating at zero if `earlier`
+    /// is later.
+    pub const fn duration_since(&self, earlier: Instant) -> Duration {
+        Duration {
+            ticks: self.tick.saturating_sub(earlier.tick),
+        }
+    }
+
+    pub const fn checked_add(&self, duration: Duration) -> Option<Instant> {
+        match self.tick.checked_add(duration.ticks) {
+            Some(tick) => Some(Instant { tick }),
+            None => None,
         }
     }
 }
@@ -154,8 +238,8 @@ impl Sub<Instant> for Instant {
     }
 }
 
-impl PartialOrd<Self> for Instant {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.tick.partial_cmp(&other.tick)
+impl AddAssign<Duration> for Instant {
+    fn add_assign(&mut self, rhs: Duration) {
+        self.tick += rhs.ticks;
     }
 }
