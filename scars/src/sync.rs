@@ -16,6 +16,7 @@
 pub mod channel;
 #[cfg(feature = "raii-locks")]
 pub mod condvar;
+pub mod fifo;
 #[cfg(feature = "raii-locks")]
 pub mod guarded;
 pub mod lock;
