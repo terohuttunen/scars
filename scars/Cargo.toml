@@ -239,8 +239,11 @@ semihosting = { version = "0.1.4" }
 
 
 [features]
-default = ["multithreading", "priority-inheritance", "raii-locks"]
+default = ["multithreading", "priority-inheritance", "raii-locks", "async"]
 tracing = []
+# Async executor, synchronization primitives and combinators.
+# Thread executor requires also `multithreading`.
+async = []
 # Multi-threading: allow creation of threads. Without multithreading
 # only idle thread, interrupts and event handlers are available.
 multithreading = []
