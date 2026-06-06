@@ -36,6 +36,17 @@ impl<T> JoinHandle<T> {
         }
     }
 
+    /// Cancel the task. Its future is dropped immediately (running its
+    /// destructors, e.g. releasing a held guard) and it is never polled
+    /// again. A no-op if the task has already finished. Dropping the handle
+    /// instead detaches the task, leaving it running; `abort` is the explicit
+    /// cancellation path.
+    pub fn abort(&self) {
+        if let Some(task_handle) = self.task_handle.as_ref() {
+            task_handle.as_raw().abort();
+        }
+    }
+
     #[cfg(feature = "multithreading")]
     pub fn join(self) -> T {
         let task_handle = self

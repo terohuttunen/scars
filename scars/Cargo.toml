@@ -21,6 +21,11 @@ name = "event_executor_no_threads"
 harness = false
 
 [[test]]
+name = "async_abort"
+harness = false
+required-features = ["async"]
+
+[[test]]
 name = "event_handler01"
 harness = false
 required-features = ["multithreading"]
@@ -283,7 +288,12 @@ khal-e310x = [
 khal-sim = ["dep:scars-khal-sim", "scars-test/std", "scars-bench/std", "defmt"]
 # Synchronous test-harness backend. No defmt (hence `display` for the
 # fault formatter), no linker script: a plain host `cargo test` target.
-khal-test = ["dep:scars-khal-test", "scars-test/std", "scars-bench/std", "display"]
+khal-test = [
+    "dep:scars-khal-test",
+    "scars-test/std",
+    "scars-bench/std",
+    "display",
+]
 # KHAL-family features pull in the optional dep + test/log backend.
 # Internal building blocks — board manifests should pick a chip
 # feature (below) rather than enabling these directly.

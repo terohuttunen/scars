@@ -18,6 +18,11 @@ pub const ASYNC_TASK_STATE_FREE: u32 = 0;
 pub const ASYNC_TASK_STATE_UNINIT: u32 = 1;
 pub const ASYNC_TASK_STATE_RUNNING: u32 = 2;
 pub const ASYNC_TASK_STATE_FINISHED: u32 = 3;
+/// Set by [`JoinHandle::abort`](crate::task::JoinHandle::abort): the future
+/// has been dropped and the task must never be polled again. Distinct from
+/// `FINISHED` so the reclaim paths don't touch the (already-dropped) future
+/// or the never-written output.
+pub const ASYNC_TASK_STATE_CANCELLED: u32 = 4;
 
 pub struct RawTask {
     /// `None` between `Task::init` and `Executor::spawn`; populated by the
@@ -127,6 +132,9 @@ pub struct TaskVTable {
 
     // drop_handle(Task<F>)
     drop_handle: fn(*mut ()) -> (),
+
+    // abort(Task<F>)
+    abort: fn(*mut ()) -> (),
 }
 
 pub struct Task<F: Future> {
@@ -145,6 +153,7 @@ impl<F: Future> Task<F> {
         poll: Self::vpoll,
         try_read_output: Self::try_read_output,
         drop_handle: Self::drop_handle,
+        abort: Self::vabort,
     };
 
     pub const fn new() -> Task<F> {
@@ -261,6 +270,38 @@ impl<F: Future> Task<F> {
         task.poll()
     }
 
+    fn vabort(task_ptr: *mut ()) {
+        let task = unsafe { &mut *(task_ptr as *mut Task<F>) };
+        // Only a running task can be cancelled; finished/already-cancelled is
+        // a no-op (the join/drop paths reclaim a finished task).
+        if task
+            .state
+            .compare_exchange(
+                ASYNC_TASK_STATE_RUNNING,
+                ASYNC_TASK_STATE_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            // Drop the future now so its destructors run (e.g. releasing a
+            // held guard). The control block stays in place — its intrusive
+            // nodes may still be linked in the executor's queues — so the
+            // executor skips the cancelled task and unlinks it as it drains
+            // them; the pool slot is not reclaimed.
+            unsafe { task.future.assume_init_drop() };
+
+            let raw = unsafe { task.raw.assume_init_ref() };
+            if let Some(executor) = raw.get_executor() {
+                let executor = *executor;
+                // Schedule a poll so the executor removes the cancelled task
+                // from its queues.
+                executor.resume_task(unsafe { Pin::new_unchecked(raw) });
+                executor.notify();
+            }
+        }
+    }
+
     unsafe fn try_read_output(data: *mut (), output_ptr: *mut (), waker: &Waker) {
         let task = unsafe { &mut *(data as *mut Task<F>) };
         let output = unsafe { &mut *(output_ptr as *mut Poll<F::Output>) };
@@ -307,6 +348,10 @@ impl RawTaskHandle {
 
     pub fn poll(&self) -> bool {
         unsafe { (self.vtable.poll)(self.task_ptr) }
+    }
+
+    pub(crate) fn abort(&self) {
+        (self.vtable.abort)(self.task_ptr)
     }
 
     pub(super) unsafe fn try_read_output<T>(&self, output: &mut Poll<T>, waker: &Waker) {
