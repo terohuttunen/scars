@@ -21,6 +21,11 @@ name = "event_executor_no_threads"
 harness = false
 
 [[test]]
+name = "async_mutex"
+harness = false
+required-features = ["async"]
+
+[[test]]
 name = "async_yield"
 harness = false
 required-features = ["async"]

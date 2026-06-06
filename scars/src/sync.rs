@@ -11,7 +11,8 @@
 //pub mod async_channel;
 //pub mod async_condvar;
 //pub mod async_lock;
-//pub mod async_mutex;
+#[cfg(feature = "async")]
+pub mod async_mutex;
 #[cfg(feature = "multithreading")]
 pub mod channel;
 #[cfg(feature = "raii-locks")]
@@ -35,7 +36,8 @@ pub mod semaphore;
 //pub use async_channel::AsyncChannel;
 //pub use async_condvar::AsyncCondvar;
 //pub use async_lock::AsyncLock;
-//pub use async_mutex::{AsyncMutex, AsyncMutexGuard};
+#[cfg(feature = "async")]
+pub use async_mutex::{AsyncMutex, AsyncMutexGuard};
 #[cfg(feature = "raii-locks")]
 pub use condvar::{CeilingCondvar, Condvar};
 #[cfg(feature = "raii-locks")]
