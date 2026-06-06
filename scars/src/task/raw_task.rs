@@ -87,6 +87,11 @@ impl RawTask {
     pub(crate) unsafe fn set_executor(this: *mut Self, executor: ExecutorHandle) {
         unsafe { (*this).executor = Some(executor) };
     }
+
+    /// Whether the task is currently in an executor's ready list.
+    pub(crate) fn is_ready_queued(&self) -> bool {
+        self.ready_list_link.in_list()
+    }
 }
 
 impl Drop for RawTask {

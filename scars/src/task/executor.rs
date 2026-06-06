@@ -83,10 +83,12 @@ impl RawExecutor {
     pub fn resume_pending_tasks(&'static self) -> bool {
         let mut task_became_ready: bool = false;
         while let Some(pending_ready_task) = self.pending_ready_queue.pop_front() {
-            Pin::static_ref(&self.ready_queue)
-                .borrow_mut()
-                .as_mut()
-                .push_back(pending_ready_task);
+            if !pending_ready_task.is_ready_queued() {
+                Pin::static_ref(&self.ready_queue)
+                    .borrow_mut()
+                    .as_mut()
+                    .push_back(pending_ready_task);
+            }
             task_became_ready = true;
         }
 
@@ -102,10 +104,12 @@ impl RawExecutor {
             if let Some(head_wakeup_time) = head_wakeup_time_opt {
                 if head_wakeup_time <= now {
                     let task = sleep_queue.as_mut().pop_front().unwrap();
-                    Pin::static_ref(&self.ready_queue)
-                        .borrow_mut()
-                        .as_mut()
-                        .push_back(task);
+                    if !task.is_ready_queued() {
+                        Pin::static_ref(&self.ready_queue)
+                            .borrow_mut()
+                            .as_mut()
+                            .push_back(task);
+                    }
                 } else {
                     break;
                 }
