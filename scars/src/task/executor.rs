@@ -65,8 +65,9 @@ impl RawExecutor {
     // Safe to call from ISR or another thread
     // Note: This method must be called for the task's executor only
     pub(crate) fn resume_task(&'static self, task: Pin<&RawTask>) {
-        // Add task to the pending ready queue of the interrupt executor
-        self.pending_ready_queue.push_back(task);
+        // If it fails, it already is in the queue. Ignore failures
+        // to make resume_task idempotent.
+        let _ = self.pending_ready_queue.try_push_back(task);
     }
 
     pub(crate) fn task_sleep_until(&'static self, mut task: Pin<&mut RawTask>, deadline: Instant) {
