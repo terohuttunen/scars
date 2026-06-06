@@ -188,28 +188,21 @@ impl<F: Future> Task<F> {
 
     fn drop_handle(data: *mut ()) {
         let task = unsafe { &*(data as *const Task<F>) };
-        let old_state = task.state.swap(ASYNC_TASK_STATE_FREE, Ordering::Release);
 
-        // If task is in the ready queue, first set its state so that is will
-        // be dropped when it is removed from the ready queue.
-        match old_state {
-            ASYNC_TASK_STATE_RUNNING => {
-                // Drop control block and future
-                unsafe {
-                    task.raw.assume_init_read();
-                    task.future.assume_init_read();
-                }
-            }
-            ASYNC_TASK_STATE_FINISHED => {
-                // Drop control block, future and output
+        // Dropping a handle detaches: a still-running task keeps running on its
+        // executor (reached through its queues) and is never reclaimed — its
+        // static pool slot stays in use. Only a finished task is safe to
+        // reclaim here, since its future has completed and its output was
+        // never read by a join.
+        if task.state.load(Ordering::Acquire) == ASYNC_TASK_STATE_FINISHED {
+            let prev = task.state.swap(ASYNC_TASK_STATE_FREE, Ordering::Release);
+            if prev == ASYNC_TASK_STATE_FINISHED {
+                // Drop control block, future and output.
                 unsafe {
                     task.raw.assume_init_read();
                     task.future.assume_init_read();
                     task.output.assume_init_read();
                 }
-            }
-            _ => {
-                // Nothing to drop
             }
         }
     }
