@@ -214,6 +214,11 @@ impl<F: Future> Task<F> {
     }
 
     fn poll(&mut self) -> bool {
+        match self.state.load(Ordering::Relaxed) {
+            ASYNC_TASK_STATE_RUNNING => {}
+            _ => return true,
+        }
+
         let raw = unsafe { self.raw.assume_init_mut() };
         let future = unsafe { self.future.assume_init_mut() };
         let future = unsafe { Pin::new_unchecked(future) };
