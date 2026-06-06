@@ -53,12 +53,21 @@ impl RawExecutor {
     }
 
     fn poll_ready_tasks(&'static self) {
-        while let Some(ready_task) = Pin::static_ref(&self.ready_queue)
-            .borrow_mut()
-            .as_mut()
-            .pop_front()
-        {
-            ready_task.poll();
+        loop {
+            let ready_task = Pin::static_ref(&self.ready_queue)
+                .borrow_mut()
+                .as_mut()
+                .pop_front();
+            let Some(ready_task) = ready_task else { break };
+
+            let finished = ready_task.poll();
+
+            if finished && ready_task.is_sleep_queued() {
+                Pin::static_ref(&self.sleep_queue)
+                    .borrow_mut()
+                    .as_mut()
+                    .remove(ready_task);
+            }
         }
     }
 
