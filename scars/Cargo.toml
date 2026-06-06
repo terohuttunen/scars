@@ -26,6 +26,11 @@ harness = false
 required-features = ["async"]
 
 [[test]]
+name = "async_condvar"
+harness = false
+required-features = ["async"]
+
+[[test]]
 name = "async_yield"
 harness = false
 required-features = ["async"]

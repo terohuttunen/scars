@@ -9,7 +9,8 @@
 //! their key-token model.
 
 //pub mod async_channel;
-//pub mod async_condvar;
+#[cfg(feature = "async")]
+pub mod async_condvar;
 //pub mod async_lock;
 #[cfg(feature = "async")]
 pub mod async_mutex;
@@ -34,7 +35,8 @@ pub mod rendezvous;
 pub mod semaphore;
 
 //pub use async_channel::AsyncChannel;
-//pub use async_condvar::AsyncCondvar;
+#[cfg(feature = "async")]
+pub use async_condvar::AsyncCondvar;
 //pub use async_lock::AsyncLock;
 #[cfg(feature = "async")]
 pub use async_mutex::{AsyncMutex, AsyncMutexGuard};
