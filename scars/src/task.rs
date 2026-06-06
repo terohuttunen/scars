@@ -6,6 +6,8 @@ pub mod task_pool;
 #[cfg(feature = "multithreading")]
 pub mod thread_executor;
 pub mod wait_for_events;
+#[cfg(feature = "async")]
+pub mod yield_now;
 
 #[cfg(feature = "multithreading")]
 use crate::local::LocalStorage;
@@ -24,6 +26,8 @@ pub use task_pool::TaskPool;
 #[cfg(feature = "multithreading")]
 pub use thread_executor::ThreadExecutor;
 pub use wait_for_events::WaitForEvents;
+#[cfg(feature = "async")]
+pub use yield_now::{YieldNow, yield_now};
 
 pub struct JoinHandle<T> {
     task_handle: Option<TaskHandle<T>>,
@@ -83,6 +87,22 @@ impl<T> Future for JoinHandle<T> {
         }
         ret
     }
+}
+
+/// Resolve the running task and a copy of its executor handle from a poll
+/// [`Context`]. Sound only when the future is driven by a SCARS executor:
+/// the waker's data pointer is the task's [`RawTask`] (see
+/// [`RawTask::waker`]) — the same invariant [`Sleep`]/[`WaitForEvents`]
+/// rely on. Used by the async sync primitives and combinators to self-requeue
+/// (`resume_task`) and wake (`notify`) the executor.
+pub(crate) fn task_and_executor<'t>(cx: &Context<'_>) -> (Pin<&'t RawTask>, ExecutorHandle) {
+    // The waker data is the task pointer; the task outlives this poll, so the
+    // borrow is sound for any caller-chosen lifetime (as in `sleep.rs`).
+    let task: &'t RawTask = unsafe { &*(cx.waker().data() as *const RawTask) };
+    let executor = *task
+        .get_executor()
+        .expect("async primitive polled by a task with no executor");
+    (unsafe { Pin::new_unchecked(task) }, executor)
 }
 
 pub fn spawn<F: Future, const N: usize>(
