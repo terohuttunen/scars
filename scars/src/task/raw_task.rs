@@ -92,6 +92,11 @@ impl RawTask {
     pub(crate) fn is_ready_queued(&self) -> bool {
         self.ready_list_link.in_list()
     }
+
+    /// Whether the task is currently in the sleep queue
+    pub(crate) fn is_sleep_queued(&self) -> bool {
+        self.sleep_list_link.in_list()
+    }
 }
 
 impl Drop for RawTask {

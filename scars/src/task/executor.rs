@@ -71,9 +71,25 @@ impl RawExecutor {
     }
 
     pub(crate) fn task_sleep_until(&'static self, mut task: Pin<&mut RawTask>, deadline: Instant) {
+        let mut sleep_queue = Pin::static_ref(&self.sleep_queue).borrow_mut();
+
+        // If the task is already in the sleep queue, then we merge
+        // the new deadline with the existing one, by choosing
+        // the earlier of the two.
+        let deadline = if task.as_ref().is_sleep_queued() {
+            let current = task.as_ref().wakeup_time;
+            let merged = if deadline < current {
+                deadline
+            } else {
+                current
+            };
+            sleep_queue.as_mut().remove(task.as_ref());
+            merged
+        } else {
+            deadline
+        };
         task.as_mut().set_wakeup_time(deadline);
-        Pin::static_ref(&self.sleep_queue)
-            .borrow_mut()
+        sleep_queue
             .as_mut()
             .insert_after(task.into_ref(), |queue_task| {
                 queue_task.wakeup_time <= deadline
