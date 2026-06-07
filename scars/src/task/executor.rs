@@ -172,6 +172,12 @@ impl ExecutorHandle {
         (self.vtable.raw)(self.executor)
     }
 
+    /// Stable per-executor identity, used as the owner key for
+    /// executor-confined [`OwnerCell`](crate::cell::OwnerCell)s.
+    pub(crate) fn executor_ptr(&self) -> *const () {
+        self.executor
+    }
+
     pub fn notify(&self) {
         (self.vtable.notify)(self.executor);
     }
