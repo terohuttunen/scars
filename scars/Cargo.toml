@@ -36,12 +36,32 @@ harness = false
 required-features = ["async"]
 
 [[test]]
+name = "async_event_handoff"
+harness = false
+required-features = ["async"]
+
+[[test]]
 name = "async_yield"
 harness = false
 required-features = ["async"]
 
 [[test]]
 name = "async_abort"
+harness = false
+required-features = ["async"]
+
+[[test]]
+name = "async_join"
+harness = false
+required-features = ["async"]
+
+[[test]]
+name = "async_select"
+harness = false
+required-features = ["async"]
+
+[[test]]
+name = "async_timeout"
 harness = false
 required-features = ["async"]
 

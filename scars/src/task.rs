@@ -1,3 +1,5 @@
+#[cfg(feature = "async")]
+pub mod combinators;
 pub mod event_handler_executor;
 pub mod executor;
 pub mod raw_task;
@@ -16,6 +18,11 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 pub use crate::local::LocalExecutor;
+#[cfg(feature = "async")]
+pub use combinators::{
+    Either, Either3, Elapsed, Join, Join3, Select, Select3, Timeout, join, join3, select, select3,
+    timeout, with_deadline,
+};
 pub use event_handler_executor::{
     EventHandlerExecutor, EventHandlerExecutorBuilder, EventHandlerExecutorHandle,
 };
