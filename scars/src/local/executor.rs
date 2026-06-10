@@ -32,12 +32,9 @@ impl LocalExecutor {
     }
 
     pub fn spawn<T>(task_handle: TaskHandle<T>) -> JoinHandle<T> {
-        LocalStorage::with::<ExecutorHandle, _>(|executor| {
-            let raw = unsafe { &*executor.raw() };
-            raw.spawn(task_handle.as_raw());
-        })
-        .unwrap();
-        JoinHandle::new(task_handle)
+        // `ExecutorHandle::spawn` installs the executor on the task before
+        // queueing it; going through `RawExecutor` directly would skip that.
+        LocalStorage::with::<ExecutorHandle, _>(|executor| executor.spawn(task_handle)).unwrap()
     }
 
     pub fn priority() -> Priority {

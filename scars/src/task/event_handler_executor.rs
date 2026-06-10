@@ -36,9 +36,7 @@ impl RawEventHandlerExecutor {
     }
 
     pub fn spawn<T>(&'static self, task_handle: TaskHandle<T>) -> JoinHandle<T> {
-        unsafe { RawTask::set_executor(task_handle.as_raw().raw_task_ptr(), self.handle()) };
-        self.raw.spawn(task_handle.as_raw());
-        JoinHandle::new(task_handle)
+        self.handle().spawn(task_handle)
     }
 
     pub fn priority(&self) -> Priority {

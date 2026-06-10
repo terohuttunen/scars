@@ -30,12 +30,16 @@ impl RawThreadExecutor {
 
     fn spawn(&'static self, task_handle: &RawTaskHandle) {
         unsafe { RawTask::set_executor(task_handle.raw_task_ptr(), self.handle()) };
-        self.raw.spawn(task_handle);
+        // The atomic pending-ready queue; `resume_task` also notifies the
+        // thread, so a spawn from another context wakes a running executor.
+        self.resume_task(task_handle.as_ref());
     }
 
     fn block_on(&'static self, task_handle: &RawTaskHandle) {
         unsafe { RawTask::set_executor(task_handle.raw_task_ptr(), self.handle()) };
-        self.raw.spawn(task_handle);
+        // No notify needed: the loop below polls immediately, and `poll`
+        // drains the pending-ready queue first.
+        self.raw.resume_task(task_handle.as_ref());
 
         loop {
             let poll_result = self.raw.poll();

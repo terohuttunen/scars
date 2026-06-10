@@ -30,14 +30,6 @@ impl RawExecutor {
         }
     }
 
-    pub(crate) fn spawn(&'static self, task_handle: &RawTaskHandle) {
-        let task_to_spawn = task_handle.as_ref();
-        Pin::static_ref(&self.ready_queue)
-            .borrow_mut()
-            .as_mut()
-            .push_back(task_to_spawn);
-    }
-
     pub(crate) fn poll(&'static self) -> PollResult {
         self.resume_sleeping_tasks();
         self.resume_pending_tasks();
@@ -156,6 +148,17 @@ pub struct ExecutorHandle {
     vtable: &'static ExecutorVTable,
 }
 
+// SAFETY: the handle is a `Copy` pair of a pointer to `'static` executor
+// state and a `&'static` vtable. Every vtable method is callable from any
+// context: queue operations go through atomics ([`spawn`](ExecutorHandle::spawn)
+// / [`resume_task`](ExecutorHandle::resume_task) push the lock-free
+// pending-ready queue), notifications are event sends, and
+// [`block_on`](ExecutorHandle::block_on) is context-checked at runtime.
+// [`raw`](ExecutorHandle::raw) only hands out a raw pointer whose dereference
+// is the caller's `unsafe`.
+unsafe impl Send for ExecutorHandle {}
+unsafe impl Sync for ExecutorHandle {}
+
 impl ExecutorHandle {
     /// Construct a handle for an [`Executor`] implementor. The type
     /// parameter pairs the target pointer and the vtable so they can
@@ -196,10 +199,16 @@ impl ExecutorHandle {
         self.vtable.supports_block_on
     }
 
+    /// Spawn a task onto this executor.
+    ///
+    /// Safe to call from any context — a thread, an interrupt handler, or
+    /// another core: the task is pushed onto the executor's atomic
+    /// pending-ready queue (the push publishes the executor installed by
+    /// `set_executor`) and the executor is notified to drain it.
     pub fn spawn<T>(&self, task_handle: TaskHandle<T>) -> JoinHandle<T> {
         unsafe { RawTask::set_executor(task_handle.as_raw().raw_task_ptr(), *self) };
-        let raw = unsafe { &*self.raw() };
-        raw.spawn(task_handle.as_raw());
+        self.resume_task(task_handle.as_raw().as_ref());
+        self.notify();
         JoinHandle::new(task_handle)
     }
 

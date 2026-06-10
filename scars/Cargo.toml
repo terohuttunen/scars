@@ -41,6 +41,11 @@ harness = false
 required-features = ["async"]
 
 [[test]]
+name = "async_spawn_from_thread"
+harness = false
+required-features = ["async", "multithreading"]
+
+[[test]]
 name = "async_yield"
 harness = false
 required-features = ["async"]
