@@ -41,6 +41,8 @@ impl HardwareAbstractionLayer for E310x {
 
             // Enable external interrupts in PLIC
             riscv::register::mie::set_mext();
+            // Enable the machine timer interrupt for alarm wakeups
+            riscv::register::mie::set_mtimer();
         }
     }
 }
