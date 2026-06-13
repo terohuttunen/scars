@@ -396,11 +396,17 @@ impl RawScheduler {
         kind: usize,
     ) {
         // Drain-driven block: the commit site has armed the wait and
-        // written `pending_block_deadline`. Any yield bits ORed in
-        // are moot once we switch away from current.
+        // written `pending_block_deadline`. When the block commits,
+        // any yield bits ORed in are moot (we switched away). On the
+        // gate path (a notifier already disarmed the wait) fall
+        // through so co-pended yield bits are still honored.
         if (kind & RESCHEDULE_KIND_BLOCK_CURRENT) != 0 {
-            self.as_mut().block_current(pkey);
-            return;
+            if self.as_mut().block_current(pkey) {
+                return;
+            }
+            if (kind & (RESCHEDULE_KIND_YIELD_TO_EQUAL | RESCHEDULE_KIND_YIELD_TO_HIGHER)) == 0 {
+                return;
+            }
         }
 
         let current_priority = self.current_thread.priority(pkey);
@@ -483,18 +489,20 @@ impl RawScheduler {
     /// (`Protected::with_barrier{,_until}`) is responsible for
     /// enqueuing the thread on a wait list (arming `wait_queue`) and
     /// for writing `pending_block_deadline` before pending the kind.
-    fn block_current(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'_>) {
+    /// Returns `true` if the current thread was suspended, `false` on
+    /// the gate path (the wait was already disarmed by a wake).
+    fn block_current(mut self: Pin<&mut Self>, pkey: PreemptLockKey<'_>) -> bool {
         if self.current_thread.thread_id == self.idle_thread.thread_id {
             panic!("Idle thread cannot block");
         }
 
         // Gate: notify or timer may have removed us between commit and
-        // drain. On that path leave the deadline cell as-is (the next
-        // commit overwrites or `take` resets it) and let
-        // `wait_timed_out` stay false so the post-resume read returns
-        // `Notified`.
+        // drain. Drop the deadline the commit site wrote (an untimed
+        // block must not pick it up later) and let `wait_timed_out`
+        // stay as the wake path left it.
         if self.current_thread.wait_queue.get(pkey).is_none() {
-            return;
+            let _ = self.current_thread.take_pending_block_deadline(pkey);
+            return false;
         }
 
         // From here we definitely suspend. Reset the per-thread
@@ -518,6 +526,7 @@ impl RawScheduler {
         let blocked_thread = self.as_mut().switch_thread(pkey, next);
 
         self.block_thread(pkey, blocked_thread, deadline);
+        true
     }
 
     pub(crate) fn wait_current_thread_event(
