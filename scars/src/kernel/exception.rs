@@ -178,5 +178,6 @@ fn panic(info: &PanicInfo) -> ! {
     } else {
         defmt::error!("panic");
     }
-    loop {}
+
+    hal::exit(1)
 }

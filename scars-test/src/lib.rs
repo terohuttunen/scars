@@ -2,6 +2,11 @@
 #[allow(unused_imports)]
 use core::panic::PanicInfo;
 
+#[cfg(not(any(feature = "std", feature = "semihosting", feature = "rtt")))]
+compile_error!(
+    "scars-test requires one of the output backend features: `std`, `semihosting`, or `rtt`"
+);
+
 #[cfg(feature = "semihosting")]
 use semihosting::{print, println};
 

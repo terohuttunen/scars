@@ -193,11 +193,19 @@ unsafe extern "C" {
 pub struct RISCV32 {}
 
 fn on_abort() -> ! {
+    #[cfg(feature = "semihosting")]
+    semihosting::process::abort();
+
+    #[cfg(not(feature = "semihosting"))]
     on_exit(1)
 }
 
 fn on_exit(_exit_code: i32) -> ! {
+    #[cfg(feature = "semihosting")]
+    semihosting::process::exit(_exit_code);
+
     // Abort by disabling interrupts and then waiting for an interrupt
+    #[cfg(not(feature = "semihosting"))]
     unsafe {
         riscv::interrupt::disable();
         loop {
