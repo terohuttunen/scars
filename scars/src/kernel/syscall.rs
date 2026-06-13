@@ -30,8 +30,6 @@ pub const SYSCALL_ID_WAIT_EVENT_UNTIL: usize = 4;
 #[cfg(feature = "multithreading")]
 pub const SYSCALL_ID_DELAY_UNTIL: usize = 5;
 pub const SYSCALL_ID_RUNTIME_ERROR: usize = 6;
-#[cfg(feature = "multithreading")]
-pub const SYSCALL_ID_SUSPEND: usize = 8;
 
 #[cfg(feature = "multithreading")]
 pub fn thread_yield() {
@@ -75,11 +73,6 @@ pub fn delay_until(time: Instant) {
         time.tick as u32 as usize,
         0,
     );
-}
-
-#[cfg(feature = "multithreading")]
-pub(crate) fn thread_suspend() {
-    let _ = syscall(SYSCALL_ID_SUSPEND, 0, 0, 0);
 }
 
 struct FaultWrapper<'a> {
@@ -162,12 +155,6 @@ unsafe fn _kernel_syscall_handler(id: usize, arg0: usize, arg1: usize, arg2: usi
                 SYSCALL_ID_RUNTIME_ERROR => {
                     let wrapper = &*(arg0 as *const FaultWrapper);
                     crate::kernel::exception::handle_runtime_error(wrapper.error);
-                }
-                #[cfg(feature = "multithreading")]
-                SYSCALL_ID_SUSPEND => {
-                    // Always targets the current thread; other threads are
-                    // suspended directly via `RawThread::suspend`.
-                    Scheduler::suspend_thread(None);
                 }
                 _ => panic!("Invalid syscall {:?}", id),
             };

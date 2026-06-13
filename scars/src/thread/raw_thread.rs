@@ -38,9 +38,7 @@ use {
     crate::kernel::{
         hal::CoreId,
         list::{Node, impl_linked},
-        scheduler::{
-            ExecStateTag, ExecutionContext, RawPendingWorkEntry, Scheduler, Timer, TimerHandler,
-        },
+        scheduler::{ExecStateTag, RawPendingWorkEntry, Scheduler, Timer, TimerHandler},
     },
     crate::sync::atomic::AtomicPtr,
     crate::time::Instant,
@@ -67,9 +65,6 @@ pub enum ThreadExecutionState {
 
     /// Thread is blocked in a WaitQueue or sleeping and waiting for wakeup.
     Blocked,
-
-    /// Thread is suspended
-    Suspended,
 }
 
 /// A configured execution-time monitor, set at the thread builder and
@@ -191,7 +186,7 @@ pub(crate) struct RawThread {
     //  Blocked: In blocked queue
     pub state: LockedCell<ThreadExecutionState, PreemptLock>,
 
-    // Intrusive linked list entry for inserting the thread into ready, suspended, or blocked queue
+    // Intrusive linked list entry for inserting the thread into the ready or blocked queue
     #[cfg(feature = "multithreading")]
     pub exec_queue_link: Node<Self, ExecStateTag>,
 
@@ -256,7 +251,6 @@ impl RawThread {
     /// other handlers' op masks.
     pub(crate) const OP_RESUME: u32 = 1 << 0;
     pub(crate) const OP_WAKEUP: u32 = 1 << 1;
-    pub(crate) const OP_SUSPEND: u32 = 1 << 2;
     pub(crate) const OP_START: u32 = 1 << 3;
     pub(crate) const OP_CHECK_EVENTS: u32 = 1 << 4;
     pub(crate) const OP_REINSERT_WAIT_QUEUE: u32 = 1 << 5;
@@ -727,27 +721,12 @@ impl RawThread {
 
 #[cfg(feature = "multithreading")]
 impl RawThread {
-    pub fn resume(&'static self) {
+    /// Make this thread runnable: the wake path for blocked threads
+    /// (called from the `WaitQueueEntryHandler::on_resume` callback and
+    /// the same-core `send_events` fast path) and for a freshly-started
+    /// thread (`start` → `Scheduler::resume_thread`).
+    pub(crate) fn resume(&'static self) {
         Scheduler::resume_thread(Pin::static_ref(self));
-    }
-
-    /// Suspend the referenced thread (`self`), removing it from scheduling
-    /// until resumed.
-    ///
-    /// Suspending the current thread must switch off its own stack, which
-    /// happens on the suspend syscall's service-call return; suspending any
-    /// other thread is applied directly through the scheduler, dispatching to
-    /// the thread's owning core if it differs.
-    pub fn suspend(&'static self) {
-        let is_current = matches!(
-            Scheduler::current_execution_context(),
-            ExecutionContext::Thread(ctx) if ptr::eq(ctx.get_ref(), self)
-        );
-        if is_current {
-            crate::kernel::syscall::thread_suspend();
-        } else {
-            Scheduler::suspend_thread(Some(Pin::static_ref(self)));
-        }
     }
 
     /// Set `wait_queue` to `handle`. The caller must have already
@@ -915,11 +894,6 @@ impl PendingWorkHandler for RawThread {
                 if sched.as_mut().try_wakeup_thread(pkey, this).is_err() {
                     retry |= Self::OP_WAKEUP;
                 }
-            }
-            if ops & Self::OP_SUSPEND != 0 {
-                // `suspend_thread` has no ceiling gating; it always
-                // completes.
-                sched.as_mut().suspend_thread(pkey, Some(this));
             }
             if ops & Self::OP_CHECK_EVENTS != 0 {
                 // Re-read state under the preempt lock so the resume

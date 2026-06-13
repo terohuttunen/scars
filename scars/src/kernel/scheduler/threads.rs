@@ -1,4 +1,4 @@
-//! Thread scheduling: the ready/blocked/suspended run queues and the
+//! Thread scheduling: the ready and blocked run queues and the
 //! block/yield/switch logic. Compiled only with `multithreading`.
 
 use super::{
@@ -32,14 +32,6 @@ impl RawScheduler {
 
     fn blocked_list_mut(self: Pin<&mut Self>) -> Pin<&mut LinkedList<RawThread, ExecStateTag>> {
         unsafe { self.map_unchecked_mut(|s| &mut s.blocked_list) }
-    }
-
-    pub(super) fn suspended_list(self: Pin<&Self>) -> Pin<&LinkedList<RawThread, ExecStateTag>> {
-        unsafe { self.map_unchecked(|s| &s.suspended_list) }
-    }
-
-    fn suspended_list_mut(self: Pin<&mut Self>) -> Pin<&mut LinkedList<RawThread, ExecStateTag>> {
-        unsafe { self.map_unchecked_mut(|s| &mut s.suspended_list) }
     }
 
     fn current_thread_mut(self: Pin<&mut Self>) -> &mut Pin<&'static RawThread> {
@@ -157,20 +149,6 @@ impl RawScheduler {
             }
         }
     }
-
-    fn insert_to_suspended_list(
-        self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        thread: Pin<&'static RawThread>,
-    ) {
-        thread.state.set(pkey, ThreadExecutionState::Suspended);
-        if thread.thread_id == self.idle_thread.thread_id {
-            panic!("Idle thread may not suspend");
-        }
-
-        tracing::thread_ready_end(thread.as_thread_ref());
-        self.suspended_list_mut().push_back(thread);
-    }
 }
 
 // Thread scheduling.
@@ -251,10 +229,6 @@ impl RawScheduler {
                 self.as_mut().blocked_list_mut().remove(thread);
                 self.as_mut().insert_to_ready_queue(pkey, thread);
             }
-            ThreadExecutionState::Suspended => {
-                self.as_mut().suspended_list_mut().remove(thread);
-                self.as_mut().insert_to_ready_queue(pkey, thread);
-            }
             ThreadExecutionState::Created => {
                 // Created thread does not yet have a closure, so it cannot be resumed
                 // until it becomes Started.
@@ -281,64 +255,6 @@ impl RawScheduler {
     ) {
         thread.set_wakeup_deadline(pkey, self.as_mut(), deadline);
         self.insert_to_blocked_queue(pkey, thread);
-    }
-
-    pub(crate) fn suspend_thread(
-        mut self: Pin<&mut Self>,
-        pkey: PreemptLockKey<'_>,
-        maybe_thread: Option<Pin<&'static RawThread>>,
-    ) {
-        let thread = maybe_thread.unwrap_or(self.current_thread);
-
-        match thread.state.get(pkey) {
-            ThreadExecutionState::Ready => {
-                self.as_mut().ready_queue_mut().remove(thread);
-                self.as_mut().insert_to_suspended_list(pkey, thread);
-            }
-            ThreadExecutionState::Running => {
-                // Highest priority of any locks held by the current or blocked threads.
-                // Any ready thread above lock ceiling can run next. No lock should have
-                // the minimum priority, so default lock priority to MIN.
-                let locks_ceiling = self
-                    .as_ref()
-                    .locks_priority_ceiling(pkey)
-                    .unwrap_or_default(Priority::MIN);
-
-                // Highest priority ready thread that is above the lock ceiling
-                // will be the next to run. Or if there is no ready thread above
-                // the lock ceiling, then the idle thread will be the next to run.
-                let next = self
-                    .as_mut()
-                    .ready_queue_mut()
-                    .pop_front_if(|ready| ready.priority.get(pkey) > locks_ceiling)
-                    .unwrap_or(self.as_ref().idle_thread);
-
-                let previous = self.as_mut().switch_thread(pkey, next);
-                self.as_mut().insert_to_suspended_list(pkey, previous);
-            }
-            ThreadExecutionState::Blocked => {
-                // A blocked thread holds its locks and prevents tasks below its priority
-                // from running until it releases the locks, even when suspended.
-                self.as_mut().insert_to_suspended_list(pkey, thread);
-            }
-            ThreadExecutionState::Suspended => {
-                // Thread is already suspended
-            }
-            ThreadExecutionState::Created => {
-                // Created thread does not yet have a closure, so it cannot be suspended
-                // until it becomes Started.
-                panic!("Cannot suspend a thread that has not been started");
-            }
-            ThreadExecutionState::Started => {
-                self.as_mut().insert_to_suspended_list(pkey, thread);
-            }
-        }
-
-        // Re-merge the alarm with the current thread's monitor budget: the
-        // `Running` arm switches to a new current thread without otherwise
-        // reprogramming it.
-        #[cfg(feature = "execution-time-monitor")]
-        self.as_ref().reprogram_alarm(pkey);
     }
 
     fn check_stack_overflow(&self) {

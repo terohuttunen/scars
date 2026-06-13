@@ -211,11 +211,6 @@ harness = false
 required-features = ["multithreading"]
 
 [[test]]
-name = "suspend_resume"
-harness = false
-required-features = ["multithreading"]
-
-[[test]]
 name = "sim_interrupt01"
 harness = false
 required-features = ["khal-sim", "multithreading"]

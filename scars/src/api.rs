@@ -21,9 +21,3 @@ pub fn delay(duration: crate::time::Duration) {
 pub fn delay_until(time: Instant) {
     syscall::delay_until(time)
 }
-
-#[cfg(feature = "multithreading")]
-#[allow(dead_code)]
-pub fn thread_suspend() {
-    syscall::thread_suspend()
-}

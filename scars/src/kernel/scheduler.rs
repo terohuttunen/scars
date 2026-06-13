@@ -90,9 +90,10 @@ fn min_option(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 }
 
 pub struct RawScheduler {
-    // When thread execution state is one of Ready, Blocked, or Suspended, it is in
-    // one of the three queues/list. Threads in Created or Started state are not yet in
-    // any scheduler queue. On state Running, the thread is the `current_thread`.
+    // When thread execution state is Ready or Blocked, it is in the ready
+    // queue or the blocked list respectively. Threads in Created or Started
+    // state are not yet in any scheduler queue. On state Running, the thread
+    // is the `current_thread`.
 
     // Threads that are ready to run are in the ready_queue sorted in descending
     // priority order.
@@ -103,10 +104,6 @@ pub struct RawScheduler {
     // list sorted in descending lock priority order.
     #[cfg(feature = "multithreading")]
     blocked_list: LinkedList<RawThread, ExecStateTag>,
-
-    // Threads that are suspended do not participate in thread scheduling.
-    #[cfg(feature = "multithreading")]
-    suspended_list: LinkedList<RawThread, ExecStateTag>,
 
     // Currently running thread on state Running. Without multithreading the idle
     // thread is the only context, so `current_thread()` returns it instead.
@@ -126,8 +123,6 @@ impl RawScheduler {
         RawScheduler {
             #[cfg(feature = "multithreading")]
             ready_queue: LinkedList::new(),
-            #[cfg(feature = "multithreading")]
-            suspended_list: LinkedList::new(),
             #[cfg(feature = "multithreading")]
             blocked_list: LinkedList::new(),
             #[cfg(feature = "multithreading")]
@@ -280,7 +275,6 @@ impl RawScheduler {
             .chain(Some(self.current_thread).into_iter())
             .chain(self.ready_queue().cursor_front())
             .chain(self.blocked_list().cursor_front())
-            .chain(self.suspended_list().cursor_front())
     }
 
     // Without multithreading the idle thread is the only context.

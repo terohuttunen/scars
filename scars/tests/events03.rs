@@ -5,7 +5,6 @@
 use scars::Stack;
 use scars::prelude::*;
 use scars::thread::{Thread, ThreadFn};
-use scars::thread_suspend;
 use scars::{EventOptions, Events, WaitEvents};
 use scars_test;
 
@@ -47,8 +46,11 @@ fn init() {
             let wait_result = context.wait_until(deadline);
             assert!(wait_result.is_err());
             sender.send(0);
-            thread_suspend();
-            loop {}
+            // Park so the lower-priority checker can run. (No thread
+            // suspension: block on the timer instead.)
+            loop {
+                scars::delay(scars::time::Duration::from_secs(60));
+            }
         })
         .start();
 
