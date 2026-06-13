@@ -111,7 +111,8 @@ extern "C" fn kernel_trap_handler<'a>(mepc: usize, mtval: usize, mcause: usize) 
                         context.gp_regs[9],  // a2
                     )
                 };
-                context.gp_regs[10] = rval;
+                // The syscall stub reads the return value from a0.
+                context.gp_regs[7] = rval;
             }
             code => {
                 let kind = FaultKind::try_from(code).unwrap_or(FaultKind::Unknown);
