@@ -270,9 +270,13 @@ impl RawScheduler {
 
     #[cfg(feature = "multithreading")]
     pub(crate) fn threads(self: Pin<&Self>) -> impl Iterator<Item = Pin<&RawThread>> {
+        // When the idle thread is current it would otherwise appear
+        // twice (it is never in the ready queue).
+        let current = (self.current_thread.thread_id != self.idle_thread.thread_id)
+            .then_some(self.current_thread);
         Some(self.idle_thread)
             .into_iter()
-            .chain(Some(self.current_thread).into_iter())
+            .chain(current.into_iter())
             .chain(self.ready_queue().cursor_front())
             .chain(self.blocked_list().cursor_front())
     }
@@ -645,34 +649,6 @@ impl Scheduler {
                 panic!("Thread is trying to sleep while it holds the preempt lock");
             }
         };
-    }
-
-    pub(crate) fn suspend_thread(maybe_thread: Option<Pin<&'static RawThread>>) {
-        if let Some(thread) = maybe_thread {
-            if thread.core != CoreId::current() {
-                // Foreign-core target: dispatch via owning core's
-                // deferred-work queue. `maybe_thread == None` (suspend
-                // current thread) is intrinsically same-core, so the
-                // foreign branch only fires when the caller named a
-                // specific target.
-                thread.schedule_deferred_op(RawThread::OP_SUSPEND);
-                return;
-            }
-        }
-        match Self::pin_instance()
-            .raw_pin()
-            .try_with_pin(|pkey, raw| raw.suspend_thread(pkey, maybe_thread))
-        {
-            Ok(()) => (),
-            Err(_) => match maybe_thread {
-                Some(thread) => {
-                    thread.schedule_deferred_op(RawThread::OP_SUSPEND);
-                }
-                None => {
-                    panic!("Cannot suspend the current thread while holding the preemption lock")
-                }
-            },
-        }
     }
 }
 
