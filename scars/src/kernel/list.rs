@@ -178,6 +178,15 @@ impl<T: LinkedListNode<N>, N: LinkedListTag> LinkedList<T, N> {
     pub fn remove<'item>(mut self: Pin<&mut Self>, item: Pin<&'item T>) {
         let node = item.get_node();
 
+        // Validate membership before touching any links: removing a
+        // node that belongs to another list (or none) must not
+        // corrupt this list's head and tail.
+        let list_ptr = unsafe { self.as_mut().get_unchecked_mut() } as *mut Self;
+        assert!(
+            core::ptr::eq(node.owner.load(Ordering::Relaxed), list_ptr),
+            "Cannot remove a node that is not in this list"
+        );
+
         if let Some(prev_node) = node.prev_node() {
             prev_node.next.set(node.next.get());
         } else {
