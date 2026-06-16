@@ -48,35 +48,40 @@ _trap_vector:
 	# If context address was null, then we are in nested trap, and
 	# current context is saved into ISR stack.
 save_context_to_stack:
-	# Allocate context from ISR stack for caller registers.
-	# Allocate 4 bytes more than necessary to align stack pointer
-	# by 8 bytes after pushing the marker.
-	addi 	sp, sp, -(17*4)
+	# Frame of 20 words (80 bytes, keeps 16-byte stack alignment):
+	# marker, 16 caller-saved GPRs, mepc, mstatus, one pad word.
+	addi 	sp, sp, -(20*4)
 
-	sw		x1, (0*4)(sp)
-	sw		x5, (1*4)(sp)
-	sw		x6, (2*4)(sp)
-	sw		x7, (3*4)(sp)
-	sw		x10, (4*4)(sp)
-	sw		x11, (5*4)(sp)
-	sw		x12, (6*4)(sp)
-	sw		x13, (7*4)(sp)
-	sw		x14, (8*4)(sp)
-	sw		x15, (9*4)(sp)
-	sw		x16, (10*4)(sp)
-	sw		x17, (11*4)(sp)
-	sw		x28, (12*4)(sp)
-	sw		x29, (13*4)(sp)
-	sw		x30, (14*4)(sp)
+	sw		x1,  (1*4)(sp)
+	sw		x5,  (2*4)(sp)
+	sw		x6,  (3*4)(sp)
+	sw		x7,  (4*4)(sp)
+	sw		x10, (5*4)(sp)
+	sw		x11, (6*4)(sp)
+	sw		x12, (7*4)(sp)
+	sw		x13, (8*4)(sp)
+	sw		x14, (9*4)(sp)
+	sw		x15, (10*4)(sp)
+	sw		x16, (11*4)(sp)
+	sw		x17, (12*4)(sp)
+	sw		x28, (13*4)(sp)
+	sw		x29, (14*4)(sp)
+	sw		x30, (15*4)(sp)
 
 	# original value of t6 is in mscratch
 	csrr	t6, mscratch
-	sw 		x31, (15*4)(sp)
+	sw 		x31, (16*4)(sp)
 
-	# Push marker to ISR stack to denote that context is saved to stack
-	addi    sp, sp, -4
-	li      a6, 1
-	sw      a6, 0(sp)
+	# Save mepc and mstatus: the handler call below clobbers them,
+	# and the interrupted outer handler must be resumed with mret.
+	csrr	t6, mepc
+	sw		t6, (17*4)(sp)
+	csrr	t6, mstatus
+	sw		t6, (18*4)(sp)
+
+	# Push marker 1 to denote that context is saved to stack
+	li      t6, 1
+	sw      t6, (0*4)(sp)
 
 	j 		enter_handler
 
@@ -101,21 +106,17 @@ save_context_to_thread:
 	sw		x29, (26*4)(t6)
 	sw		x30, (27*4)(t6)
 
-	# Actual t6 (aka. x31) is in mscratch, move machine context address from t6 to t5
-	# which has already been saved, and read the actual t6 from mscratch
-	# and save to context. Now t6 contains the machine context address; move
-	# it to t5, and read original value of t6 from mscratch.
-	mv 		t5, t6
-	csrr	t6, mscratch
-	sw      x31, (28*4)(t5)
+	# The interrupted thread's t6 (aka. x31) is in mscratch.
+	csrr	t5, mscratch
+	sw      t5, (28*4)(t6)
 
 	# store mepc CSR to thread context
-	csrr	a0, mepc
-	sw		a0, (29 * 4)(t5)
+	csrr	t5, mepc
+	sw		t5, (29*4)(t6)
 
 	# store mstatus CSR to thread context
-	csrr 	a5, mstatus
-	sw 		a5, (30 * 4)(t5)
+	csrr 	t5, mstatus
+	sw 		t5, (30*4)(t6)
 
 	# Save the PLIC priority threshold into the thread context. The
 	# hart-0 M-mode threshold register is at `_plic_base + 0x200000`,
@@ -125,17 +126,18 @@ save_context_to_thread:
 	sw		t5, (31*4)(t6)
 
 	# Set stack pointer to ISR stack
+	# The 16-byte frame keeps the
+	# psABI stack alignment for the handler call.
 	la	    sp, _isr_stack_end
+	addi    sp, sp, -16
 
 	# Push current thread context to ISR stack. This is later used
 	# to determine if context switch is required.
-	addi    sp, sp, -4
-	sw		t5, 0(sp)
+	sw		t6, (1*4)(sp)
 
 	# Push marker 0 to ISR stack to denote that when returning, context
 	# should be restored from thread.
-	addi    sp, sp, -4
-	sw      x0, 0(sp)
+	sw      x0, (0*4)(sp)
 
 enter_handler:
 	# Set context address in mscratch to null to denote that we are in a
@@ -164,11 +166,18 @@ _enter_user:
 	beqz    t5, return_to_thread
 
 return_to_interrupt:
-	# When marker is non-zero, context is restored from ISR stack
-	lw		x1, (0*4)(sp)
-	lw		x5, (1*4)(sp)
-	lw		x6, (2*4)(sp)
-	lw		x7, (3*4)(sp)
+	# Nested trap: restore mepc and mstatus first (mstatus.MIE is 0
+	# both in the saved value and now, so this cannot re-enable
+	# interrupts before mret), then the caller-saved GPRs.
+	lw		t6, (16*4)(sp)
+	csrw	mepc, t6
+	lw		t6, (17*4)(sp)
+	csrw	mstatus, t6
+
+	lw		x1,  (0*4)(sp)
+	lw		x5,  (1*4)(sp)
+	lw		x6,  (2*4)(sp)
+	lw		x7,  (3*4)(sp)
 	lw		x10, (4*4)(sp)
 	lw		x11, (5*4)(sp)
 	lw		x12, (6*4)(sp)
@@ -182,10 +191,11 @@ return_to_interrupt:
 	lw		x30, (14*4)(sp)
 	lw		x31, (15*4)(sp)  # x31 == t6
 
-	# sp (aka. x2) is not caller saved register
-	addi	sp, sp, (16*4)
+	addi	sp, sp, (19*4)
 
-	ret
+	# Resume the interrupted outer handler at the trapped
+	# instruction; mret restores MIE from MPIE.
+	mret
 return_to_thread:
 	# Pop current thread context before calling trap handler from the stack to t5
 	lw 		t5, 0(sp)
