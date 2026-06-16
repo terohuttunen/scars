@@ -11,6 +11,12 @@ PHDRS
 
 ISR_STACK_SIZE = 1024 * 4;
 
+# PLIC base address. The RISC-V trap handler references it (with the
+# PLIC-spec register offsets) to read/write hardware inline — e.g. the
+# hart-0 M-mode priority threshold at `_plic_base + 0x200000`, saved and
+# restored across context switches.
+PROVIDE(_plic_base = 0x0C000000);
+
 SECTIONS
 {
   .text : {

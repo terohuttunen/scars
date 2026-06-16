@@ -183,20 +183,6 @@ impl InterruptController for E310x {
     }
 }
 
-#[unsafe(no_mangle)]
-fn _save_interrupt_threshold(context: &mut <E310x as CoreController>::Context) {
-    let plic = unsafe { &*e310x::PLIC::ptr() };
-    let threshold = plic.threshold.read().bits();
-    context.interrupt_threshold = threshold as usize;
-}
-
-#[unsafe(no_mangle)]
-fn _restore_interrupt_threshold(context: &mut <E310x as CoreController>::Context) {
-    let plic = unsafe { &mut *(e310x::PLIC::ptr() as *mut e310x::plic::RegisterBlock) };
-    plic.threshold
-        .write(|w| unsafe { w.bits(context.interrupt_threshold as u32) });
-}
-
 impl AlarmClockController for E310x {
     const TICK_FREQ_HZ: u64 = TIMER_FREQ_HZ;
 

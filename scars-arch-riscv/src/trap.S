@@ -101,9 +101,6 @@ save_context_to_thread:
 	sw		x29, (26*4)(t6)
 	sw		x30, (27*4)(t6)
 
-	mv		a0, t6
-	jal		_save_interrupt_threshold
-
 	# Actual t6 (aka. x31) is in mscratch, move machine context address from t6 to t5
 	# which has already been saved, and read the actual t6 from mscratch
 	# and save to context. Now t6 contains the machine context address; move
@@ -119,6 +116,13 @@ save_context_to_thread:
 	# store mstatus CSR to thread context
 	csrr 	a5, mstatus
 	sw 		a5, (30 * 4)(t5)
+
+	# Save the PLIC priority threshold into the thread context. The
+	# hart-0 M-mode threshold register is at `_plic_base + 0x200000`,
+	# with `_plic_base` from the platform linker script.
+	la		t5, _plic_base + 0x200000
+	lw		t5, 0(t5)
+	sw		t5, (31*4)(t6)
 
 	# Set stack pointer to ISR stack
 	la	    sp, _isr_stack_end
@@ -191,6 +195,13 @@ return_to_thread:
 	la      t0, CURRENT_THREAD_CONTEXT
 	lw      t6, 0(t0)
 
+	# Restore the PLIC priority threshold from the incoming thread
+	# context (t6). t0/t1 are scratch; t5 (pre-handler context) and t6
+	# (incoming context) hold the switch operands used below.
+	lw		t0, (31*4)(t6)
+	la		t1, _plic_base + 0x200000
+	sw		t0, 0(t1)
+
 	# Returning to thread from the outermost interrupt, set mscratch
 	# to current context.
 	csrw	mscratch, t6
@@ -205,9 +216,6 @@ return_to_thread:
 	and     t0, t0, t1
 	csrrc   x0, mstatus, t1
 	csrrs   x0, mstatus, t0
-
-	mv 		a0, t6
-	jal		_restore_interrupt_threshold
 
 	# If pre- and post- trap handler contexts are the same then there is no need
 	# for context switch. Need only to restore caller saved registers.
