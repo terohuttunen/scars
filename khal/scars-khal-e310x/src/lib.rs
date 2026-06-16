@@ -130,7 +130,10 @@ impl InterruptController for E310x {
     }
 
     fn complete_interrupt(claim: Self::InterruptClaim) {
-        Self::restore(false);
+        // `claim_interrupt` enabled nesting with `restore(true)`.
+        // Do the opposite here and disable interrupts again for
+        // trap exit.
+        Self::acquire();
         Self::set_interrupt_threshold(claim.restore_threshold);
         Self::instance()
             .plic
