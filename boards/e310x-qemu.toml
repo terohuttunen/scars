@@ -2,10 +2,12 @@ name = "e310x-qemu"
 target = "riscv32imac-unknown-none-elf"
 package = "scars"
 features = ["khal-e310x"]
-# RAM-constrained: drop the opt-out features (priority-inheritance,
-# raii-locks, multi-core) via `--no-default-features`.
+# RAM-constrained: drop priority-inheritance and raii-locks via
+# `--no-default-features`. The remaining defaults (multithreading,
+# async) must be re-listed in `kernel_features`, or the integration
+# tests that require them are silently skipped.
 default-features = false
-kernel_features = ["bench-large"]
+kernel_features = ["multithreading", "async", "bench-large"]
 test_runner = "qemu"
 examples_dirs = ["examples/e310x"]
 

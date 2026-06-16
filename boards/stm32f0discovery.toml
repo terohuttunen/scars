@@ -2,9 +2,12 @@ name = "stm32f0discovery"
 target = "thumbv6m-none-eabi"
 package = "scars"
 features = ["chip-stm32f051"]
-# RAM-constrained (8 KB): drop the opt-out features (priority-inheritance,
-# raii-locks, multi-core) via `--no-default-features`.
+# RAM-constrained (8 KB): drop priority-inheritance and raii-locks via
+# `--no-default-features`. The remaining defaults (multithreading,
+# async) must be re-listed in `kernel_features`, or the integration
+# tests that require them are silently skipped.
 default-features = false
+kernel_features = ["multithreading", "async"]
 test_runner = "probe-rs"
 examples_dirs = ["examples/stm32f0", "examples/shared"]
 
