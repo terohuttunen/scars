@@ -1,5 +1,5 @@
 use super::IDLE_THREAD_ID;
-use super::{RawThread, Thread, ThreadFn, ThreadRef};
+use super::{RawThread, Thread, ThreadExecutionState, ThreadFn, ThreadRef};
 use crate::kernel::hal::Context;
 use crate::kernel::stack::StackRefMut;
 use crate::priority::Priority;
@@ -96,6 +96,19 @@ impl<const PRIO: Priority, F: ThreadFn> ThreadBuilder<PRIO, F> {
         }
     }
 
+    /// Attach `closure` and place the thread directly in the `Running`
+    /// state, returning its raw handle. For a core's idle thread: the
+    /// initial execution context, set up before the scheduler exists,
+    /// so it bypasses the scheduler start/resume path. The preempt lock
+    /// (whose acquire reads the not-yet-installed scheduler) cannot be
+    /// taken; the `&'static mut` provides the exclusion for the state
+    /// write.
+    pub(crate) fn attach_running(self, closure: F) -> &'static RawThread {
+        let mut handle = self.attach(closure);
+        *handle.raw_mut().state.get_mut() = ThreadExecutionState::Running;
+        handle.raw()
+    }
+
     /// Configure an execution-time monitor: once the thread consumes `budget`
     /// CPU time within a measurement window, `events` are delivered to
     /// `sender`. Window boundaries are marked at runtime with
@@ -182,10 +195,6 @@ impl ThreadHandle {
         unsafe { thread.start() };
 
         thread_ref
-    }
-
-    pub(crate) fn modify<R>(&mut self, f: impl FnOnce(&mut RawThread) -> R) -> R {
-        f(self.raw_mut())
     }
 
     pub fn name(&self) -> &'static str {

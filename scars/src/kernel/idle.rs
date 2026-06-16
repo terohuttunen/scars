@@ -6,9 +6,7 @@ use crate::sync::PreemptLock;
 #[cfg(all(test, feature = "multithreading"))]
 use crate::task::ThreadExecutor;
 use crate::thread;
-use crate::thread::{
-    RawThread, Thread, ThreadBuilder, ThreadExecutionState, ThreadFn, ThreadHandle, ThreadRef,
-};
+use crate::thread::{RawThread, Thread, ThreadFn};
 use static_cell::StaticCell;
 
 const IDLE_THREAD_NAME: &'static str = "[idle]";
@@ -62,16 +60,7 @@ pub(crate) fn init_idle_thread(core: CoreId) -> &'static RawThread {
 
     let idle_static: &'static Thread<IDLE_THREAD_PRIO, IdleFn> = &IDLE_THREADS[core.as_usize()];
     let idle_stack = IDLE_STACKS[core.as_usize()].init();
-    let mut idle_thread = idle_static.init(idle_stack).attach(|| idle());
-    idle_thread.modify(|t| {
-        PreemptLock::with(|pkey| {
-            t.state.set(pkey, ThreadExecutionState::Running);
-        })
-    });
-
-    let idle_thread = idle_thread.get_ref();
-
-    unsafe { idle_thread.as_ref() }
+    idle_static.init(idle_stack).attach_running(|| idle())
 }
 
 fn idle() -> ! {
