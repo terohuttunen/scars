@@ -302,7 +302,7 @@ impl CoreController for E310x {
 unsafe impl Sync for E310x {}
 
 #[unsafe(no_mangle)]
-pub fn init() {
+pub extern "C" fn init() {
     unsafe {
         riscv::register::mie::set_msoft();
         start_kernel();
