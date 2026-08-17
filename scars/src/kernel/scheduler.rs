@@ -554,6 +554,19 @@ impl Scheduler {
         scheduler.deferred_work_queue.work_pending()
     }
 
+    /// Retry trigger for deferred kernel work. Called when a thread
+    /// releases a wait list's nesting lock: a wake the drain re-queued
+    /// because that thread held the list (the `Protected` in-use guard)
+    /// can proceed once the guard clears, so pend a fresh drain. Gated
+    /// on `is_preempt_allowed` so a drain's own preempt-lock release
+    /// never re-pends the service call it is running in.
+    pub(crate) fn retry_deferred_work() {
+        let scheduler = Scheduler::instance();
+        if scheduler.deferred_work_queue.has_deferred() && is_preempt_allowed() {
+            hal::pend_service_call();
+        }
+    }
+
     /// Drain everything the local kernel has queued for dispatch:
     /// pending event handlers, deferred-work queue, and any pending
     /// reschedule. Single entry point for both `_kernel_syscall_handler`
@@ -567,16 +580,16 @@ impl Scheduler {
         // run in their own event-handler context.
         scheduler.pending_events.process_pending_events();
 
-        // Deferred-work queue. Each handler dispatch needs the preempt
-        // lock; bail when someone else holds it (their release path
-        // will pick up the rest).
-        while scheduler.deferred_work_queue.work_pending() {
-            if raw_pin
-                .try_with_pin(|pkey, raw| scheduler.deferred_work_queue.complete_work(pkey, raw))
-                .is_err()
-            {
-                break;
-            }
+        // Deferred-work queue. One drain pass per entry; bail when
+        // someone else holds the preempt lock (their release path
+        // will pick up the rest). Entries blocked behind a ceiling
+        // stay queued behind the `deferred` marker and are retried
+        // when a ceiling lock is released — not by re-pending from
+        // here, which would spin the service call against a ceiling
+        // held by the preempted thread.
+        if scheduler.deferred_work_queue.has_work() {
+            let _ = raw_pin
+                .try_with_pin(|pkey, raw| scheduler.deferred_work_queue.complete_work(pkey, raw));
         }
 
         // Pending reschedule. Same shape as `execute_pending_reschedule`,

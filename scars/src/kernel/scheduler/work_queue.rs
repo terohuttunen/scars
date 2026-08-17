@@ -149,10 +149,19 @@ impl<H: PendingWorkHandler> PendingWorkEntry<H> {
 }
 
 pub struct AtomicWorkQueue {
-    /// Set by every external producer; cleared by the drain. The outer
-    /// drain loop iterates as long as this is set, so any post that
-    /// races against an in-flight drain still wakes the consumer.
+    /// Producer signal for newly posted work. Observed by the per-core
+    /// preempt-lock release (and the producer's own pend), so it drains
+    /// at the next safe point. The outer drain loop iterates as long as
+    /// it is set, so a post that races an in-flight drain still wakes
+    /// the consumer.
     work_pending: AtomicBool,
+    /// Set when a drain re-queues an entry whose target wait list was
+    /// held by a concurrent thread (the `Protected` in-use guard).
+    /// Observed only by that instance lock's release
+    /// ([`Scheduler::retry_deferred_work`]) — excluded from the per-core
+    /// preempt-lock release, which would re-pend mid-drain before the
+    /// holder releases the guard.
+    deferred: AtomicBool,
     queue: AtomicQueue<RawPendingWorkEntry, ExecStateTag>,
 }
 
@@ -160,6 +169,7 @@ impl AtomicWorkQueue {
     pub fn new() -> Self {
         Self {
             work_pending: AtomicBool::new(false),
+            deferred: AtomicBool::new(false),
             queue: AtomicQueue::new(),
         }
     }
@@ -179,7 +189,13 @@ impl AtomicWorkQueue {
         pkey: PreemptLockKey<'_>,
         mut raw_scheduler: Pin<&mut RawScheduler>,
     ) {
-        while self.work_pending.swap(false, Ordering::AcqRel) {
+        let mut any_deferred = false;
+        // Consume the deferred marker up front: this pass retries the
+        // previously deferred entries and re-marks below if they
+        // defer again.
+        let mut retry_deferred = self.deferred.swap(false, Ordering::AcqRel);
+        while retry_deferred || self.work_pending.swap(false, Ordering::AcqRel) {
+            retry_deferred = false;
             // First entry the handler asked to re-queue in this pass.
             // When we pop it again we've cycled through every entry
             // that was in the queue at the moment of deferral — break
@@ -189,25 +205,47 @@ impl AtomicWorkQueue {
             let mut first_deferred: Option<*const RawPendingWorkEntry> = None;
             while let Some(pending) = self.queue.pop_front() {
                 if Some(pending.get_ref() as *const _) == first_deferred {
-                    // Cycled. Put back at tail; the next external post
-                    // bumps `work_pending` and starts a fresh pass.
+                    // Cycled. Put back at tail; retried on the next
+                    // external post or the holder's lock release.
                     let _ = self.queue.try_push_back(pending);
+                    any_deferred = true;
                     break;
                 }
                 let ops = pending.pending_mask.swap(0, Ordering::AcqRel);
                 let completed = pending.as_ref().complete(pkey, raw_scheduler.as_mut(), ops);
                 if !completed {
-                    // The operation cannot be completed right now. Defer to later time.
+                    // Wait list held by a concurrent thread; retry on
+                    // its release.
                     let _ = self.queue.try_push_back(pending);
                     if first_deferred.is_none() {
                         first_deferred = Some(pending.get_ref() as *const _);
                     }
                 }
             }
+            // A pass that deferred its last popped entry exits the
+            // inner loop through the cycle check above; a pass whose
+            // only deferred entry was also the final pop exits with
+            // the queue notionally "drained" — catch that here.
+            if first_deferred.is_some() {
+                any_deferred = true;
+            }
+        }
+        if any_deferred {
+            self.deferred.store(true, Ordering::Release);
         }
     }
 
     pub fn work_pending(&'static self) -> bool {
         self.work_pending.load(Ordering::Acquire)
+    }
+
+    /// Entries re-queued by a drain, awaiting a ceiling-lock release.
+    pub fn has_deferred(&'static self) -> bool {
+        self.deferred.load(Ordering::Acquire)
+    }
+
+    /// Anything a drain pass could dispatch or retry.
+    pub fn has_work(&'static self) -> bool {
+        self.work_pending() || self.has_deferred()
     }
 }
