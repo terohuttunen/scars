@@ -481,9 +481,14 @@ impl Scheduler {
 
     #[cfg(feature = "multithreading")]
     pub(crate) fn cond_reschedule<'key>(pkey: PreemptLockKey<'key>) {
-        Self::pin_instance()
+        // May be reached while the raw scheduler is already borrowed:
+        // kernel drain code releases a kernel-acquired ceiling lock
+        // from inside a scheduler borrow, and the release path lands
+        // here. Those paths perform their own preemption checks, so
+        // skip silently instead of raising `RecursiveLock`.
+        let _ = Self::pin_instance()
             .raw_pin()
-            .with_pin_key(pkey, |pkey, scheduler| {
+            .try_with_pin_key(pkey, |pkey, scheduler| {
                 let pin_scheduler = scheduler.as_ref();
 
                 if let Some(ready_thread) = pin_scheduler.ready_queue().head() {
@@ -492,7 +497,7 @@ impl Scheduler {
                         Self::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER);
                     }
                 }
-            })
+            });
     }
 
     // Without multithreading there is no ready queue to yield to; a ceiling-lock

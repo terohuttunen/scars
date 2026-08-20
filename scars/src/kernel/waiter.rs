@@ -79,11 +79,15 @@ pub(crate) struct WaitQueueHandle {
 
 #[allow(dead_code)]
 impl WaitQueueHandle {
+    /// Remove `suspendable` from the wait queue. `Ok(true)` if this
+    /// call unlinked the entry, `Ok(false)` if it was no longer
+    /// queued (a notifier already popped it), `Err(())` if the
+    /// queue's lock could not be taken from this context.
     pub unsafe fn try_remove(
         &self,
         pkey: PreemptLockKey<'_>,
         suspendable: Pin<&WaitQueueEntry>,
-    ) -> Result<(), ()> {
+    ) -> Result<bool, ()> {
         unsafe { (self.vtable.try_remove)(self.queue, pkey, suspendable.get_ref()) }
     }
 
@@ -110,7 +114,7 @@ impl WaitQueueHandle {
 #[allow(dead_code)]
 pub(crate) struct WaitQueueVTable {
     pub(crate) try_remove:
-        unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry) -> Result<(), ()>,
+        unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry) -> Result<bool, ()>,
     pub(crate) try_reinsert:
         unsafe fn(*const (), PreemptLockKey<'_>, *const WaitQueueEntry) -> Result<(), ()>,
 }

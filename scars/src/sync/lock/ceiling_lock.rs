@@ -357,6 +357,46 @@ impl RawCeilingLock {
 
                     Scheduler::cond_reschedule(pkey);
                 });
+
+                // A thread leaving a wait-list closure clears the
+                // `Protected` in-use guard that may have deferred a
+                // kernel wake; retry it. Only the thread path can have
+                // blocked the drain — the service call cannot preempt
+                // an interrupt-context holder.
+                Scheduler::retry_deferred_work();
+            }
+        }
+    }
+
+    /// Like [`Self::try_acquire_nesting_lock`], but lets the kernel
+    /// drain (service-call handler) acquire a wait list's ceiling lock.
+    ///
+    /// Thread ceilings skip the caller-priority check: it rejects an
+    /// interrupt-context caller above the ceiling, but the drain at
+    /// `Interrupt(0)` only unlinks a waiter, and serializes against the
+    /// thread notifier via the held preempt lock plus the `Protected`
+    /// in-use guard. Interrupt ceilings keep the regular path: there
+    /// the notifier may be an interrupt, excluded only by the ceiling
+    /// masking it — which the drain (below the ceiling) gets by
+    /// acquiring normally, and which the preempt lock could not provide.
+    pub(crate) unsafe fn kernel_try_acquire_nesting_lock(
+        ceiling: Priority,
+    ) -> Result<CeilingLockRestoreState, ()> {
+        if ceiling.is_interrupt() {
+            return unsafe { Self::try_acquire_nesting_lock(ceiling) };
+        }
+        match Scheduler::current_execution_context() {
+            ExecutionContext::Interrupt(current_interrupt) => {
+                let ceiling_priority_opt = PriorityOpt::from(ceiling);
+                Scheduler::set_ceiling(ceiling_priority_opt);
+                let saved_priority = current_interrupt.raise_nesting_lock_priority(ceiling);
+                Ok(CeilingLockRestoreState { saved_priority })
+            }
+            ExecutionContext::Thread(current_thread) => {
+                let ceiling_priority_opt = PriorityOpt::from(ceiling);
+                Scheduler::set_ceiling(ceiling_priority_opt);
+                let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
+                Ok(CeilingLockRestoreState { saved_priority })
             }
         }
     }
@@ -544,6 +584,15 @@ impl<const CEILING: Priority> NestingLock for CeilingLock<CEILING> {
         Self::try_with(f)
     }
 
+    fn kernel_try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
+        let restore_state = unsafe { RawCeilingLock::kernel_try_acquire_nesting_lock(CEILING) }
+            .map_err(|_| TryLockError::WouldBlock)?;
+        let key = unsafe { CeilingLockKey::new() };
+        let result = f(key);
+        unsafe { RawCeilingLock::release_nesting_lock(restore_state) };
+        Ok(result)
+    }
+
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
         unsafe { CeilingLockKey::new() }
     }
@@ -715,6 +764,15 @@ impl<const CEILING: Priority, const CORE: CoreId> NestingLock for CoreCeilingLoc
 
     fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
         Self::try_with(f)
+    }
+
+    fn kernel_try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
+        let restore_state = unsafe { RawCeilingLock::kernel_try_acquire_nesting_lock(CEILING) }
+            .map_err(|_| TryLockError::WouldBlock)?;
+        let key = unsafe { CoreCeilingLockKey::new() };
+        let result = f(key);
+        unsafe { RawCeilingLock::release_nesting_lock(restore_state) };
+        Ok(result)
     }
 
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {

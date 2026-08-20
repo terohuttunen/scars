@@ -82,6 +82,17 @@ pub trait NestingLock {
 
     fn try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError>;
 
+    /// [`try_with`](Self::try_with) with the admission rule for kernel
+    /// drain contexts (timer expiry and deferred-work dispatch). A
+    /// drain acts on behalf of a waiter, not as a ceiling-protocol
+    /// participant, so locks whose `try_with` rejects on the caller's
+    /// priority override this to admit thread-priority ceilings; see
+    /// `RawCeilingLock::kernel_try_acquire_nesting_lock`. Identical to
+    /// `try_with` for the other lock types.
+    fn kernel_try_with<R>(f: impl FnOnce(Self::Key<'_>) -> R) -> Result<R, TryLockError> {
+        Self::try_with(f)
+    }
+
     // Upcast a key from a longer lifetime to a shorter one.
     //
     // Needed because there is no way to control the variance of the associated

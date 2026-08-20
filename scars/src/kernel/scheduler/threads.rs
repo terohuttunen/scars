@@ -164,21 +164,22 @@ impl RawScheduler {
             panic!("Idle thread may not be woken up");
         }
 
-        // Per-thread flag for `Notify`-style timed waits. Set
-        // unconditionally on entry so that, even if `try_remove`
-        // below defers (ceiling violation) and the notify path races
-        // ahead, the flag still reflects "this thread's wake was
-        // timer-driven." Read and cleared by
-        // `Scheduler::take_last_wait_timed_out`.
-        thread.set_wait_timed_out(pkey, true);
-
         // Remove thread from a wait queue if it is waiting in one. If
         // the queue's lock isn't acquirable from this context, return
         // Err(()) so the caller can defer.
+        //
+        // The per-thread timed-out flag is set only when this wake
+        // actually unlinked the entry: then the timer terminated the
+        // wait. If a notifier already popped the entry, the notify
+        // won and the wait must not report `TimedOut` (the notifier
+        // may have transferred a resource to this thread).
         if let Some(handle) = thread.wait_queue.get(pkey) {
             let wait_entry = thread.get_wait_entry();
-            unsafe { handle.try_remove(pkey, wait_entry)? };
+            let removed = unsafe { handle.try_remove(pkey, wait_entry)? };
             thread.disarm_wait(pkey);
+            if removed {
+                thread.set_wait_timed_out(pkey, true);
+            }
         }
 
         // Set timeout flag if thread has current wait events (indicating it timed out)
@@ -214,7 +215,7 @@ impl RawScheduler {
         // Err(()) so the caller can defer.
         if let Some(handle) = thread.wait_queue.get(pkey) {
             let wait_entry = thread.get_wait_entry();
-            unsafe { handle.try_remove(pkey, wait_entry)? };
+            let _removed = unsafe { handle.try_remove(pkey, wait_entry)? };
             thread.disarm_wait(pkey);
         }
 

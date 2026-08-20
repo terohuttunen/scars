@@ -83,6 +83,26 @@ impl<T, L: NestingLock> Protected<T, L> {
         })?
     }
 
+    /// Like [`with_pin_key`](Self::with_pin_key), but returns
+    /// `Err(TryLockError::WouldBlock)` instead of raising
+    /// `RecursiveLock` when the value is already borrowed. For kernel
+    /// paths that may legitimately be reached while the value is in
+    /// use and can skip their work in that case.
+    pub(crate) fn try_with_pin_key<R>(
+        self: Pin<&Self>,
+        key: L::Key<'_>,
+        f: impl FnOnce(L::Key<'_>, Pin<&mut T>) -> R,
+    ) -> Result<R, TryLockError> {
+        if self.in_use.replace(key, true) {
+            return Err(TryLockError::WouldBlock);
+        }
+        // SAFETY: as in `with_pin_key`.
+        let t = unsafe { Pin::new_unchecked(&mut *self.inner.get()) };
+        let r = f(key, t);
+        self.in_use.set(key, false);
+        Ok(r)
+    }
+
     /// Run `f` with pinned exclusive access to the wrapped value,
     /// using a key the caller already holds. The pin receiver
     /// witnesses that `Protected` is pinned in place; `T` is declared
@@ -119,6 +139,27 @@ impl<T, L: NestingLock> Protected<T, L> {
         f: impl FnOnce(L::Key<'_>, Pin<&mut T>) -> R,
     ) -> Result<R, TryLockError> {
         L::try_with(|key| {
+            if self.in_use.replace(key, true) {
+                Err(TryLockError::WouldBlock)
+            } else {
+                // SAFETY: as in `with_pin_key`.
+                let t = unsafe { Pin::new_unchecked(&mut *self.inner.get()) };
+                let r = f(key, t);
+                self.in_use.set(key, false);
+                Ok(r)
+            }
+        })?
+    }
+
+    /// [`try_with_pin`](Self::try_with_pin) with the kernel-drain
+    /// admission rule of [`NestingLock::kernel_try_with`]. The
+    /// `in_use` check is what rejects a wait list whose holder was
+    /// preempted mid-closure.
+    pub(crate) fn kernel_try_with_pin<R>(
+        self: Pin<&Self>,
+        f: impl FnOnce(L::Key<'_>, Pin<&mut T>) -> R,
+    ) -> Result<R, TryLockError> {
+        L::kernel_try_with(|key| {
             if self.in_use.replace(key, true) {
                 Err(TryLockError::WouldBlock)
             } else {
