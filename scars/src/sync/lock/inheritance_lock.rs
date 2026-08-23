@@ -11,9 +11,18 @@ use crate::thread::{InheritanceLockListTag, RawThread};
 use core::marker::PhantomData;
 use core::pin::Pin;
 
-/// CORE-erased inheritance lock primitive. Mirrors
-/// [`CoreInheritanceLock<CORE>`] but stores the core affinity at
-/// runtime (`pub core: u8`) instead of as a const generic.
+/// Lock primitive with single-hop priority inheritance (Basic Priority
+/// Inheritance Protocol).
+///
+/// When a thread blocks on a contended lock, the lock owner's priority is
+/// raised to the blocker's priority for the duration of the hold. The boost
+/// is dropped when the lock is released. Only the immediate owner is boosted;
+/// chains of waiting threads are not walked transitively.
+///
+/// Deadlock prevention is the caller's responsibility. Unlike
+/// [`CeilingLock`](super::CeilingLock), which prevents deadlock by design
+/// through static ceiling assignment, `InheritanceLock` permits arbitrary
+/// acquisition order and therefore arbitrary deadlock.
 pub struct InheritanceLock {
     // The current owner of the lock
     owner: AtomicOwner,
@@ -48,24 +57,39 @@ impl InheritanceLock {
         };
 
         loop {
-            match self.owner.take_ownership(current_thread) {
-                Ok(_) => {
-                    PreemptLock::with(|pkey| unsafe {
-                        current_thread.inheritance_lock_acquired(pkey, self);
-                    });
-                    break;
-                }
-                Err(owner) => {
-                    PreemptLock::with(|pkey| {
-                        // When the lock cannot be acquired, the owner of the lock
-                        // inherits the priority of the current thread.
+            let acquired = PreemptLock::with(|pkey| {
+                match self.owner.take_ownership(current_thread) {
+                    Ok(_) => {
+                        unsafe {
+                            current_thread.inheritance_lock_acquired(pkey, self);
+                        }
+                        true
+                    }
+                    Err(owner) => {
+                        // The failed acquisition, the boost, and the
+                        // wait arm share one preempt-locked section.
+                        // `release_lock` runs entirely under the
+                        // preempt lock, so the boost cannot land on a
+                        // stale owner, and a release cannot slip in
+                        // between the failed acquisition and the arm
+                        // (which would lose the wakeup and leave this
+                        // thread blocked on a free lock).
                         let current_priority = current_thread.priority(pkey);
                         owner.inherit_priority(pkey, current_priority);
-                    });
-
-                    self.wait_list.wait();
+                        self.wait_list.arm_current();
+                        false
+                    }
                 }
+            });
+            if acquired {
+                break;
             }
+            // Commit the block outside the preempt lock so the drain
+            // can run `block_current`; a notify that lands in between
+            // is absorbed by the drain gate.
+            Scheduler::set_pending_reschedule(
+                crate::kernel::scheduler::RESCHEDULE_KIND_BLOCK_CURRENT,
+            );
         }
     }
 
@@ -96,6 +120,11 @@ impl InheritanceLock {
             unsafe { current_thread.inheritance_lock_released(pkey, self) };
             self.owner.release_ownership(current_thread);
             self.wait_list.notify_one();
+            // The release may have dropped this thread's effective
+            // priority (inherited boost reset). Yield to any ready
+            // thread that now outranks it; the woken waiter's resume
+            // pends its own check.
+            Scheduler::cond_reschedule(pkey);
         });
     }
 
