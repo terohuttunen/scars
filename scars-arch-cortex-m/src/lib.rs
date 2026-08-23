@@ -35,21 +35,37 @@ pub struct Context {
     basepri: u32,
 
     // Callee saved FPU registers starting from offset 11 * 4
+    #[cfg(target_feature = "fpregs")]
     s16: f32,
+    #[cfg(target_feature = "fpregs")]
     s17: f32,
+    #[cfg(target_feature = "fpregs")]
     s18: f32,
+    #[cfg(target_feature = "fpregs")]
     s19: f32,
+    #[cfg(target_feature = "fpregs")]
     s20: f32,
+    #[cfg(target_feature = "fpregs")]
     s21: f32,
+    #[cfg(target_feature = "fpregs")]
     s22: f32,
+    #[cfg(target_feature = "fpregs")]
     s23: f32,
+    #[cfg(target_feature = "fpregs")]
     s24: f32,
+    #[cfg(target_feature = "fpregs")]
     s25: f32,
+    #[cfg(target_feature = "fpregs")]
     s26: f32,
+    #[cfg(target_feature = "fpregs")]
     s27: f32,
+    #[cfg(target_feature = "fpregs")]
     s28: f32,
+    #[cfg(target_feature = "fpregs")]
     s29: f32,
+    #[cfg(target_feature = "fpregs")]
     s30: f32,
+    #[cfg(target_feature = "fpregs")]
     s31: f32,
 }
 
@@ -77,22 +93,25 @@ impl ContextInfo for Context {
             (*context).r11 = 0;
             (*context).lr = 0xFFFFFFFD;
 
-            (*context).s16 = 0.0f32;
-            (*context).s17 = 0.0f32;
-            (*context).s18 = 0.0f32;
-            (*context).s19 = 0.0f32;
-            (*context).s20 = 0.0f32;
-            (*context).s21 = 0.0f32;
-            (*context).s22 = 0.0f32;
-            (*context).s23 = 0.0f32;
-            (*context).s24 = 0.0f32;
-            (*context).s25 = 0.0f32;
-            (*context).s26 = 0.0f32;
-            (*context).s27 = 0.0f32;
-            (*context).s28 = 0.0f32;
-            (*context).s29 = 0.0f32;
-            (*context).s30 = 0.0f32;
-            (*context).s31 = 0.0f32;
+            #[cfg(target_feature = "fpregs")]
+            {
+                (*context).s16 = 0.0f32;
+                (*context).s17 = 0.0f32;
+                (*context).s18 = 0.0f32;
+                (*context).s19 = 0.0f32;
+                (*context).s20 = 0.0f32;
+                (*context).s21 = 0.0f32;
+                (*context).s22 = 0.0f32;
+                (*context).s23 = 0.0f32;
+                (*context).s24 = 0.0f32;
+                (*context).s25 = 0.0f32;
+                (*context).s26 = 0.0f32;
+                (*context).s27 = 0.0f32;
+                (*context).s28 = 0.0f32;
+                (*context).s29 = 0.0f32;
+                (*context).s30 = 0.0f32;
+                (*context).s31 = 0.0f32;
+            }
 
             // Allocate exception frame from thread stack
             let frame_ptr = stack_ptr.sub(core::mem::size_of::<cortex_m_rt::ExceptionFrame>())
@@ -454,15 +473,20 @@ macro_rules! impl_core_controller {
 #[unsafe(link_section = "._switch_context.user")]
 pub unsafe extern "C" fn _switch_context(_old: *mut Context, _new: *const Context) {
     naked_asm!(
-        ".fpu vfpv4-d16",
         "cmp    r0, r1",
         "it     eq",
         "beq    0f",
         // Save callee saved registers
         "stmia  r0, {{r4-r11, lr}}",
+        #[cfg(target_feature = "fpregs")]
+        ".fpu vfpv4-d16",
+        #[cfg(target_feature = "fpregs")]
         "add    r2, r0, #11*4",
+        #[cfg(target_feature = "fpregs")]
         "tst    lr, #0x10",
+        #[cfg(target_feature = "fpregs")]
         "it     eq",
+        #[cfg(target_feature = "fpregs")]
         "vstmiaeq r2, {{s16-s31}}",
         // Store process stack pointer to context
         "mrs    r2, psp",
@@ -476,9 +500,13 @@ pub unsafe extern "C" fn _switch_context(_old: *mut Context, _new: *const Contex
         "msr    psp, r2",
         // Restore callee saved registers
         "ldmia  r1, {{r4-r11, lr}}",
+        #[cfg(target_feature = "fpregs")]
         "add    r2, r1, #11*4",
+        #[cfg(target_feature = "fpregs")]
         "tst    lr, #0x10",
+        #[cfg(target_feature = "fpregs")]
         "it     eq",
+        #[cfg(target_feature = "fpregs")]
         "vldmiaeq r2, {{s16-s31}}",
         // Restore basepri
         "ldr    r2, [r1, #10 * 4]",
