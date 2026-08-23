@@ -1,5 +1,5 @@
 use super::{LockOps, NestingLock, ScopedLock, TryLockError};
-use crate::kernel::hal::{CoreId, CoreToken, NUM_CORES, acquire, restore};
+use crate::kernel::hal::{self, CoreId, CoreToken, NUM_CORES, acquire, restore};
 use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::marker::PhantomData;
 use core::pin::Pin;
@@ -57,9 +57,7 @@ impl InterruptLock {
     }
 
     pub fn lock(&self) -> InterruptLockGuard<'_> {
-        if CoreId::current() != self.core {
-            crate::runtime_error!(RuntimeError::WrongCore);
-        }
+        hal::check_core(self.core);
         let this = unsafe { Pin::new_unchecked(self) };
         unsafe { this.acquire_scoped_lock() };
         InterruptLockGuard {
@@ -89,9 +87,7 @@ impl InterruptLock {
     /// [`CoreInterruptLock::<CORE>::with_core`], which takes a
     /// [`CoreToken<CORE>`] witness instead.
     pub fn with_core<R>(core: CoreId, f: impl FnOnce(InterruptLockKey<'_>) -> R) -> R {
-        if CoreId::current() != core {
-            crate::runtime_error!(RuntimeError::WrongCore);
-        }
+        hal::check_core(core);
         Self::with(f)
     }
 

@@ -71,9 +71,7 @@ impl<const CORE: CoreId> CoreToken<'_, CORE> {
     /// Triggers [`RuntimeError::WrongCore`] if `CoreId::current() != CORE`.
     #[inline]
     pub fn current<'k>() -> CoreToken<'k, CORE> {
-        if CoreId::current() != CORE {
-            crate::runtime_error!(crate::kernel::RuntimeError::WrongCore);
-        }
+        check_core(CORE);
         CoreToken {
             _phantom: core::marker::PhantomData,
         }
@@ -91,6 +89,15 @@ impl<const CORE: CoreId> CoreToken<'_, CORE> {
         CoreToken {
             _phantom: core::marker::PhantomData,
         }
+    }
+}
+
+/// Triggers [`RuntimeError::WrongCore`] if the calling core is not
+/// `expected`.
+#[inline(never)]
+pub(crate) fn check_core(expected: CoreId) {
+    if CoreId::current() != expected {
+        crate::runtime_error!(crate::kernel::RuntimeError::WrongCore);
     }
 }
 

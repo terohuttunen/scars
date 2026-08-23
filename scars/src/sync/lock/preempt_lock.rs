@@ -1,5 +1,5 @@
 use super::{LockOps, NestingLock, ScopedLock, TryLockError};
-use crate::kernel::hal::{CoreId, CoreToken, NUM_CORES, acquire, pend_service_call, restore};
+use crate::kernel::hal::{self, CoreId, CoreToken, NUM_CORES, acquire, pend_service_call, restore};
 use crate::kernel::scheduler::{ExecutionContext, Scheduler};
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::marker::PhantomData;
@@ -72,16 +72,12 @@ impl PreemptLock {
     }
 
     pub fn lock(&self) -> PreemptLockGuard<'_> {
-        if CoreId::current() != self.core {
-            crate::runtime_error!(RuntimeError::WrongCore);
-        }
+        hal::check_core(self.core);
         unsafe { self.lock_unchecked() }
     }
 
     pub fn try_lock(&self) -> Result<PreemptLockGuard<'_>, TryLockError> {
-        if CoreId::current() != self.core {
-            crate::runtime_error!(RuntimeError::WrongCore);
-        }
+        hal::check_core(self.core);
         unsafe { self.try_lock_unchecked() }
     }
 

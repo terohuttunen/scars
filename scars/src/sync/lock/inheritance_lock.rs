@@ -1,5 +1,5 @@
 use super::{LockOps, PreemptLock, ScopedLock, TryLockError, TryLockResult, Unlock};
-use crate::kernel::hal::{CoreId, CoreToken};
+use crate::kernel::hal::{self, CoreId, CoreToken};
 use crate::kernel::{
     list::{Node, impl_linked},
     scheduler::{ExecutionContext, Scheduler},
@@ -129,16 +129,12 @@ impl InheritanceLock {
     }
 
     pub fn lock(self: Pin<&Self>) -> InheritanceLockGuard<'_> {
-        if CoreId::current() != self.core {
-            runtime_error!(RuntimeError::WrongCore);
-        }
+        hal::check_core(self.core);
         unsafe { self.lock_unchecked() }
     }
 
     pub fn try_lock(self: Pin<&Self>) -> TryLockResult<InheritanceLockGuard<'_>> {
-        if CoreId::current() != self.core {
-            runtime_error!(RuntimeError::WrongCore);
-        }
+        hal::check_core(self.core);
         unsafe { self.try_lock_unchecked() }
     }
 

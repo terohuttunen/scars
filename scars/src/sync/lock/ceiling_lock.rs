@@ -3,7 +3,7 @@ use super::{LockOps, ScopedLock, TryLockResult, Unlock};
 use super::{NestingLock, PreemptLock, TryLockError};
 #[cfg(feature = "raii-locks")]
 use crate::interrupt::RawInterruptHandler;
-use crate::kernel::hal::{CoreId, CoreToken};
+use crate::kernel::hal::{self, CoreId, CoreToken};
 #[cfg(feature = "raii-locks")]
 use crate::kernel::list::{Node, impl_linked};
 use crate::kernel::{
@@ -483,9 +483,7 @@ impl<const CEILING: Priority> CeilingLock<CEILING> {
 
     #[cfg(feature = "raii-locks")]
     pub fn lock(self: Pin<&Self>) -> CeilingLockGuard<'_, CEILING> {
-        if CoreId::current() != self.raw.core {
-            runtime_error!(RuntimeError::WrongCore);
-        }
+        hal::check_core(self.raw.core);
         unsafe { self.lock_unchecked() }
     }
 
