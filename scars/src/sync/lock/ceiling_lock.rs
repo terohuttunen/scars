@@ -596,10 +596,6 @@ impl<const CEILING: Priority> NestingLock for CeilingLock<CEILING> {
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
         unsafe { CeilingLockKey::new() }
     }
-
-    fn required_ceiling() -> Option<i16> {
-        Some(CEILING.into_any())
-    }
 }
 
 unsafe impl<const CEILING: Priority> Send for CeilingLock<CEILING> {}
@@ -777,10 +773,6 @@ impl<const CEILING: Priority, const CORE: CoreId> NestingLock for CoreCeilingLoc
 
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a> {
         unsafe { CoreCeilingLockKey::new() }
-    }
-
-    fn required_ceiling() -> Option<i16> {
-        Some(CEILING.into_any())
     }
 }
 

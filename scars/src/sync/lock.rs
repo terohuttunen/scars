@@ -102,8 +102,4 @@ pub trait NestingLock {
     }
 
     unsafe fn get_key_unchecked<'a>() -> Self::Key<'a>;
-
-    fn required_ceiling() -> Option<i16> {
-        None
-    }
 }
