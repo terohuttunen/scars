@@ -21,29 +21,29 @@ pub struct WaitQueueTag {}
 impl LinkedListTag for WaitQueueTag {}
 
 pub struct WaitQueueEntry {
-    priority: Priority,
-
     /// Link for the WaitQueue.
     pub(crate) wait_queue_link: Node<Self, WaitQueueTag>,
 
     on_resume: fn(*const ()),
+    on_priority: for<'k> fn(*const (), PreemptLockKey<'k>) -> Priority,
     arg: *const (),
 }
 
 impl WaitQueueEntry {
     pub const fn new() -> WaitQueueEntry {
         WaitQueueEntry {
-            priority: Priority::MIN,
             wait_queue_link: Node::new(),
             on_resume: |_| {},
+            on_priority: |_, _| Priority::MIN,
             arg: core::ptr::null(),
         }
     }
 
-    /// Wire `owner` as the receiver of the on-resume callback. The
-    /// generic trampoline is monomorphized per `H`.
+    /// Wire `owner` as the receiver of the on-resume and priority
+    /// callbacks. The generic trampolines are monomorphized per `H`.
     pub fn init_for<H: WaitQueueEntryHandler>(&mut self, owner: &'static H) {
         self.on_resume = waiter_trampoline::<H>;
+        self.on_priority = priority_trampoline::<H>;
         self.arg = owner as *const H as *const ();
     }
 
@@ -51,8 +51,11 @@ impl WaitQueueEntry {
         (self.on_resume)(self.arg);
     }
 
-    pub fn priority(&self, _pkey: PreemptLockKey<'_>) -> Priority {
-        self.priority
+    /// Current effective priority of the waiter owning this entry.
+    /// Read at insert and reinsert time, so the wait-queue order
+    /// follows priority changes (e.g. inheritance boosts).
+    pub fn priority(&self, pkey: PreemptLockKey<'_>) -> Priority {
+        (self.on_priority)(self.arg, pkey)
     }
 }
 
@@ -64,11 +67,23 @@ impl_linked!(wait_queue_link, WaitQueueEntry, WaitQueueTag);
 /// and [`PendingWorkHandler`](crate::kernel::scheduler::PendingWorkHandler).
 pub trait WaitQueueEntryHandler: Sized + 'static {
     fn on_resume(this: &'static Self);
+
+    /// Current effective priority of the waiter, used to keep wait
+    /// queues priority-ordered.
+    fn priority(this: &'static Self, pkey: PreemptLockKey<'_>) -> Priority;
 }
 
 fn waiter_trampoline<H: WaitQueueEntryHandler>(arg: *const ()) {
     let this: &'static H = unsafe { &*(arg as *const H) };
     H::on_resume(this);
+}
+
+fn priority_trampoline<H: WaitQueueEntryHandler>(
+    arg: *const (),
+    pkey: PreemptLockKey<'_>,
+) -> Priority {
+    let this: &'static H = unsafe { &*(arg as *const H) };
+    H::priority(this, pkey)
 }
 
 #[derive(Clone, Copy)]

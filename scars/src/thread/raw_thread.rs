@@ -671,6 +671,32 @@ impl RawThread {
         self.priority.get(pkey)
     }
 
+    /// Effective priority for wait-queue ordering: the priority the
+    /// thread will have while it waits. Excludes the closure-scoped
+    /// nesting-lock boost — the wait is armed from inside an `L::with`
+    /// closure whose ceiling boost is released before the block
+    /// commits, so it must not order the queue (it would make every
+    /// new waiter sort ahead of the already-blocked ones).
+    #[cfg(feature = "multithreading")]
+    pub(crate) fn waiting_priority<'key>(self: Pin<&Self>, pkey: PreemptLockKey<'key>) -> Priority {
+        if self.core != pkey.core {
+            crate::runtime_error!(RuntimeError::WrongCore);
+        }
+        #[cfg(feature = "raii-locks")]
+        let scoped =
+            self.ceiling_locks()
+                .with_pin_key(pkey, |_, list| match list.as_ref().head() {
+                    Some(head) => PriorityOpt::from(head.ceiling_priority),
+                    None => PriorityOpt::none(),
+                });
+        #[cfg(not(feature = "raii-locks"))]
+        let scoped = PriorityOpt::none();
+        let p = self.base_priority.max_valid(scoped);
+        #[cfg(feature = "priority-inheritance")]
+        let p = p.max_valid(self.inherited_priority.get(pkey));
+        p
+    }
+
     fn update_priority<'key>(self: Pin<&Self>, pkey: PreemptLockKey<'key>) -> bool {
         if self.core != pkey.core {
             crate::runtime_error!(RuntimeError::WrongCore);
@@ -838,6 +864,10 @@ impl RawThread {
 impl WaitQueueEntryHandler for RawThread {
     fn on_resume(this: &'static Self) {
         this.resume();
+    }
+
+    fn priority(this: &'static Self, pkey: PreemptLockKey<'_>) -> Priority {
+        Pin::static_ref(this).waiting_priority(pkey)
     }
 }
 
