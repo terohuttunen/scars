@@ -194,12 +194,22 @@ impl RawScheduler {
         match thread.state.get(pkey) {
             ThreadExecutionState::Blocked => {
                 self.as_mut().blocked_list_mut().remove(thread);
-                self.insert_to_ready_queue(pkey, thread);
+                self.as_mut().insert_to_ready_queue(pkey, thread);
+
+                // Pend a preemption check. From the timer drain inside
+                // `reschedule` this costs one extra service call; from
+                // the deferred-work dispatch it is the only thing that
+                // schedules the woken thread at all.
+                let current_priority = self.current_thread.priority(pkey);
+                let locks_priority = self.as_ref().locks_priority_ceiling(pkey);
+                let min_priority = current_priority.max_valid(locks_priority);
+                if min_priority < thread.priority(pkey) {
+                    Scheduler::set_pending_reschedule(RESCHEDULE_KIND_YIELD_TO_HIGHER)
+                }
             }
             _ => (),
         }
 
-        // Note: does not check for need to reschedule, as this is called from reschedule.
         Ok(())
     }
 
