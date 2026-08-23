@@ -724,8 +724,7 @@ impl Scheduler {
         {
             Ok(()) => (),
             Err(_) => {
-                // Error: Thread is blocking to wait for events while it holds the preempt lock.
-                unimplemented!()
+                panic!("Thread is trying to wait for events while it holds the preempt lock");
             }
         }
     }
