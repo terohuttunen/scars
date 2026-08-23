@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Board {
     pub name: String,
     pub target: String,
@@ -57,6 +58,7 @@ pub enum TestRunner {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Linker {
     #[serde(default)]
     pub script: Option<String>,
@@ -65,6 +67,7 @@ pub struct Linker {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Runner {
     pub program: String,
     #[serde(default)]

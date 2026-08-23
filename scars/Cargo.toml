@@ -230,20 +230,22 @@ name = "sched"
 harness = false
 # 7 threads → ~9KB total .bss. Excluded on chips that don't enable
 # `bench-large` (notably the F0's 8KB SRAM).
-required-features = ["bench-large"]
+required-features = ["bench-large", "multithreading"]
 
 [[bench]]
 name = "sync"
 harness = false
+required-features = ["multithreading"]
 
 [[bench]]
 name = "irq"
 harness = false
-required-features = ["khal-sim"]
+required-features = ["khal-sim", "multithreading"]
 
 [[bench]]
 name = "delay"
 harness = false
+required-features = ["multithreading"]
 
 [dependencies]
 bit_field = "0.10.2"

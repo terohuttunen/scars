@@ -34,7 +34,7 @@ enum Cmd {
     Build {
         #[arg(long)]
         board: BoardSel,
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         release: bool,
         /// Override the package built (default: the board's `package`).
         #[arg(long, conflicts_with = "example")]
@@ -70,7 +70,7 @@ enum Cmd {
         board: String,
         #[arg(long)]
         example: String,
-        #[arg(long, default_value_t = true)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         release: bool,
     },
     /// Build and flash a single board+example. Currently same as `run --release`.
@@ -280,6 +280,13 @@ fn cmd_bench(
         boards.retain(|b| b.test_runner != TestRunner::ProbeRs);
     }
     for b in boards {
+        if b.lib_only {
+            // The synchronous test-harness backend records context
+            // switches instead of executing them; bench binaries
+            // would spin in the idle loop forever.
+            eprintln!("==> skip benches on {} (lib_only board)", b.name);
+            continue;
+        }
         let entries = load_bench_entries(root, &b.package)?;
         let selected: Vec<&manifest::BenchEntry> = match filter.as_ref() {
             Some(name) => entries.iter().filter(|e| e.name == *name).collect(),

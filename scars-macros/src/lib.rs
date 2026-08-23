@@ -131,7 +131,7 @@ pub fn init(args: TokenStream, item: TokenStream) -> TokenStream {
             syn::Type::Never(_) => {
                 return syn::Error::new(
                     ty.span(),
-                    "#[scars::init] function must return so the idle thread can enter its loop; run application logic from an event handler, the idle hook, or (with the `threads` feature) a thread",
+                    "#[scars::init] function must return so the idle thread can enter its loop; run application logic from an event handler, the idle hook, or (with the `multithreading` feature) a thread",
                 )
                 .to_compile_error()
                 .into();
@@ -315,7 +315,7 @@ pub fn trace_thread_new(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_thread_new"]
+        #[unsafe(export_name = "_scars_trace_thread_new")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn(::scars::ThreadRef) = #ident;
@@ -337,7 +337,7 @@ pub fn trace_thread_exec_begin(_args: TokenStream, item: TokenStream) -> TokenSt
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_thread_exec_begin"]
+        #[unsafe(export_name = "_scars_trace_thread_exec_begin")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn(::scars::ThreadRef) = #ident;
@@ -359,7 +359,7 @@ pub fn trace_thread_exec_end(_args: TokenStream, item: TokenStream) -> TokenStre
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_thread_exec_end"]
+        #[unsafe(export_name = "_scars_trace_thread_exec_end")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn(::scars::ThreadRef) = #ident;
@@ -381,7 +381,7 @@ pub fn trace_thread_ready_begin(_args: TokenStream, item: TokenStream) -> TokenS
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_thread_ready_begin"]
+        #[unsafe(export_name = "_scars_trace_thread_ready_begin")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn(::scars::ThreadRef) = #ident;
@@ -403,7 +403,7 @@ pub fn trace_thread_ready_end(_args: TokenStream, item: TokenStream) -> TokenStr
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_thread_ready_end"]
+        #[unsafe(export_name = "_scars_trace_thread_ready_end")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn(::scars::ThreadRef) = #ident;
@@ -425,7 +425,7 @@ pub fn trace_system_idle(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_system_idle"]
+        #[unsafe(export_name = "_scars_trace_system_idle")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn() = #ident;
@@ -447,7 +447,7 @@ pub fn trace_isr_enter(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_isr_enter"]
+        #[unsafe(export_name = "_scars_trace_isr_enter")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn() = #ident;
@@ -469,7 +469,7 @@ pub fn trace_isr_exit(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_isr_exit"]
+        #[unsafe(export_name = "_scars_trace_isr_exit")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn() = #ident;
@@ -491,7 +491,7 @@ pub fn trace_isr_exit_to_scheduler(_args: TokenStream, item: TokenStream) -> Tok
     let ident = &sig.ident;
 
     quote! {
-        #[export_name = "_scars_trace_isr_exit_to_scheduler"]
+        #[unsafe(export_name = "_scars_trace_isr_exit_to_scheduler")]
         #(#attrs)* #vis #sig
         {
             let type_test: fn() = #ident;
