@@ -849,8 +849,10 @@ impl TimerHandler for RawThread {
         pkey: PreemptLockKey<'_>,
     ) {
         if sched.as_mut().try_wakeup_thread(pkey, this).is_err() {
-            // Ceiling too high to act inline; route through the work
-            // queue. The drain re-attempts when priority allows.
+            // Wait-list lock unavailable; route through the work queue.
+            // try_resume_thread clears OP_WAKEUP from the pending mask
+            // if it wakes the thread before the drain runs, so a stale
+            // deferred wakeup never fires against a newer wait.
             this.schedule_deferred_op(RawThread::OP_WAKEUP);
         }
     }

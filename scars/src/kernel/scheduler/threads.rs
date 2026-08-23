@@ -237,6 +237,14 @@ impl RawScheduler {
                 // Clear any wakeup deadline; this also removes the timer from
                 // the timer queue and reprograms the alarm.
                 thread.set_wakeup_deadline(pkey, self.as_mut(), None);
+                // Cancel any deferred OP_WAKEUP: if the timer already fired
+                // and deferred its wakeup to the work queue, this notify wins
+                // and the pending mask entry must not fire against this thread's
+                // next wait.
+                thread
+                    .get_pending_work()
+                    .pending_mask
+                    .fetch_and(!RawThread::OP_WAKEUP, Ordering::Relaxed);
                 self.as_mut().blocked_list_mut().remove(thread);
                 self.as_mut().insert_to_ready_queue(pkey, thread);
             }
