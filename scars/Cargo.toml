@@ -96,6 +96,11 @@ harness = false
 required-features = ["multithreading"]
 
 [[test]]
+name = "events04"
+harness = false
+required-features = ["multithreading"]
+
+[[test]]
 name = "execution_time01"
 harness = false
 required-features = ["execution-time"]

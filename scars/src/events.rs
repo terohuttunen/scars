@@ -211,45 +211,32 @@ impl WaitEvents {
         self.returned_events.swap(0, Ordering::SeqCst)
     }
 
-    /// Process pending events based on EventOptions and store result for later retrieval
+    /// Mask of a thread's pending events this wait takes when it completes.
     ///
-    /// Returns (events_to_return, events_to_clear) tuple based on the configured options.
-    pub(crate) fn process_and_store_pending_events(&self, all_pending: Events) -> (Events, Events) {
-        let requested_events = self.events();
-
-        let (received_events, events_to_clear) = if self.options.return_all_enabled() {
-            // Return all pending events and clear them all
-            (all_pending, all_pending)
+    /// `return_all` takes everything pending; otherwise only the waited events.
+    fn consume_mask(&self) -> Events {
+        if self.options.return_all_enabled() {
+            Events::MAX
         } else {
-            let matched_events = all_pending & requested_events;
-            if self.options.keep_unwanted_enabled() {
-                // Only clear matched events, keep unmatched
-                (matched_events, matched_events)
-            } else {
-                // Default behavior: clear all requested events, keep non-requested
-                (matched_events, requested_events)
-            }
-        };
-
-        // Store what events will be returned to the user
-        self.returned_events
-            .store(received_events, Ordering::SeqCst);
-
-        (received_events, events_to_clear)
+            self.events()
+        }
     }
 
-    /// Determine if the thread should block based on EventOptions and received events
+    /// Take this wait's events out of `thread`'s pending set and record them
+    /// as the events the wait returns.
+    pub(crate) fn consume_pending_events(&self, thread: Pin<&RawThread>) -> Events {
+        let mask = self.consume_mask();
+        let received = thread.pending_events.fetch_and(!mask, Ordering::SeqCst) & mask;
+        self.returned_events.store(received, Ordering::SeqCst);
+        received
+    }
+
+    /// Whether the thread should block, given the events pending for it.
     ///
-    /// Returns true if the thread should block, false if it should continue.
-    pub(crate) fn should_block(&self, received_events: Events) -> bool {
-        if self.options.no_wait_enabled() {
-            false // Never block for no_wait option
-        } else if self.options.wait_any_enabled() {
-            received_events == 0 // Block if no events received (works for both normal and return_all modes)
-        } else {
-            let requested_events = self.events();
-            received_events != requested_events // Block if not all requested events received
-        }
+    /// The complement of [`WaitEvents::should_resume`], which the wake paths
+    /// use. A `no_wait` wait never blocks.
+    pub(crate) fn should_block(&self, all_pending: Events) -> bool {
+        !self.options.no_wait_enabled() && !self.should_resume(all_pending)
     }
 
     /// Determine if a thread should be resumed based on pending events and wait criteria
@@ -442,10 +429,18 @@ impl WaitEvents {
 
     fn finalize_wait(&self, thread: Pin<&RawThread>) -> (Events, Events) {
         // Clear the current_wait_events pointer now that thread is returning from syscall
-        // Keep SeqCst here for thread coordination
-        thread
+        // Keep SeqCst here for thread coordination.
+        //
+        // A non-null pointer means the wait suspended, and the wake paths only
+        // make the thread ready, so its events are still pending. Take them
+        // here. A wait that did not suspend consumed in the syscall.
+        let suspended = !thread
             .current_wait_events
-            .store(core::ptr::null_mut(), Ordering::SeqCst);
+            .swap(core::ptr::null_mut(), Ordering::SeqCst)
+            .is_null();
+        if suspended {
+            self.consume_pending_events(thread);
+        }
 
         // Get the events that the kernel determined should be returned to the user
         let returned = self.take_returned_events();
@@ -544,6 +539,10 @@ impl WaitEvents {
     pub fn try_wait(&mut self) -> Result<Events, TryWaitError> {
         match Scheduler::current_execution_context() {
             ExecutionContext::Thread(current_thread) => {
+                // Clear timeout flag before starting new wait operation
+                self.timed_out
+                    .store(false, crate::sync::atomic::Ordering::SeqCst);
+
                 // Make syscall with immediate deadline (try without blocking)
                 syscall::thread_wait_event_until(self as *mut _, crate::time::Instant::now());
 
@@ -1014,35 +1013,61 @@ mod tests {
     }
 
     #[test_case]
-    fn test_process_and_store_pending_events() {
-        // Test default behavior (wait for all, clear requested)
+    fn test_consume_mask() {
+        // Default: only the waited events are taken, the rest stay pending
         let context = WaitEvents::with_events(0b1010); // Wait for events 1 and 3
-        let (returned, cleared) = context.process_and_store_pending_events(0b1111); // Events 0,1,2,3 pending
-        assert_eq!(returned, 0b1010); // Only requested events returned
-        assert_eq!(cleared, 0b1010); // Only requested events cleared
-        assert_eq!(context.take_returned_events(), 0b1010); // Stored for retrieval
-        assert_eq!(context.take_returned_events(), 0); // Should be cleared after take
+        assert_eq!(context.consume_mask(), 0b1010);
 
-        // Test return_all option
-        let context = WaitEvents::with_options(0b0011, EventOptions::return_all()); // Wait for events 0,1
-        let (returned, cleared) = context.process_and_store_pending_events(0b1111); // Events 0,1,2,3 pending
-        assert_eq!(returned, 0b1111); // All pending events returned
-        assert_eq!(cleared, 0b1111); // All pending events cleared
-        assert_eq!(context.take_returned_events(), 0b1111); // Stored for retrieval
+        // return_all: everything pending is taken
+        let context = WaitEvents::with_options(0b0011, EventOptions::return_all());
+        assert_eq!(context.consume_mask(), Events::MAX);
 
-        // Test keep_unwanted option
-        let context = WaitEvents::with_options(0b0101, EventOptions::wait_any().keep_unwanted()); // Wait for events 0,2
-        let (returned, cleared) = context.process_and_store_pending_events(0b1111); // Events 0,1,2,3 pending
-        assert_eq!(returned, 0b0101); // Only matched events returned
-        assert_eq!(cleared, 0b0101); // Only matched events cleared (unwanted kept)
-        assert_eq!(context.take_returned_events(), 0b0101); // Stored for retrieval
+        // keep_unwanted takes the same set as the default
+        let context = WaitEvents::with_options(0b0101, EventOptions::wait_any().keep_unwanted());
+        assert_eq!(context.consume_mask(), 0b0101);
+    }
 
-        // Test partial match scenario
-        let context = WaitEvents::with_events(0b1111); // Wait for events 0,1,2,3
-        let (returned, cleared) = context.process_and_store_pending_events(0b0011); // Only events 0,1 pending
-        assert_eq!(returned, 0b0011); // Only available events returned
-        assert_eq!(cleared, 0b1111); // All requested events cleared (default behavior)
-        assert_eq!(context.take_returned_events(), 0b0011); // Stored for retrieval
+    #[test_case]
+    fn test_take_returned_events_leaves_zero() {
+        // Every wait ends by taking this, which leaves it zero for the next one
+        let context = WaitEvents::with_events(0b1010);
+        context.returned_events.store(0b1010, Ordering::SeqCst);
+
+        assert_eq!(context.take_returned_events(), 0b1010);
+        assert_eq!(context.take_returned_events(), 0);
+    }
+
+    #[test_case]
+    fn test_should_block() {
+        // wait_all blocks until every waited event is pending
+        let context = WaitEvents::with_events(0b1010); // Wait for events 1 and 3
+        assert!(context.should_block(0b0000)); // Nothing pending
+        assert!(context.should_block(0b0010)); // Only event 1 pending
+        assert!(!context.should_block(0b1010)); // Both pending
+        assert!(!context.should_block(0b1111)); // Both pending, plus others
+
+        // wait_any blocks only while none of the waited events is pending
+        let context = WaitEvents::with_options(0b1010, EventOptions::wait_any());
+        assert!(context.should_block(0b0101)); // Only unwaited events pending
+        assert!(!context.should_block(0b0010)); // Event 1 pending
+
+        // return_all changes what a wait takes, not when it is satisfied
+        let context = WaitEvents::with_options(0b0011, EventOptions::return_all());
+        assert!(context.should_block(0b0100)); // Only an unwaited event pending
+        assert!(!context.should_block(0b0110)); // Event 1 pending
+
+        // no_wait never blocks
+        let context = WaitEvents::builder().events(0b0011).no_wait().build();
+        assert!(!context.should_block(0b0000));
+
+        // Blocking is the complement of resuming, for every pending set
+        let context = WaitEvents::with_events(0b1010);
+        for pending in 0..0b1_0000 {
+            assert_eq!(
+                context.should_block(pending),
+                !context.should_resume(pending)
+            );
+        }
     }
 
     #[test_case]

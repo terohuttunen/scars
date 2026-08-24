@@ -482,46 +482,47 @@ impl RawScheduler {
         let wait_events = unsafe { &*wait_events };
         let waiting_thread = self.current_thread;
 
-        // Set thread's current WaitEvents
+        // Publish the wait before reading pending events: a sender that
+        // interleaves from here on sees it and pends a resume.
         waiting_thread
             .current_wait_events
             .store(wait_events as *const _ as *mut _, Ordering::SeqCst);
 
-        // Step 1: Read all currently pending events
         let all_pending = waiting_thread.pending_events.load(Ordering::SeqCst);
 
-        // Step 2: Let WaitEvents process and store events atomically
-        let (received_events, events_to_clear) =
-            wait_events.process_and_store_pending_events(all_pending);
-
-        // Step 3: Atomically clear the determined events
-        waiting_thread
-            .pending_events
-            .fetch_and(!events_to_clear, Ordering::SeqCst);
-
-        // Note: If there is a send_events call from ISR between the above operations
-        // and blocking of the thread, then the ISR will put the thread into pending resume
-        // queue, and the thread will be unblocked when the preemption lock is released.
-
-        // Determine if thread should block based on WaitEvents configuration
-        let should_block = wait_events.should_block(received_events);
-
-        if should_block {
-            // Highest priority of any locks held by the current or blocked threads.
-            let locks_ceiling = self
-                .as_ref()
-                .locks_priority_ceiling(pkey)
-                .unwrap_or_default(Priority::MIN);
-
-            let next = self
-                .as_mut()
-                .ready_queue_mut()
-                .pop_front_if(|ready| ready.priority.get(pkey) > locks_ceiling)
-                .unwrap_or(self.idle_thread);
-
-            let blocked_thread = self.as_mut().switch_thread(pkey, next);
-            self.as_mut()
-                .block_thread(pkey, blocked_thread, deadline.map(|tick| Instant { tick }));
+        if !wait_events.should_block(all_pending) {
+            // Satisfied without suspending: take the events here and retract
+            // the published wait.
+            wait_events.consume_pending_events(waiting_thread);
+            waiting_thread
+                .current_wait_events
+                .store(core::ptr::null_mut(), Ordering::SeqCst);
+            return;
         }
+
+        // Suspending: leave `pending_events` alone. A partially matched
+        // `wait_all` must keep its collected events pending, because the wake
+        // paths re-test the whole set. The waiter consumes in `finalize_wait`.
+        //
+        // Note: If there is a send_events call from ISR between the above
+        // operations and blocking of the thread, then the ISR will put the
+        // thread into pending resume queue, and the thread will be unblocked
+        // when the preemption lock is released.
+
+        // Highest priority of any locks held by the current or blocked threads.
+        let locks_ceiling = self
+            .as_ref()
+            .locks_priority_ceiling(pkey)
+            .unwrap_or_default(Priority::MIN);
+
+        let next = self
+            .as_mut()
+            .ready_queue_mut()
+            .pop_front_if(|ready| ready.priority.get(pkey) > locks_ceiling)
+            .unwrap_or(self.idle_thread);
+
+        let blocked_thread = self.as_mut().switch_thread(pkey, next);
+        self.as_mut()
+            .block_thread(pkey, blocked_thread, deadline.map(|tick| Instant { tick }));
     }
 }
