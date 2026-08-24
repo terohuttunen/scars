@@ -308,10 +308,14 @@ impl RawCeilingLock {
                 if current_interrupt.priority() > ceiling {
                     return Err(());
                 }
+                let saved_ceiling = Scheduler::get_ceiling();
                 let ceiling_priority_opt = PriorityOpt::from(ceiling);
                 Scheduler::set_ceiling(ceiling_priority_opt);
                 let saved_priority = current_interrupt.raise_nesting_lock_priority(ceiling);
-                Ok(CeilingLockRestoreState { saved_priority })
+                Ok(CeilingLockRestoreState {
+                    saved_priority,
+                    saved_ceiling,
+                })
             }
             ExecutionContext::Thread(current_thread) => PreemptLock::with(|pkey| {
                 if current_thread.thread_id == IDLE_THREAD_ID {
@@ -328,10 +332,14 @@ impl RawCeilingLock {
                 if current_thread.holds_inheritance_lock(pkey) {
                     runtime_error!(RuntimeError::CeilingLockNotAllowed);
                 }
+                let saved_ceiling = Scheduler::get_ceiling();
                 let ceiling_priority_opt = PriorityOpt::from(ceiling);
                 Scheduler::set_ceiling(ceiling_priority_opt);
                 let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
-                Ok(CeilingLockRestoreState { saved_priority })
+                Ok(CeilingLockRestoreState {
+                    saved_priority,
+                    saved_ceiling,
+                })
             }),
         }
     }
@@ -340,21 +348,13 @@ impl RawCeilingLock {
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
                 current_interrupt.set_nesting_lock_priority(restore_state.saved_priority);
-
-                // Set ceiling threshold based on the restored interrupt priority
-                let new_priority = current_interrupt.priority();
-                let new_ceiling_priority_opt = PriorityOpt::from(new_priority);
-                Scheduler::set_ceiling(new_ceiling_priority_opt);
+                Scheduler::set_ceiling(restore_state.saved_ceiling);
             }
             ExecutionContext::Thread(current_thread) => {
                 current_thread.set_nesting_lock_priority(restore_state.saved_priority);
 
                 PreemptLock::with(|pkey| {
-                    // Set ceiling threshold based on the restored thread priority
-                    let new_priority = current_thread.priority(pkey);
-                    let new_ceiling_priority_opt = PriorityOpt::from(new_priority);
-                    Scheduler::set_ceiling(new_ceiling_priority_opt);
-
+                    Scheduler::set_ceiling(restore_state.saved_ceiling);
                     Scheduler::cond_reschedule(pkey);
                 });
 
@@ -387,16 +387,24 @@ impl RawCeilingLock {
         }
         match Scheduler::current_execution_context() {
             ExecutionContext::Interrupt(current_interrupt) => {
+                let saved_ceiling = Scheduler::get_ceiling();
                 let ceiling_priority_opt = PriorityOpt::from(ceiling);
                 Scheduler::set_ceiling(ceiling_priority_opt);
                 let saved_priority = current_interrupt.raise_nesting_lock_priority(ceiling);
-                Ok(CeilingLockRestoreState { saved_priority })
+                Ok(CeilingLockRestoreState {
+                    saved_priority,
+                    saved_ceiling,
+                })
             }
             ExecutionContext::Thread(current_thread) => {
+                let saved_ceiling = Scheduler::get_ceiling();
                 let ceiling_priority_opt = PriorityOpt::from(ceiling);
                 Scheduler::set_ceiling(ceiling_priority_opt);
                 let saved_priority = current_thread.raise_nesting_lock_priority(ceiling);
-                Ok(CeilingLockRestoreState { saved_priority })
+                Ok(CeilingLockRestoreState {
+                    saved_priority,
+                    saved_ceiling,
+                })
             }
         }
     }
@@ -449,7 +457,13 @@ impl Drop for RawCeilingLockGuard<'_> {
 }
 
 pub struct CeilingLockRestoreState {
+    /// Acquirer's own priority before this acquire. Floored at the
+    /// acquirer's base priority, so it can't go as low as the real
+    /// hardware ceiling sometimes needs to.
     saved_priority: PriorityOpt,
+    /// Hardware ceiling actually in effect before this acquire, with no
+    /// such floor. Restored verbatim on release.
+    saved_ceiling: PriorityOpt,
 }
 
 /// CORE-erased ceiling lock primitive. `CEILING` is typed (the ceiling

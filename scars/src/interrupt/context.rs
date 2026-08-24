@@ -2,6 +2,7 @@
 
 use super::RawInterruptHandler;
 use crate::kernel::hal::{CoreId, NUM_CORES};
+use crate::kernel::scheduler::Scheduler;
 use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr::NonNull;
 
@@ -47,6 +48,8 @@ pub(crate) unsafe fn interrupt_context<R>(
     f: impl FnOnce() -> R,
 ) -> R {
     let prev_context = switch_current_interrupt(context_ptr);
+    // Restored below regardless of what ceiling state `f` leaves behind.
+    let prev_ceiling = Scheduler::get_ceiling();
 
     // Outermost thread -> interrupt transition: charge the preempted
     // thread the time it ran before this handler executes. Nested
@@ -56,7 +59,6 @@ pub(crate) unsafe fn interrupt_context<R>(
         crate::kernel::execution_time::charge_thread_boundary();
     }
 
-    // Run the handler first
     let rval = f();
 
     // Outermost interrupt -> thread transition: charge the interrupt
@@ -69,5 +71,6 @@ pub(crate) unsafe fn interrupt_context<R>(
 
     // Restore the previous interrupt context
     restore_current_interrupt(prev_context);
+    Scheduler::set_ceiling(prev_ceiling);
     rval
 }

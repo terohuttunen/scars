@@ -294,7 +294,12 @@ impl RawScheduler {
         // Whenever current thread is switched out, check its stack canary for
         // stack overflow that could have occurred during the thread execution.
         self.check_stack_overflow();
-        //printkln!("[scheduler] switching to thread {}", new.name);
+
+        // Whatever threshold is live gets captured into `current_thread`'s
+        // saved context below. Force it to match its own held ceiling
+        // locks first, in case something else left a different value live.
+        Scheduler::set_ceiling(self.current_thread.ceiling_lock_priority(pkey));
+
         new.state.set(pkey, ThreadExecutionState::Running);
 
         let new_thread_ref = new.as_thread_ref();

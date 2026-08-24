@@ -17,7 +17,7 @@ use crate::kernel::{
     waiter::{WaitQueueEntry, WaitQueueHandle, WaitQueueTag},
 };
 use crate::printkln;
-use crate::priority::{AnyPriority, AtomicPriorityOpt, PriorityOpt};
+use crate::priority::{AnyPriority, PriorityOpt};
 use crate::sync::atomic::Ordering;
 use crate::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
 use crate::sync::lock::preempt_lock::is_preempt_allowed;
@@ -323,9 +323,6 @@ pub struct Scheduler {
     // or when the preemption lock is released.
     pending_reschedule_kind: AtomicUsize,
 
-    // Current ceiling priority from all held ceiling locks
-    current_ceiling_priority: AtomicPriorityOpt,
-
     raw: Protected<RawScheduler, PreemptLock>,
 }
 
@@ -336,7 +333,6 @@ impl Scheduler {
             deferred_work_queue: WorkQueue::new(),
             pending_events: PendingEventsQueue::new(),
             pending_reschedule_kind: AtomicUsize::new(RESCHEDULE_KIND_NONE),
-            current_ceiling_priority: AtomicPriorityOpt::new(PriorityOpt::none()),
             raw: Protected::new(RawScheduler::new(idle_thread)),
         }
     }
@@ -426,27 +422,21 @@ impl Scheduler {
         }
     }
 
-    /// Get current ceiling priority from all held ceiling locks
-    #[allow(dead_code)]
-    pub(crate) fn current_ceiling_priority() -> PriorityOpt {
-        Scheduler::instance()
-            .current_ceiling_priority
-            .load(Ordering::Acquire)
+    /// Ceiling threshold, read from the live hardware register. A thread
+    /// switch writes this register directly, bypassing [`Self::set_ceiling`].
+    /// `Thread(_)` and `None` share one hardware value; unmasked reads
+    /// back as `None`, which round-trips through `set_ceiling` either way.
+    pub(crate) fn get_ceiling() -> PriorityOpt {
+        let threshold = hal::get_interrupt_threshold();
+        if threshold as usize >= hal::MAX_INTERRUPT_PRIORITY {
+            PriorityOpt::none()
+        } else {
+            PriorityOpt::interrupt(threshold)
+        }
     }
 
-    /// Update the current ceiling priority atomically
-    pub(crate) fn update_ceiling_priority(new_ceiling: PriorityOpt) {
-        Scheduler::instance()
-            .current_ceiling_priority
-            .store(new_ceiling, Ordering::Release);
-    }
-
-    /// Set ceiling priority, updating both global tracking and hardware threshold
+    /// Set ceiling priority, updating the hardware threshold.
     pub(crate) fn set_ceiling(ceiling: PriorityOpt) {
-        // Update global ceiling priority tracking
-        Self::update_ceiling_priority(ceiling);
-
-        // Update hardware interrupt threshold
         crate::interrupt::set_ceiling_threshold(ceiling);
     }
 
